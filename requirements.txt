@@ -1,0 +1,27 @@
+# --- LLM / Agent orchestration ---
+langgraph
+langchain-core
+langchain-naver   # ChatClovaX (HyperCLOVA X) — 실제 패키지명/버전은 API 키 발급 후 검증 필요
+
+# --- API server ---
+fastapi
+uvicorn[standard]
+pydantic
+python-dotenv
+
+# --- Document parsing (Phase 1) ---
+pymupdf         # PDF
+python-docx     # DOCX
+python-pptx     # PPTX
+openpyxl        # XLSX
+
+# --- Storage ---
+chromadb        # 벡터DB (docs.zip 서술형 문서 색인)
+sqlalchemy      # 구조화 DB (투자설명서 6축, doc29/doc34 lookup)
+
+# --- Data handling ---
+pandas
+numpy
+
+# --- Testing ---
+pytest

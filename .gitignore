@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# Env / secrets
+.env
+
+# Raw source data (too large for git, and may be organizer-restricted)
+data/raw/
+data/processed/*.db
+data/processed/vectorstore/
+
+# DB / index artifacts
+*.sqlite3
+*.db
+chroma/
+
+# Logs
+*.log
+nohup.out
+
+# OS
+.DS_Store
+Thumbs.db
