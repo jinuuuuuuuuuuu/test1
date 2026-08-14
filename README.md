@@ -8,20 +8,20 @@
 사용자 질의
     │
     ▼
-① 라우터 / 가드레일 (HCX-DASH)
+① 라우터 / 가드레일 (HCX-007, thinking 끔)
     - 정보형 / 상품형 / 복합형 다중 분류
     - 복합형일 경우 순차·병렬·조건부 게이팅 판단
     - 안전성 사전 필터
     │
-    ├─ 정보형 ──▶ ② 정보 Agent (HCX-007)
+    ├─ 정보형 ──▶ ② 정보 Agent (HCX-005)
     │              tools: RAG검색(벡터DB) / 세제 규칙엔진 / 제도 판정기(디폴트옵션·실물이전·중도인출)
     │
-    └─ 상품형 ──▶ ③ 상품 Agent (HCX-007)
+    └─ 상품형 ──▶ ③ 상품 Agent (HCX-005)
                    tools: 펀드 필터/비교(구조화DB) / 슬롯필링 상태
                    (복합형은 ②→③ 순차 실행, 필요시 ③ 스킵하고 역질문)
     │
     ▼
-④ 검증 / Grounding (경량모델)
+④ 검증 / Grounding (HCX-007, thinking 끔)
     - ②③가 실제 호출한 툴 결과와 답변 초안 대조
     - 제도 부합 / 계산 일치 / 근거 존재 / 투자제한 위반 여부
     │
@@ -29,6 +29,18 @@
 ⑤ 응답 생성기 (HCX-005)
     - 최종 답변 조립 + think_trace 포맷
 ```
+
+**CLOVA Studio 모델 제약 (네이버 공식 문서 + 실측, 2026-08-13):**
+이미지입력/튜닝/Function calling/Structured Outputs/추론(Thinking)은 동시 이용 불가.
+- Structured Outputs(①④가 씀)는 **HCX-007에서만** 지원 (HCX-DASH-002는 "Unsupported function").
+- HCX-007은 기본적으로 Thinking이 켜져 있어, Function calling이든 Structured Outputs든 쓰려면
+  `thinking={"effort": "none"}`으로 꺼야 함 (안 그러면 400 "tools, reasoning").
+- `with_structured_output()`은 LangChain이 기본으로 `parallel_tool_calls`를 얹는데 CLOVA가
+  이 파라미터를 모름 — `disabled_params={"parallel_tool_calls": None}`으로 꺼야 함.
+- Pydantic 응답 스키마 클래스에 **docstring이 없으면** "tools[].function.description" 400 에러.
+- HCX-005/HCX-DASH-002는 Thinking이 없어 bind_tools()는 바로 되지만, Structured Outputs는
+  HCX-005만 됨(DASH-002는 전혀 안 됨) — 그래서 ②③(tool 호출)은 HCX-005, ①④(구조화 출력)는
+  HCX-007+thinking 끔으로 나눴다.
 
 ## 데이터 자산
 
@@ -55,22 +67,58 @@ scripts/      배치 실행 스크립트 (파싱, 색인 등)
 
 ## 진행 단계
 
-- [x] Phase 0: Python 환경, 레포 스캐폴드
-- [ ] Phase 0: NCP 크레딧 신청 / Clova Studio API 키
-- [ ] Phase 1: docs.zip·투자설명서.zip 파싱 + 벡터DB/구조화DB 색인
-- [x] Phase 2: 세제 규칙엔진 (세액공제/연금수령한도/감면율/종합과세) + 제도 판정기 (`src/rules/`, 73 tests passing)
-- [ ] Phase 3: LangGraph 에이전트 (①~⑤)
-- [ ] Phase 4: 평가용 API 서버 + NCP 배포
-- [ ] Phase 5: 자체 평가 반복, 기술제안서
+- [x] **Phase 0** — Python 환경, 레포 스캐폴드
+  - [ ] NCP 크레딧 신청 / Clova Studio API 키 (미착수)
+- [x] **Phase 0.5** — 원본 데이터 검수/라벨링 QA (파싱·색인의 입력 신뢰도 확보)
+  - [x] `docs.zip` (58개) 다중 카테고리 라벨링
+  - [x] `docs.zip` "원문 대조 검수 필요" 19개 문서 106개 청크 전수 검증 + 수정 (`docs 수정.xlsm`)
+  - [x] `투자설명서.zip` "추가확인" 대상 1~33행(17개 고유 파일) 원문 전수 대조 검증 + NULL 필드 보완 + 오류 수정 (`[파싱]투자설명서.xlsm`)
+  - [ ] `docs.zip` 잔여 372개 "검수전" 청크 + `doc58_chunk01` (다음 세션으로 이월)
+  - [ ] `투자설명서.zip` 잔여 범위(34행 이후, 85개 고유 파일 중 미검증분)
+- [ ] **Phase 1** — `docs.zip`·`투자설명서.zip` 파싱 + 벡터DB/구조화DB 색인 (팀원 진행 중 — 완료본을 입력으로 사용 예정)
+- [x] **Phase 2** — 세제 규칙엔진(세액공제/연금수령한도/감면율/종합과세) + 제도 판정기 + 투자한도 판정기 (`src/rules/`, 8개 모듈, 99 tests passing)
+- [ ] **Phase 3** — LangGraph 에이전트 (①~⑤)
+  - [x] ②③ Agent용 규칙엔진 툴 6개 (`src/agents/tools.py`): `calculate_tax_credit`, `calculate_pension_withdrawal`, `check_early_withdrawal`, `check_default_option`, `check_in_kind_transfer`, `check_product_pension_eligibility`
+  - [ ] RAG/구조화DB 기반 툴 3개(`search_pension_docs`, `search_funds`, `get_fund_detail`) — Phase 1 완료 후 추가
+  - [ ] LangGraph 그래프 배선 (①라우터 → ②③ → ④검증 → ⑤생성기)
+- [ ] **Phase 4** — 평가용 API 서버 + NCP 배포
+- [ ] **Phase 5** — 자체 평가 반복, 기술제안서
 
 ## 셋업
 
+⚠️ **`.venv` 폴더는 절대 다른 사람과 공유하지 마세요** — Windows에서 만든 `.venv`는 컴파일된
+바이너리가 들어있어 Mac/Linux에서 절대 실행되지 않습니다(반대도 마찬가지). 각자 자기 컴퓨터에서
+아래 명령으로 새로 만들어야 합니다. `.venv`는 `.gitignore`에 이미 포함돼 있어 git으로는
+공유되지 않습니다 — 공유되는 건 `requirements.txt`(설치 목록)뿐입니다.
+
 ```bash
 python -m venv .venv
-.venv\Scripts\activate       # Windows
+
+# 가상환경 활성화 (OS별로 다름, 자기 OS에 맞는 것 하나만 실행)
+source .venv/bin/activate        # macOS / Linux
+.venv\Scripts\activate           # Windows (cmd)
+.venv\Scripts\Activate.ps1       # Windows (PowerShell)
+
 pip install -r requirements.txt
-cp .env.sample .env          # 키 채워넣기
+cp .env.sample .env              # 키 채워넣기 (CLOVASTUDIO_API_KEY)
 ```
+
+**실행 확인**:
+```bash
+pytest -q                        # 전체 테스트 (121 passed면 정상)
+python scripts/chat.py           # 터미널에서 직접 질문해보기 (.venv 활성화 상태에서 python만 쓰면 됨,
+                                  #  .venv/Scripts/python.exe처럼 OS별 경로를 직접 안 써도 됨)
+```
+
+**데이터 자산(`data/processed/prospectus.db`, `data/processed/chroma_docs/`)은 git에
+포함돼 있어 별도로 다시 만들 필요가 없습니다** — `git pull` 받으면 바로 있습니다. 원본 xlsm
+트래커 파일(파싱 검수본)은 크기가 커서 git에 안 올렸으니, 그 원본 자체를 새로 처리해야 하는
+경우에만 별도로 공유가 필요합니다.
+
+**Docker로 실행 (OS 무관, 가장 안전한 방법)**: Phase 4(평가용 API 서버, `src/api/`)가 완성되면
+`docker build . && docker run -p 8000:8000 --env-file .env <image>`로 OS 상관없이 동일하게
+띄울 수 있습니다 — 지금은 `src/api/main.py`가 아직 없어서 Dockerfile의 CMD가 바로 실행되진
+않습니다(다음 작업 항목).
 
 ## 대회 제출 요건 (요약)
 

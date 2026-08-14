@@ -1,0 +1,40 @@
+"""LangGraph 파이프라인(①라우터~⑤생성기)이 공유하는 State 스키마.
+
+평가 API 응답 스키마(question_id/question/retrieved_context/think_trace/answer)와
+최대한 맞닿도록 설계했다 — ⑤생성기가 이 State를 그대로 응답으로 변환한다.
+"""
+
+from __future__ import annotations
+
+import operator
+from typing import Annotated, Literal, TypedDict
+
+Intent = Literal["정보형", "상품형"]
+
+
+class RetrievedItem(TypedDict):
+    source: str   # 툴 이름(예: calculate_tax_credit) 또는 "RAG"
+    content: str  # 근거 텍스트 / 툴 반환값 (JSON 문자열 또는 요약)
+    node: str     # 어느 노드에서 생성됐는지: "info_agent" | "product_agent"
+
+
+class PensionAgentState(TypedDict, total=False):
+    question_id: str
+    question: str
+
+    # ① 라우터/가드레일 출력
+    is_safe: bool
+    safety_reason: str | None
+    intent: list[Intent]  # 복합형이면 ["정보형", "상품형"] 둘 다 포함
+
+    # ②③ 출력 — retrieved_context는 여러 노드가 이어서 채우므로 누적(operator.add) 리듀서 사용
+    retrieved_context: Annotated[list[RetrievedItem], operator.add]
+    info_draft: str | None
+    product_draft: str | None
+
+    # ④ 검증/Grounding 출력
+    verification: dict | None
+
+    # ⑤ 생성기 출력 (최종 응답)
+    answer: str | None
+    think_trace: str | None

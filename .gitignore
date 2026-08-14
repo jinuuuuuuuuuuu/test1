@@ -10,13 +10,17 @@ venv/
 
 # Raw source data (too large for git, and may be organizer-restricted)
 data/raw/
-data/processed/*.db
 data/processed/vectorstore/
 
-# DB / index artifacts
-*.sqlite3
-*.db
-chroma/
+# 빌드된 DB/벡터스토어는 git에 포함한다 — 원본 xlsm 트래커가 개인 로컬 폴더에만 있어서
+# 팀원이 재현할 방법이 없기 때문 (prospectus.db 315KB, chroma_docs ~9MB, 커밋해도 부담 없음)
+!data/processed/prospectus.db
+!data/processed/chroma_docs/
+
+# 세션 스크래치/디버그 산출물 (검수 대조용 임시 파일, 커밋 대상 아님)
+docs_check/
+prospectus_check/
+prospectus_toc_check.txt
 
 # Logs
 *.log

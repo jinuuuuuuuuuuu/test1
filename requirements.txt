@@ -1,7 +1,8 @@
 # --- LLM / Agent orchestration ---
 langgraph
+langchain
 langchain-core
-langchain-naver   # ChatClovaX (HyperCLOVA X) — 실제 패키지명/버전은 API 키 발급 후 검증 필요
+langchain-naver   # ChatClovaX (HyperCLOVA X). CLOVASTUDIO_API_KEY 환경변수 필요 (.env.sample 참고)
 
 # --- API server ---
 fastapi
@@ -17,6 +18,8 @@ openpyxl        # XLSX
 
 # --- Storage ---
 chromadb        # 벡터DB (docs.zip 서술형 문서 색인)
+langchain-chroma  # LangChain <-> Chroma 연동
+langchain-text-splitters  # 임베딩 API 컨텍스트 길이 제한 대응 긴 청크 분할
 sqlalchemy      # 구조화 DB (투자설명서 6축, doc29/doc34 lookup)
 
 # --- Data handling ---
