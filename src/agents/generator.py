@@ -4,6 +4,7 @@ think_trace를 포맷팅한다. HCX-005 사용.
 is_safe=False(①가드레일에서 차단된 경우)는 모델을 호출하지 않고 바로 정형 거절 응답을 만든다.
 """
 
+from src.agents.context import format_conversation_history
 from src.agents.llm import get_llm
 from src.agents.state import PensionAgentState
 
@@ -22,7 +23,10 @@ GENERATOR_SYSTEM_PROMPT = """당신은 연금 상담 AI의 최종 답변 작성�
   정확히는 ~입니다").
 - 검증결과의 missing_requirements(질문에서 요구했는데 초안이 빠뜨린 항목)가 있으면, 근거에
   그 내용이 있는 경우 답변에 추가하세요. 근거로 확인이 안 되는 항목이면 "~는 제공된 자료로
-  확인이 어렵습니다"처럼 한계를 명시하세요 — 답을 지어내지 마세요."""
+  확인이 어렵습니다"처럼 한계를 명시하세요 — 답을 지어내지 마세요.
+- [이전 대화]가 함께 주어지면 자연스러운 대화 흐름을 유지하되(중복 설명 반복 지양), 숫자·사실은
+  이번 턴의 [근거]에 있는 것만 쓰세요 — 이전 답변에 등장했던 숫자라도 이번 [근거]에 없으면
+  다시 쓰지 마세요."""
 
 
 def _format_think_trace(state: PensionAgentState) -> str:
@@ -54,9 +58,11 @@ def build_generator_node():
         verification = state.get("verification") or {}
         context = state.get("retrieved_context") or []
         context_text = "\n".join(f"- [{c['source']}] {c['content']}" for c in context) or "(근거 없음)"
+        history_text = format_conversation_history(state.get("conversation_history"))
 
         prompt = (
-            f"[질문]\n{state['question']}\n\n"
+            (f"[이전 대화]\n{history_text}\n\n" if history_text else "")
+            + f"[질문]\n{state['question']}\n\n"
             f"[초안]\n{draft}\n\n"
             f"[근거]\n{context_text}\n\n"
             f"[검증결과]\n"

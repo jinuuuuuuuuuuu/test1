@@ -16,7 +16,7 @@ get_llm("HCX-007", thinking_effort="none")으로 교체 가능.
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage
 
-from src.agents.context import build_retrieved_context
+from src.agents.context import build_retrieved_context, history_to_messages
 from src.agents.llm import get_llm
 from src.agents.state import PensionAgentState
 from src.agents.tools import PRODUCT_AGENT_TOOLS
@@ -41,7 +41,11 @@ PRODUCT_AGENT_SYSTEM_PROMPT = """당신은 연금 상품(펀드) 추천 에이�
 3. 상세 설명이나 비교가 필요하면 get_fund_detail로 전체 정보를 가져오세요.
 
 툴 호출 결과에 error가 있으면 그 오류를 사용자에게 노출하지 말고, 조건을 다시 확인하는
-질문으로 답하세요."""
+질문으로 답하세요.
+
+이전 대화가 함께 주어지면 "그중 두 번째 상품", "방금 조건대로" 같은 지시어를 이전 턴 내용으로
+풀어서 이해하세요. 다만 이전 턴에서 언급된 상품 정보를 그대로 베끼지 말고, 필요하면
+search_funds/get_fund_detail로 다시 확인하세요."""
 
 
 def build_product_agent_node():
@@ -55,7 +59,10 @@ def build_product_agent_node():
             context_text = "\n".join(f"- [{c['source']}] {c['content']}" for c in prior_context)
             question = f"{question}\n\n[②정보 Agent가 이미 확인한 제도 근거]\n{context_text}"
 
-        result = react_agent.invoke({"messages": [HumanMessage(content=question)]})
+        history_messages = history_to_messages(state.get("conversation_history"))
+        result = react_agent.invoke(
+            {"messages": [*history_messages, HumanMessage(content=question)]}
+        )
         messages = result["messages"]
 
         retrieved_context = build_retrieved_context(messages, node="product_agent")

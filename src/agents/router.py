@@ -13,6 +13,7 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from src.agents.context import format_conversation_history
 from src.agents.llm import get_llm, invoke_with_retry
 from src.agents.state import PensionAgentState
 
@@ -37,6 +38,10 @@ ROUTER_SYSTEM_PROMPT = """당신은 연금 상담 AI의 질문 분류 게이트�
    줄여요?" 같은 질문에 is_safe=False를 주면 안 됩니다. 질문에 "세금감면이 어마어마하다던데"
    처럼 과장되거나 잘못된 전제가 섞여 있어도 그 자체로는 차단 사유가 아닙니다 — 그 전제를
    바로잡아 답하면 되는 정상적인 정보형/종합 질문입니다.
+
+[이전 대화]가 함께 주어지면, "그거 다시 설명해줘", "방금 말한 상품 중 두 번째는?"처럼 현재
+질문만 봐서는 의도가 불분명한 후속 질문을 이전 대화 맥락으로 해석해서 분류하세요. 이전 대화가
+없으면 현재 질문만으로 판단하세요.
 """
 
 
@@ -54,9 +59,15 @@ def build_router_node():
     llm = get_llm(ROUTER_MODEL, thinking_effort="none").with_structured_output(RouterDecision)
 
     def router_node(state: PensionAgentState) -> dict:
+        history_text = format_conversation_history(state.get("conversation_history"))
+        user_content = (
+            f"[이전 대화]\n{history_text}\n\n[현재 질문]\n{state['question']}"
+            if history_text
+            else state["question"]
+        )
         decision: RouterDecision = invoke_with_retry(llm, [
             {"role": "system", "content": ROUTER_SYSTEM_PROMPT},
-            {"role": "user", "content": state["question"]},
+            {"role": "user", "content": user_content},
         ])
         return {
             "intent": decision.intent,

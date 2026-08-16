@@ -22,6 +22,12 @@ class PensionAgentState(TypedDict, total=False):
     question_id: str
     question: str
 
+    # 멀티턴 문맥 — chat.py 등 호출자가 이전 턴(question/answer)들을 담아 매 invoke() 호출마다
+    # 입력으로 넘긴다. 그래프 내부에서 갱신되는 값이 아니라 호출자가 통째로 넘기는 값이라
+    # reducer 없이 일반 필드로 둔다. (대화 자체는 여전히 싱글턴 invoke — 세션 스레드/checkpointer는
+    # 쓰지 않고, chat.py가 리스트를 들고 있다가 다음 호출에 다시 넣어주는 방식.)
+    conversation_history: list[dict[str, str]]
+
     # ① 라우터/가드레일 출력
     is_safe: bool
     safety_reason: str | None

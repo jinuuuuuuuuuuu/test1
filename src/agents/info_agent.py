@@ -13,7 +13,7 @@ get_llm("HCX-007", thinking_effort="none")으로 교체 가능.
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage
 
-from src.agents.context import build_retrieved_context
+from src.agents.context import build_retrieved_context, history_to_messages
 from src.agents.llm import get_llm
 from src.agents.state import PensionAgentState
 from src.agents.tools import INFO_AGENT_TOOLS
@@ -34,7 +34,11 @@ INFO_AGENT_SYSTEM_PROMPT = """당신은 연금 제도·세금 전문 상담 에�
    사용자에게 되물으세요 — 임의로 가정해서 답하지 마세요.
 
 두 경우 모두 해당하지 않는 순수 개념 설명(예: "IRP가 뭔가요")만 툴 없이 답할 수 있습니다.
-이 경우에도 구체적 숫자를 언급해야 한다면 search_pension_docs로 먼저 확인하세요."""
+이 경우에도 구체적 숫자를 언급해야 한다면 search_pension_docs로 먼저 확인하세요.
+
+이전 대화가 함께 주어지면 "그거", "방금 그 조건대로" 같은 지시어를 이전 턴 내용으로 풀어서
+이해하세요. 다만 지시어가 가리키는 구체적 수치가 필요한 경우에도 절대 규칙은 그대로
+적용됩니다 — 이전 답변 속 숫자를 그대로 베끼지 말고, 필요하면 툴을 다시 호출해 확인하세요."""
 
 
 def build_info_agent_node():
@@ -42,7 +46,10 @@ def build_info_agent_node():
     react_agent = create_agent(model=llm, tools=INFO_AGENT_TOOLS, system_prompt=INFO_AGENT_SYSTEM_PROMPT)
 
     def info_agent_node(state: PensionAgentState) -> dict:
-        result = react_agent.invoke({"messages": [HumanMessage(content=state["question"])]})
+        history_messages = history_to_messages(state.get("conversation_history"))
+        result = react_agent.invoke(
+            {"messages": [*history_messages, HumanMessage(content=state["question"])]}
+        )
         messages = result["messages"]
 
         retrieved_context = build_retrieved_context(messages, node="info_agent")
