@@ -14,7 +14,7 @@ from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage
 
 from src.agents.context import build_retrieved_context, history_to_messages
-from src.agents.llm import get_llm
+from src.agents.llm import get_llm, invoke_with_retry
 from src.agents.state import PensionAgentState
 from src.agents.tools import INFO_AGENT_TOOLS
 
@@ -47,8 +47,9 @@ def build_info_agent_node():
 
     def info_agent_node(state: PensionAgentState) -> dict:
         history_messages = history_to_messages(state.get("conversation_history"))
-        result = react_agent.invoke(
-            {"messages": [*history_messages, HumanMessage(content=state["question"])]}
+        result = invoke_with_retry(
+            react_agent,
+            {"messages": [*history_messages, HumanMessage(content=state["question"])]},
         )
         messages = result["messages"]
 

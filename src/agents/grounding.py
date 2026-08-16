@@ -22,6 +22,7 @@ from typing import List
 
 from pydantic import BaseModel, Field
 
+from src.agents.context import format_conversation_history
 from src.agents.llm import get_llm, invoke_with_retry
 from src.agents.state import PensionAgentState
 
@@ -65,13 +66,19 @@ def build_grounding_node():
         draft = state.get("info_draft") or state.get("product_draft") or ""
         context = state.get("retrieved_context") or []
         context_text = "\n".join(f"- [{c['source']}] {c['content']}" for c in context) or "(근거 없음)"
+        history_text = format_conversation_history(state.get("conversation_history"))
+        question = (
+            f"[이전 대화]\n{history_text}\n\n[현재 질문]\n{state['question']}"
+            if history_text
+            else state["question"]
+        )
 
         result: GroundingResult = invoke_with_retry(llm, [
             {"role": "system", "content": GROUNDING_SYSTEM_PROMPT},
             {
                 "role": "user",
                 "content": (
-                    f"[질문]\n{state['question']}\n\n"
+                    f"[질문]\n{question}\n\n"
                     f"[초안 답변]\n{draft}\n\n"
                     f"[근거]\n{context_text}"
                 ),
