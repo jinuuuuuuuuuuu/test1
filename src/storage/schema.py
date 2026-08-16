@@ -31,7 +31,10 @@ CREATE TABLE IF NOT EXISTS fund_master (
     peer_avg_return_1y TEXT,
     purchase_rule TEXT,
     redemption_rule TEXT,
-    redemption_payment_rule TEXT
+    redemption_payment_rule TEXT,
+    aum_krw_million REAL,
+    aum_base_date TEXT,
+    aum_period_label TEXT
 );
 
 CREATE TABLE IF NOT EXISTS fund_class (
@@ -62,8 +65,26 @@ CREATE INDEX IF NOT EXISTS idx_fund_class_product_code ON fund_class(product_cod
 """
 
 
+# AUM(시장잔고) 3개 컬럼 — 대회 6축 중 마지막 축. xlsm이 아니라 투자설명서 PDF의
+# "요약 재무상태표"에서 추출한다 (scripts/extract_aum.py). 단위: 백만원.
+AUM_COLUMNS = ("aum_krw_million REAL", "aum_base_date TEXT", "aum_period_label TEXT")
+
+
+def ensure_aum_columns(conn: sqlite3.Connection) -> list[str]:
+    """기존 DB(컬럼 추가 전 생성분)에 AUM 컬럼이 없으면 추가한다. 추가한 컬럼명 반환."""
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(fund_master)")}
+    added = []
+    for column_def in AUM_COLUMNS:
+        name = column_def.split()[0]
+        if name not in existing:
+            conn.execute(f"ALTER TABLE fund_master ADD COLUMN {column_def}")
+            added.append(name)
+    return added
+
+
 def connect(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA_SQL)
+    ensure_aum_columns(conn)
     return conn

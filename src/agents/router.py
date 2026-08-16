@@ -27,7 +27,19 @@ ROUTER_SYSTEM_PROMPT = """당신은 연금 상담 AI의 질문 분류 게이트�
    (예: "IRP에 넣을 펀드 추천해줘"는 상품 추천이지만 계좌 유형별 투자한도 판단이 필요하므로
    상품형만으로 충분합니다 — 투자한도는 상품 Agent가 자체 툴로 확인합니다.)
 
-2. is_safe: 아래에 해당하는 경우에만 False로 표시하세요. 애매하면 True로 두고 넘기세요 —
+2. scope: 이 서비스의 상담 범위는 ⓐ 연금 제도(DB/DC/IRP·연금저축, 디폴트옵션·실물이전·
+   중도인출 등), ⓑ 연금 세제(세액공제·연금소득세·퇴직소득세 등), ⓒ 연금계좌에서 투자하는
+   상품(펀드)의 설명·비교·추천입니다. 질문이 이 범위에 속하는지 판정하세요.
+   - 범위내: 질문 전체가 위 범위에 속함
+   - 부분관련: 질문의 핵심은 범위 밖이지만 연금 관점에서 답할 가치가 있는 부분이 있음.
+     scope_note에 연금 관점에서 답할 방향을 적으세요. (예: "부모님이 개인 사업을 하셔,
+     절세법 알려줘" → 사업소득 절세 일반론은 범위 밖이지만, 종합소득이 있는 개인사업자의
+     연금저축·IRP 세액공제는 안내 가능 → scope_note: "개인사업자(종합소득자)의 연금계좌
+     세액공제 관점으로 답변")
+   - 범위외: 연금과 접점이 없음 (예: 주식 종목 추천, 부동산 양도세, 일반 상식).
+     scope_note에 짧은 사유를 적으세요.
+
+3. is_safe: 아래에 해당하는 경우에만 False로 표시하세요. 애매하면 True로 두고 넘기세요 —
    과도한 차단이 더 큰 문제입니다.
    - 확정 수익률/원금 보장을 요구하거나 암시하는 질문
    - 탈세(소득 은닉, 허위서류 등 명백히 불법인 방법)를 구체적으로 묻는 질문
@@ -51,6 +63,14 @@ class RouterDecision(BaseModel):
     intent: list[Literal["정보형", "상품형"]] = Field(
         description="해당하는 의도 전부. 정보+상품이 모두 필요하면 둘 다 포함(복합형)."
     )
+    scope: Literal["범위내", "부분관련", "범위외"] = Field(
+        default="범위내",
+        description="질문이 연금 상담 범위(제도/세제/연금계좌 상품)에 속하는지 판정",
+    )
+    scope_note: Optional[str] = Field(
+        default=None,
+        description="부분관련이면 연금 관점에서 답할 방향, 범위외면 짧은 사유 (범위내면 비움)",
+    )
     is_safe: bool = Field(description="질문이 안전 가이드라인을 위반하지 않으면 True")
     safety_reason: Optional[str] = Field(default=None, description="is_safe=False일 때만 사유를 적는다")
 
@@ -71,6 +91,8 @@ def build_router_node():
         ])
         return {
             "intent": decision.intent,
+            "scope": decision.scope,
+            "scope_note": decision.scope_note,
             "is_safe": decision.is_safe,
             "safety_reason": decision.safety_reason,
         }

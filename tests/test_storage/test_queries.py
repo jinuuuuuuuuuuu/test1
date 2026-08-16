@@ -58,6 +58,32 @@ def test_search_funds_keyword_matches_fund_name_or_category(tmp_path):
     assert {r.product_code for r in results} == {"KR000000001"}
 
 
+def test_search_funds_keyword_ignores_spacing_differences(tmp_path):
+    # 실데이터 사례: "미래에셋솔로몬단기국공채증권자투자신탁1호"처럼 펀드명에 띄어쓰기가
+    # 없어도 "솔로몬 국공채" 같은 띄어 쓴 검색어(토큰 AND)로 찾을 수 있어야 한다.
+    db_path = tmp_path / "test.db"
+    conn = connect(str(db_path))
+    with conn:
+        conn.execute(
+            "INSERT INTO fund_master (product_code, source_file, fund_name, manager_name, risk_grade, fund_category) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("KR000000003", "c.pdf", "미래에셋솔로몬단기국공채증권자투자신탁1호(채권)", "미래에셋자산운용", "5등급[낮은 위험]", "증권(채권형)"),
+        )
+        conn.execute(
+            "INSERT INTO fund_class (product_code, class_name, sales_channel, total_expense_ratio, return_1y) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("KR000000003", "C-P2", "온라인", 0.3, 2.9),
+        )
+    conn.close()
+
+    assert {r.product_code for r in search_funds(keyword="솔로몬 국공채", db_path=str(db_path))} == {"KR000000003"}
+    assert {r.product_code for r in search_funds(keyword="솔로몬 단기 국공채", db_path=str(db_path))} == {"KR000000003"}
+    # 운용사명으로도 검색 가능해야 한다
+    assert {r.product_code for r in search_funds(keyword="미래에셋", db_path=str(db_path))} == {"KR000000003"}
+    # 없는 토큰이 섞이면 다른 상품이므로 제외
+    assert search_funds(keyword="솔로몬 주식형", db_path=str(db_path)) == []
+
+
 def test_get_fund_detail_returns_master_and_classes(tmp_path):
     db_path = tmp_path / "test.db"
     _seed(db_path)

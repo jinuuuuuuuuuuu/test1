@@ -12,7 +12,13 @@ import pytest
 
 os.environ.setdefault("CLOVASTUDIO_API_KEY", "dummy-key-for-wiring-test-only")
 
-from src.agents.graph import NODE_NAMES, _route_after_info, _route_after_router, build_graph
+from src.agents.graph import (
+    NODE_NAMES,
+    _route_after_grounding,
+    _route_after_info,
+    _route_after_router,
+    build_graph,
+)
 
 
 def test_graph_builds_and_compiles():
@@ -39,8 +45,32 @@ def test_route_after_router_composite_intent_goes_to_info_first():
     assert _route_after_router({"is_safe": True, "intent": ["정보형", "상품형"]}) == "info_agent"
 
 
-def test_route_after_router_empty_intent_falls_back_to_generator():
-    assert _route_after_router({"is_safe": True, "intent": []}) == "generator"
+def test_route_after_router_empty_intent_falls_back_to_info_agent():
+    # 분류 실패 시 생성기 직행(무응답)이 아니라 검색 툴이 있는 정보 Agent로 폴백한다.
+    assert _route_after_router({"is_safe": True, "intent": []}) == "info_agent"
+
+
+def test_route_after_router_out_of_scope_goes_to_generator():
+    # 범위외 질문은 ②③④를 건너뛰고 ⑤가 정형 한계 고지 응답을 만든다.
+    assert (
+        _route_after_router({"is_safe": True, "scope": "범위외", "intent": ["정보형"]})
+        == "generator"
+    )
+
+
+def test_route_after_router_partial_scope_proceeds_normally():
+    # 부분관련은 차단하지 않고 해당 에이전트가 연금 관점으로 재조준해 답한다.
+    assert (
+        _route_after_router({"is_safe": True, "scope": "부분관련", "intent": ["정보형"]})
+        == "info_agent"
+    )
+
+
+def test_route_after_router_unsafe_wins_over_scope():
+    assert (
+        _route_after_router({"is_safe": False, "scope": "범위외", "intent": ["정보형"]})
+        == "generator"
+    )
 
 
 def test_route_after_info_composite_goes_to_product():
@@ -49,6 +79,52 @@ def test_route_after_info_composite_goes_to_product():
 
 def test_route_after_info_info_only_goes_to_grounding():
     assert _route_after_info({"intent": ["정보형"]}) == "grounding"
+
+
+def test_route_after_info_clarification_skips_product_agent():
+    # ②가 역질문한 복합형 — 조건 없이 ③이 추천을 시도하면 안 되므로 곧장 검증으로 간다.
+    assert (
+        _route_after_info({"intent": ["정보형", "상품형"], "needs_clarification": True})
+        == "grounding"
+    )
+
+
+# ── bounded repair loop (④ 탈락 시 1회 재실행) ───────────────────────────
+
+
+def test_route_after_grounding_pass_goes_to_generator():
+    state = {"verification": {"grounded": True, "requirements_met": True}, "intent": ["정보형"]}
+    assert _route_after_grounding(state) == "generator"
+
+
+def test_route_after_grounding_failure_repairs_info_agent():
+    state = {"verification": {"grounded": False, "requirements_met": True}, "intent": ["정보형"]}
+    assert _route_after_grounding(state) == "info_agent"
+
+
+def test_route_after_grounding_failure_repairs_product_agent():
+    state = {"verification": {"grounded": True, "requirements_met": False}, "intent": ["상품형"]}
+    assert _route_after_grounding(state) == "product_agent"
+
+
+def test_route_after_grounding_repair_is_bounded_to_one_attempt():
+    # 두 번째 탈락은 재실행 없이 ⑤로 — ⑤가 검증결과를 반영해 방어적으로 조립한다.
+    state = {
+        "verification": {"grounded": False, "requirements_met": False},
+        "intent": ["정보형"],
+        "repair_attempted": True,
+    }
+    assert _route_after_grounding(state) == "generator"
+
+
+def test_route_after_grounding_clarification_is_not_repaired():
+    # 역질문은 의도된 유보라 repair 대상이 아니다.
+    state = {
+        "verification": {"grounded": True, "requirements_met": False},
+        "intent": ["상품형"],
+        "needs_clarification": True,
+    }
+    assert _route_after_grounding(state) == "generator"
 
 
 @pytest.mark.skipif(

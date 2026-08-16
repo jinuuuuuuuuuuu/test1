@@ -46,11 +46,13 @@ def get_embeddings(model_name: str = "clir-emb-dolphin") -> ClovaXEmbeddings:
     return ClovaXEmbeddings(model=model_name)
 
 
-def invoke_with_retry(runnable, input_, max_retries: int = 3, backoff_seconds: float = 1.5):
-    """CLOVA Studio(특히 테스트 키)가 간헐적으로 내는 일시적 오류(예: 동일 요청인데도 가끔
-    나는 "Unsupported function" 400)에 대응해 재시도한다. with_structured_output()을 쓰는
-    HCX-007 노드(router/grounding)에서 이 플레이크가 실측됨 — 코드/설정 문제가 아니라
-    같은 입력으로 재요청하면 성공하는 경우가 많아 재시도로 흡수한다.
+def call_with_retry(fn, *args, max_retries: int = 3, backoff_seconds: float = 1.5, **kwargs):
+    """CLOVA Studio가 간헐적으로 내는 일시적 오류(같은 요청인데 가끔 나는 "Unsupported
+    function" 400, 429 rate limit 등 — openai.APIError 계열)를 재시도로 흡수한다.
+    실측상 코드/설정 문제가 아니라 같은 입력으로 재요청하면 성공하는 경우가 많다.
+
+    LLM invoke뿐 아니라 검색 시점 임베딩 호출(similarity_search 내부) 같은 일반 함수도
+    감쌀 수 있다. APIError가 아닌 예외(코드 버그)는 재시도 없이 그대로 전파한다.
     """
     import time
 
@@ -59,9 +61,17 @@ def invoke_with_retry(runnable, input_, max_retries: int = 3, backoff_seconds: f
     last_error: Optional[Exception] = None
     for attempt in range(max_retries):
         try:
-            return runnable.invoke(input_)
+            return fn(*args, **kwargs)
         except APIError as e:
             last_error = e
             if attempt < max_retries - 1:
                 time.sleep(backoff_seconds * (attempt + 1))
     raise last_error
+
+
+def invoke_with_retry(runnable, input_, max_retries: int = 3, backoff_seconds: float = 1.5):
+    """runnable.invoke(input_) 형태 호출용 call_with_retry 래퍼 — 파이프라인의 모든 모델
+    호출(①~⑤, ReAct 에이전트 포함)은 이걸 거쳐야 한다 (평가 기간 상시 가동 요건)."""
+    return call_with_retry(
+        runnable.invoke, input_, max_retries=max_retries, backoff_seconds=backoff_seconds
+    )

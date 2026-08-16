@@ -10,6 +10,7 @@ import operator
 from typing import Annotated, Literal, TypedDict
 
 Intent = Literal["정보형", "상품형"]
+Scope = Literal["범위내", "부분관련", "범위외"]
 
 
 class RetrievedItem(TypedDict):
@@ -32,11 +33,21 @@ class PensionAgentState(TypedDict, total=False):
     is_safe: bool
     safety_reason: str | None
     intent: list[Intent]  # 복합형이면 ["정보형", "상품형"] 둘 다 포함
+    # 서비스 범위 판정 — 안전성(is_safe)과는 별개 축이다: "개인사업 절세법"은 안전하지만
+    # 부분관련이고, 범위외면 ②③④를 건너뛰고 정형 한계 고지로 응답한다.
+    scope: Scope
+    scope_note: str | None  # 부분관련: 연금 관점 재조준 방향 / 범위외: 사유
 
-    # ②③ 출력 — retrieved_context는 여러 노드가 이어서 채우므로 누적(operator.add) 리듀서 사용
+    # ②③ 출력 — retrieved_context는 여러 노드가 이어서 채우므로 누적(operator.add) 리듀서 사용.
+    # repair 재실행 시 같은 근거가 중복 누적되므로 읽는 쪽은 context.dedupe_context를 거친다.
     retrieved_context: Annotated[list[RetrievedItem], operator.add]
     info_draft: str | None
     product_draft: str | None
+    # ②③이 조건 불충분으로 역질문 초안([추가 확인 필요] 마커)을 낸 경우 True —
+    # 복합형에서 ③ 스킵, ④의 요구사항 검증 면제, ⑤의 답변 보충 금지가 걸린다.
+    needs_clarification: bool
+    # ④ 탈락으로 ②③을 재실행한 적이 있으면 True — repair 루프를 1회로 제한하는 가드.
+    repair_attempted: bool
 
     # ④ 검증/Grounding 출력
     verification: dict | None

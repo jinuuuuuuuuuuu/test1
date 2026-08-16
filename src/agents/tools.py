@@ -35,6 +35,7 @@ from src.rules.withdrawal_limit import calculate_withdrawal_limit  # noqa: F401 
 from src.storage.queries import get_fund_detail as _get_fund_detail
 from src.storage.queries import search_funds as _search_funds
 from src.storage.queries import search_pension_docs as _search_pension_docs
+from src.storage.queries import search_prospectus_text as _search_prospectus_text
 
 
 def _to_jsonable(obj: Any) -> Any:
@@ -366,6 +367,8 @@ def search_pension_docs(query: str, k: int = 5) -> list[dict]:
     query는 사용자 질문을 그대로 또는 핵심 키워드로 정리해서 넘기면 된다.
     반환된 각 항목의 content가 실제 원문 발췌이며, file_title/section/source_location은
     답변에 근거(출처)로 인용할 때 사용한다.
+    관련성이 낮은 결과는 자동으로 제외된다 — 빈 리스트([])가 반환되면 보유 문서에 관련
+    내용이 없다는 뜻이므로, 일반 지식으로 메우지 말고 한계를 고지해야 한다.
     """
     results = _search_pension_docs(query=query, k=k)
     return _to_jsonable(results)
@@ -381,17 +384,22 @@ def search_funds(
     risk_grade_max: Optional[int] = None,
     max_expense_ratio: Optional[float] = None,
     min_return_1y: Optional[float] = None,
+    min_aum_krw_million: Optional[float] = None,
     sales_channel: Optional[str] = None,
     limit: int = 10,
 ) -> list[dict]:
     """조건에 맞는 펀드(투자설명서 100개, 판매클래스 단위)를 검색해 후보 목록을 반환한다.
 
-    keyword: 펀드명·상품분류에 포함될 키워드(예: "배당", "채권").
+    keyword: 펀드명·상품분류·운용사명에 포함될 키워드(예: "배당", "채권", "솔로몬 국공채").
+      띄어쓰기로 여러 토큰을 주면 전부 포함된 상품만 매치된다 (펀드명 붙여쓰기 차이는 무시).
     risk_grade_min/max: 위험등급 숫자 범위 — 1등급이 가장 위험, 6등급이 가장 안전
       (숫자가 클수록 안전). "안전한 상품"을 원하면 risk_grade_min을 크게(예: 4), "공격적 투자"를
       원하면 risk_grade_max를 작게(예: 2) 설정한다.
     max_expense_ratio: 총보수·비용(%) 상한.
     min_return_1y: 최근 1년 수익률(%) 하한.
+    min_aum_krw_million: 시장잔고(AUM, 백만원 단위) 하한 — "규모가 큰 펀드"를 원하면 설정
+      (예: 100억원 이상이면 10000). 반환되는 aum_krw_million도 백만원 단위이며
+      aum_base_date가 그 값의 결산 기준일이다.
     sales_channel: "온라인"/"오프라인" 등 판매방식 필터.
     반환 결과는 최근 1년 수익률 내림차순이며, 상세 정보가 필요하면 get_fund_detail을 이어서 호출한다.
     """
@@ -401,6 +409,7 @@ def search_funds(
         risk_grade_max=risk_grade_max,
         max_expense_ratio=max_expense_ratio,
         min_return_1y=min_return_1y,
+        min_aum_krw_million=min_aum_krw_million,
         sales_channel=sales_channel,
         limit=limit,
     )
@@ -425,6 +434,23 @@ def get_fund_detail(product_code: str) -> dict:
     return payload
 
 
+# ── 10. search_prospectus_text (③상품 Agent 전용) ────────────────────────
+
+@tool
+@_safe_tool
+def search_prospectus_text(query: str, product_code: Optional[str] = None, k: int = 4) -> list[dict]:
+    """투자설명서의 서술형 내용(투자목적/투자전략/투자위험)을 의미 기반으로 검색한다.
+
+    "이 펀드의 투자전략이 뭐예요", "어떤 위험이 있나요" 같은 서술 설명 질의에 사용한다 —
+    수치(보수/수익률/위험등급/AUM)는 search_funds·get_fund_detail이 담당하고, 이 툴은
+    문장으로 된 설명 원문을 근거로 가져온다.
+    특정 펀드에 대한 질문이면 반드시 product_code로 한정하라 (search_funds로 코드를 먼저
+    찾은 뒤 호출) — 한정하지 않으면 다른 펀드의 서술이 섞일 수 있다.
+    """
+    results = _search_prospectus_text(query=query, product_code=product_code, k=k)
+    return _to_jsonable(results)
+
+
 INFO_AGENT_TOOLS = [
     calculate_tax_credit,
     calculate_pension_withdrawal,
@@ -438,4 +464,5 @@ PRODUCT_AGENT_TOOLS = [
     check_product_pension_eligibility,
     search_funds,
     get_fund_detail,
+    search_prospectus_text,
 ]

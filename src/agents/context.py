@@ -17,17 +17,89 @@ from src.agents.state import RetrievedItem
 _DOC_SEARCH_TOOLS = {"search_pension_docs"}
 _FUND_LIST_TOOLS = {"search_funds"}
 _FUND_DETAIL_TOOLS = {"get_fund_detail"}
+_PROSPECTUS_TEXT_TOOLS = {"search_prospectus_text"}
 
-_MAX_SNIPPET_CHARS = 400
+# 근거(retrieved_context)는 ④검증이 초안을 대조하는 기준이자 ⑤생성이 쓸 수 있는 유일한
+# 숫자 공급원이고, 평가 API의 retrieved_context 필드로도 그대로 나간다 — 여기서 내용이
+# 잘리면 초안의 맞는 숫자가 "근거 없음"으로 오판되고 잘린 JSON은 파싱조차 안 된다.
+# 실측 크기(RAG 청크 ≤600자, 계산툴 dict ~1KB, get_fund_detail 전체 JSON 수 KB)보다
+# 충분히 큰 값으로, 비정상 폭주를 막는 방어선 용도로만 둔다.
+_MAX_DOC_EVIDENCE_CHARS = 2_000
+_MAX_TOOL_EVIDENCE_CHARS = 6_000
 
 # 히스토리 한 턴(특히 답변)이 통째로 다시 프롬프트에 들어가면 턴이 쌓일수록 토큰이 급격히
 # 불어난다 — 과거 답변은 요약 스니펫 정도로만 자른다. chat.py가 애초에 턴 개수도 제한한다.
 _MAX_HISTORY_ANSWER_CHARS = 300
 
 
-def _truncate(text: str, limit: int = _MAX_SNIPPET_CHARS) -> str:
+def _truncate(text: str, limit: int) -> str:
     text = text or ""
     return text if len(text) <= limit else text[: limit].rstrip() + "…"
+
+
+CLARIFICATION_MARKER = "[추가 확인 필요]"
+
+
+def split_clarification_marker(draft: str) -> tuple[str, bool]:
+    """②③ 초안이 역질문 마커로 시작하면 (마커를 뗀 본문, True)를 반환한다.
+
+    ②③은 조건 불충분으로 사용자에게 되물을 때 초안을 CLARIFICATION_MARKER로 시작하라는
+    지시를 받는다 — 구조화 출력 없이(HCX-005 지원 여부 미확정) 역질문 여부를 결정론적으로
+    식별하기 위한 규약이다. 이 플래그가 서면 ③ 스킵 + ④의 요구사항 검증 면제 + ⑤의 답변
+    보충 금지가 걸린다 (역질문을 ④⑤가 "요구사항 미충족"으로 교정해 추천을 되살리는 경로 차단).
+    """
+    stripped = (draft or "").lstrip()
+    if stripped.startswith(CLARIFICATION_MARKER):
+        return stripped[len(CLARIFICATION_MARKER):].lstrip(), True
+    return draft or "", False
+
+
+def build_repair_note(verification: dict | None) -> str | None:
+    """④검증 탈락 사유를 ②③ 재실행(1회 한정 repair)용 지시문으로 만든다. 통과·미검증이면 None."""
+    if not verification:
+        return None
+    problems = []
+    if verification.get("grounded") is False:
+        details = verification.get("issues") or []
+        problems.append(("근거 미비 — " + " / ".join(details)) if details else "근거 미비")
+    if verification.get("requirements_met") is False:
+        missing = verification.get("missing_requirements") or []
+        problems.append(("누락 항목 — " + " / ".join(missing)) if missing else "요구사항 누락")
+    if not problems:
+        return None
+    return (
+        "[재작성 지시] 직전 초안이 검증에서 탈락했습니다: " + " · ".join(problems) + ". "
+        "근거 없는 수치는 반드시 툴을 호출해 근거를 확보하거나 답변에서 제거하고, "
+        "누락된 항목은 툴을 호출해 보완하세요."
+    )
+
+
+def dedupe_context(items: list[RetrievedItem]) -> list[RetrievedItem]:
+    """(source, content)가 같은 근거의 중복을 등장 순서를 유지하며 제거한다.
+
+    repair 재실행 시 retrieved_context의 operator.add 리듀서가 1차 실행분과 같은 근거를
+    다시 누적하므로, 근거를 읽는 쪽(④⑤·think_trace)에서 항상 이 함수를 거쳐야 한다.
+    """
+    seen: set[tuple[str, str]] = set()
+    result: list[RetrievedItem] = []
+    for item in items:
+        key = (item["source"], item["content"])
+        if key not in seen:
+            seen.add(key)
+            result.append(item)
+    return result
+
+
+def merge_drafts(info_draft: str | None, product_draft: str | None) -> str:
+    """②③ 초안을 ④검증·⑤생성이 쓸 하나의 초안으로 합친다.
+
+    복합형(②→③ 순차 실행)에서는 두 초안이 모두 존재하므로 반드시 둘 다 포함해야 한다 —
+    `info_draft or product_draft`처럼 하나만 고르면 ③상품 Agent의 답변이 검증과 최종
+    답변에서 통째로 빠진다 (2026-08 실측 버그, 이 함수로 교체).
+    """
+    if info_draft and product_draft:
+        return f"[제도·세제 관련 답변]\n{info_draft}\n\n[상품 관련 답변]\n{product_draft}"
+    return info_draft or product_draft or ""
 
 
 def history_to_messages(history: list[dict] | None) -> list:
@@ -83,7 +155,9 @@ def build_retrieved_context(messages: list, node: str) -> list[RetrievedItem]:
                     label = r.get("file_title") or tool_name
                     section = r.get("section")
                     source = f"{label} — {section}" if section else label
-                    items.append({"source": source, "content": _truncate(r.get("content", "")), "node": node})
+                    items.append(
+                        {"source": source, "content": _truncate(r.get("content", ""), _MAX_DOC_EVIDENCE_CHARS), "node": node}
+                    )
             else:
                 items.append({"source": tool_name, "content": "(검색 결과 없음)", "node": node})
             continue
@@ -94,7 +168,23 @@ def build_retrieved_context(messages: list, node: str) -> list[RetrievedItem]:
                 for r in results:
                     label = f"{r.get('fund_name', tool_name)} ({r.get('class_name', '')})"
                     items.append(
-                        {"source": label, "content": _truncate(json.dumps(r, ensure_ascii=False)), "node": node}
+                        {
+                            "source": label,
+                            "content": _truncate(json.dumps(r, ensure_ascii=False), _MAX_TOOL_EVIDENCE_CHARS),
+                            "node": node,
+                        }
+                    )
+            else:
+                items.append({"source": tool_name, "content": "(검색 결과 없음)", "node": node})
+            continue
+
+        if tool_name in _PROSPECTUS_TEXT_TOOLS:
+            results = _parse_json(raw)
+            if isinstance(results, list) and results:
+                for r in results:
+                    source = f"{r.get('fund_name', '')} 투자설명서 — {r.get('section', '')}"
+                    items.append(
+                        {"source": source, "content": _truncate(r.get("content", ""), _MAX_DOC_EVIDENCE_CHARS), "node": node}
                     )
             else:
                 items.append({"source": tool_name, "content": "(검색 결과 없음)", "node": node})
@@ -105,13 +195,17 @@ def build_retrieved_context(messages: list, node: str) -> list[RetrievedItem]:
             if isinstance(result, dict) and result.get("found"):
                 label = result.get("master", {}).get("fund_name", tool_name)
                 items.append(
-                    {"source": label, "content": _truncate(json.dumps(result, ensure_ascii=False)), "node": node}
+                    {
+                        "source": label,
+                        "content": _truncate(json.dumps(result, ensure_ascii=False), _MAX_TOOL_EVIDENCE_CHARS),
+                        "node": node,
+                    }
                 )
             else:
                 items.append({"source": tool_name, "content": "(해당 상품코드 없음)", "node": node})
             continue
 
-        # 계산/판정 툴: 결과가 이미 간결한 dict라 그대로 근거로 남기되 길이만 방어적으로 자른다.
-        items.append({"source": tool_name, "content": _truncate(str(raw)), "node": node})
+        # 계산/판정 툴: 결과 dict를 그대로 근거로 남긴다 (한도는 비정상 폭주 방어용).
+        items.append({"source": tool_name, "content": _truncate(str(raw), _MAX_TOOL_EVIDENCE_CHARS), "node": node})
 
     return items

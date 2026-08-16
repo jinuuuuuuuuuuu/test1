@@ -47,6 +47,7 @@ def test_tool_registries_have_expected_members():
         "check_product_pension_eligibility",
         "search_funds",
         "get_fund_detail",
+        "search_prospectus_text",
     }
 
 
