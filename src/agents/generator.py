@@ -5,7 +5,8 @@ is_safe=False(①가드레일에서 차단된 경우)는 모델을 호출하지 
 """
 
 from src.agents.context import format_conversation_history
-from src.agents.llm import get_llm
+from src.agents.drafts import combined_draft
+from src.agents.llm import get_llm, invoke_with_retry
 from src.agents.state import PensionAgentState
 
 GENERATOR_MODEL = "HCX-005"
@@ -29,7 +30,15 @@ GENERATOR_SYSTEM_PROMPT = """당신은 연금 상담 AI의 최종 답변 작성�
   다시 쓰지 마세요.
 - 상품 추천에서 search_funds 근거만 있는 경우, 해당 상품이 IRP/DC/DB에서 투자 가능하다고
   단정하지 마세요. 판매채널·위험등급·보수·수익률처럼 근거에 있는 값만 말하고, 계좌 내 매수
-  가능 여부는 금융기관에서 최종 확인이 필요하다고 안내하세요."""
+  가능 여부는 금융기관에서 최종 확인이 필요하다고 안내하세요.
+- 상품추천 플로우에서 [초안]이 사용자 정보를 한 가지씩 묻는 follow-up 질문이면, 다른 질문을
+  추가하지 말고 그 질문만 간결하게 출력하세요.
+- 상품추천 플로우에서 [초안]이 TDF/채권혼합형 등 일반 상품 유형 추천과 `상품추천` CTA를 담고
+  있으면, 개별 펀드명·상품코드·구체 상품 리스트를 새로 추가하지 말고 CTA를 반드시 유지하세요.
+- 상품추천 플로우에서 [초안]이 이미 구체 상품 3개 내외와 수치 비교를 담고 있으면, 그 순위와
+  수치를 유지하고 근거에 없는 새 상품을 추가하지 마세요.
+- 근거가 있는 문장에는 가능한 한 [근거1], [근거2]처럼 [근거]의 번호를 붙이세요. 다만 사용자에게
+  추가 정보를 묻는 역질문에는 억지로 출처를 붙이지 않아도 됩니다."""
 
 
 def _format_think_trace(state: PensionAgentState) -> str:
@@ -37,12 +46,44 @@ def _format_think_trace(state: PensionAgentState) -> str:
     context_lines = "\n".join(f"  - [{c['source']}] {c['content']}" for c in context) or "  (없음)"
     verification = state.get("verification") or {}
     return (
-        f"[①분류] intent={state.get('intent')}, is_safe={state.get('is_safe')}\n"
+        f"[①분류] intent={state.get('intent')}, is_safe={state.get('is_safe')}, "
+        f"scope={state.get('scope')}\n"
         f"[②③근거 {len(context)}건]\n{context_lines}\n"
         f"[④검증] grounded={verification.get('grounded')}, issues={verification.get('issues')}, "
         f"premise_issues={verification.get('premise_issues')}, "
         f"requirements_met={verification.get('requirements_met')}, "
         f"missing_requirements={verification.get('missing_requirements')}"
+    )
+
+
+def _format_context_for_prompt(context: list[dict]) -> str:
+    if not context:
+        return "(근거 없음)"
+    return "\n".join(f"[근거{i}] [{c['source']}] {c['content']}" for i, c in enumerate(context, start=1))
+
+
+def _grounding_failure_answer(state: PensionAgentState) -> str:
+    verification = state.get("verification") or {}
+    context = state.get("retrieved_context") or []
+    issues = verification.get("issues") or []
+
+    if not context:
+        return (
+            "이 질문은 연금 Agent의 답변 범위에 해당하지만, 이번 실행에서 관련 근거 검색이 되지 않았습니다. "
+            "근거 없이 숫자나 요건을 단정하면 잘못 안내할 수 있어 확정 답변은 피하겠습니다. "
+            "같은 질문을 더 구체적으로 묻거나, 세액공제·중도인출·연금수령세율처럼 알고 싶은 항목을 "
+            "지정해 주시면 근거 기준으로 다시 확인하겠습니다."
+        )
+
+    evidence_lines = []
+    for i, item in enumerate(context[:3], start=1):
+        evidence_lines.append(f"[근거{i}] {item['source']}: {item['content']}")
+    issue_text = f"\n\n검증 메모: {issues[0]}" if issues else ""
+    return (
+        "초안 답변에서 근거와 맞지 않는 내용이 감지되어, 초안은 사용하지 않겠습니다. "
+        "현재 확인된 근거는 아래와 같습니다.\n\n"
+        + "\n\n".join(evidence_lines)
+        + issue_text
     )
 
 
@@ -57,10 +98,37 @@ def build_generator_node():
                 "think_trace": f"[①가드레일 차단] {reason}",
             }
 
-        draft = state.get("info_draft") or state.get("product_draft") or ""
+        if state.get("scope") == "범위외":
+            reason = state.get("scope_reason") or "이 질문은 연금 상담 범위를 벗어납니다."
+            return {
+                "answer": f"이 질문은 현재 연금 Agent의 상담 범위를 벗어납니다. {reason}",
+                "think_trace": _format_think_trace(state),
+            }
+
+        draft = combined_draft(state)
+        if state.get("deterministic_info"):
+            direct_answer = state.get("info_draft") or draft
+            return {
+                "answer": direct_answer,
+                "think_trace": _format_think_trace(state),
+            }
+
+        if state.get("needs_clarification") or state.get("recommendation_stage") == "type_recommendation":
+            direct_answer = state.get("product_draft") or draft
+            return {
+                "answer": direct_answer,
+                "think_trace": _format_think_trace(state),
+            }
+
         verification = state.get("verification") or {}
         context = state.get("retrieved_context") or []
-        context_text = "\n".join(f"- [{c['source']}] {c['content']}" for c in context) or "(근거 없음)"
+        if verification.get("grounded") is False:
+            return {
+                "answer": _grounding_failure_answer(state),
+                "think_trace": _format_think_trace(state),
+            }
+
+        context_text = _format_context_for_prompt(context)
         history_text = format_conversation_history(state.get("conversation_history"))
 
         prompt = (
@@ -74,7 +142,7 @@ def build_generator_node():
             f"- requirements_met: {verification.get('requirements_met')}, "
             f"missing_requirements: {verification.get('missing_requirements')}"
         )
-        response = llm.invoke([
+        response = invoke_with_retry(llm, [
             {"role": "system", "content": GENERATOR_SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ])

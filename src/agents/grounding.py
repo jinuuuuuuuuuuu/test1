@@ -18,11 +18,14 @@ L0~L3" 체계를 반영):
 답했는지"를 구조적으로 검증할 수 없었다 — 이번에 질문을 포함하도록 고쳤다.
 """
 
+import re
+import json
 from typing import List
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from src.agents.context import format_conversation_history
+from src.agents.drafts import combined_draft
 from src.agents.llm import get_llm, invoke_with_retry
 from src.agents.state import PensionAgentState
 
@@ -33,8 +36,9 @@ GROUNDING_SYSTEM_PROMPT = """당신은 연금 상담 AI의 답변 검증기입�
 아래 판정만 내리면 됩니다.
 
 1. grounded / issues: 초안에 근거로 뒷받침되지 않는 수치·단정적 주장이 있으면 grounded=False로
-   표시하고 issues에 어떤 문장이 문제인지 적으세요. 근거가 필요 없는 순수 설명형 질문이면
-   grounded=True로 둡니다.
+   표시하고 issues에 어떤 문장이 문제인지 적으세요. 순수 설명형 질문이라도 퍼센트(%)·금액·기간·
+   나이·위험등급·수익률 같은 구체 수치가 하나라도 있으면 grounded=True 면제 대상이 아닙니다.
+   해당 수치는 반드시 근거에 있어야 합니다.
 
 2. premise_issues: 질문 자체에 사실과 다르거나 과장된 전제("세금 감면이 어마어마하다던데" 같은
    유도성 표현, 잘못된 제도 이해 등)가 섞여 있는데 초안이 그걸 그대로 받아들이고 넘어갔다면,
@@ -58,12 +62,59 @@ class GroundingResult(BaseModel):
         default_factory=list, description="질문에서 요구했는데 초안이 빠뜨린 항목 (없으면 빈 리스트)"
     )
 
+    @field_validator("issues", "premise_issues", "missing_requirements", mode="before")
+    @classmethod
+    def _coerce_list_fields(cls, value):
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [] if not value.strip() else [value]
+        return value
+
+
+_NUMBER_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
+
+
+def _strip_list_markers(text: str) -> str:
+    return re.sub(r"(?m)^\s*\d+[\.)]\s+", "", text or "")
+
+
+def _number_tokens(text: str) -> set[str]:
+    stripped = _strip_list_markers(text)
+    return {match.group(0).replace(",", "") for match in _NUMBER_RE.finditer(stripped)}
+
+
+def _numeric_grounding_issues(draft: str, context_text: str) -> list[str]:
+    draft_numbers = _number_tokens(draft)
+    if not draft_numbers:
+        return []
+
+    context_numbers = _number_tokens(context_text)
+    if not context_numbers:
+        return ["초안에 수치가 포함되어 있지만 근거에 확인 가능한 수치가 없습니다."]
+
+    missing = sorted(draft_numbers - context_numbers)
+    if missing:
+        return [f"초안의 수치 {', '.join(missing)}가 근거 텍스트에서 확인되지 않습니다."]
+    return []
+
 
 def build_grounding_node():
     llm = get_llm(GROUNDING_MODEL, thinking_effort="none").with_structured_output(GroundingResult)
 
     def grounding_node(state: PensionAgentState) -> dict:
-        draft = state.get("info_draft") or state.get("product_draft") or ""
+        if state.get("needs_clarification") or state.get("recommendation_stage") == "type_recommendation":
+            return {
+                "verification": {
+                    "grounded": True,
+                    "issues": [],
+                    "premise_issues": [],
+                    "requirements_met": True,
+                    "missing_requirements": [],
+                }
+            }
+
+        draft = combined_draft(state)
         context = state.get("retrieved_context") or []
         context_text = "\n".join(f"- [{c['source']}] {c['content']}" for c in context) or "(근거 없음)"
         history_text = format_conversation_history(state.get("conversation_history"))
@@ -72,6 +123,20 @@ def build_grounding_node():
             if history_text
             else state["question"]
         )
+
+        profile_text = json.dumps(state.get("recommendation_profile") or {}, ensure_ascii=False)
+        numeric_evidence_text = "\n".join([context_text, question, profile_text])
+        numeric_issues = _numeric_grounding_issues(draft, numeric_evidence_text)
+        if numeric_issues:
+            return {
+                "verification": {
+                    "grounded": False,
+                    "issues": numeric_issues,
+                    "premise_issues": [],
+                    "requirements_met": False,
+                    "missing_requirements": ["근거에 없는 수치 확인 필요"],
+                }
+            }
 
         result: GroundingResult = invoke_with_retry(llm, [
             {"role": "system", "content": GROUNDING_SYSTEM_PROMPT},

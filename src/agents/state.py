@@ -27,16 +27,22 @@ class PensionAgentState(TypedDict, total=False):
     # reducer 없이 일반 필드로 둔다. (대화 자체는 여전히 싱글턴 invoke — 세션 스레드/checkpointer는
     # 쓰지 않고, chat.py가 리스트를 들고 있다가 다음 호출에 다시 넣어주는 방식.)
     conversation_history: list[dict[str, str]]
+    recommendation_profile: dict
 
     # ① 라우터/가드레일 출력
     is_safe: bool
     safety_reason: str | None
     intent: list[Intent]  # 복합형이면 ["정보형", "상품형"] 둘 다 포함
+    scope: Literal["범위내", "부분관련", "범위외"]
+    scope_reason: str | None
 
     # ②③ 출력 — retrieved_context는 여러 노드가 이어서 채우므로 누적(operator.add) 리듀서 사용
     retrieved_context: Annotated[list[RetrievedItem], operator.add]
     info_draft: str | None
     product_draft: str | None
+    deterministic_info: bool
+    needs_clarification: bool
+    recommendation_stage: str | None
 
     # ④ 검증/Grounding 출력
     verification: dict | None

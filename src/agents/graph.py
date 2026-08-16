@@ -16,6 +16,7 @@ build_graph() 자체는 CLOVASTUDIO_API_KEY 환경변수가 (더미 값이라도
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from src.agents.deterministic_info import should_force_info_agent
 from src.agents.generator import build_generator_node
 from src.agents.grounding import build_grounding_node
 from src.agents.info_agent import build_info_agent_node
@@ -29,6 +30,10 @@ NODE_NAMES = ("router", "info_agent", "product_agent", "grounding", "generator")
 def _route_after_router(state: PensionAgentState) -> str:
     if state.get("is_safe") is False:
         return "generator"
+    if state.get("scope") == "범위외":
+        return "generator"
+    if should_force_info_agent(state.get("question", "")):
+        return "info_agent"
     intent = state.get("intent") or []
     if "정보형" in intent:
         return "info_agent"

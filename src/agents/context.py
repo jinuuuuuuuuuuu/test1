@@ -18,14 +18,14 @@ _DOC_SEARCH_TOOLS = {"search_pension_docs"}
 _FUND_LIST_TOOLS = {"search_funds"}
 _FUND_DETAIL_TOOLS = {"get_fund_detail"}
 
-_MAX_SNIPPET_CHARS = 400
+_MAX_DOC_SNIPPET_CHARS = 1200
 
 # 히스토리 한 턴(특히 답변)이 통째로 다시 프롬프트에 들어가면 턴이 쌓일수록 토큰이 급격히
 # 불어난다 — 과거 답변은 요약 스니펫 정도로만 자른다. chat.py가 애초에 턴 개수도 제한한다.
 _MAX_HISTORY_ANSWER_CHARS = 300
 
 
-def _truncate(text: str, limit: int = _MAX_SNIPPET_CHARS) -> str:
+def _truncate(text: str, limit: int = _MAX_DOC_SNIPPET_CHARS) -> str:
     text = text or ""
     return text if len(text) <= limit else text[: limit].rstrip() + "…"
 
@@ -93,9 +93,7 @@ def build_retrieved_context(messages: list, node: str) -> list[RetrievedItem]:
             if isinstance(results, list) and results:
                 for r in results:
                     label = f"{r.get('fund_name', tool_name)} ({r.get('class_name', '')})"
-                    items.append(
-                        {"source": label, "content": _truncate(json.dumps(r, ensure_ascii=False)), "node": node}
-                    )
+                    items.append({"source": label, "content": json.dumps(r, ensure_ascii=False), "node": node})
             else:
                 items.append({"source": tool_name, "content": "(검색 결과 없음)", "node": node})
             continue
@@ -104,14 +102,12 @@ def build_retrieved_context(messages: list, node: str) -> list[RetrievedItem]:
             result = _parse_json(raw)
             if isinstance(result, dict) and result.get("found"):
                 label = result.get("master", {}).get("fund_name", tool_name)
-                items.append(
-                    {"source": label, "content": _truncate(json.dumps(result, ensure_ascii=False)), "node": node}
-                )
+                items.append({"source": label, "content": json.dumps(result, ensure_ascii=False), "node": node})
             else:
                 items.append({"source": tool_name, "content": "(해당 상품코드 없음)", "node": node})
             continue
 
-        # 계산/판정 툴: 결과가 이미 간결한 dict라 그대로 근거로 남기되 길이만 방어적으로 자른다.
-        items.append({"source": tool_name, "content": _truncate(str(raw)), "node": node})
+        # 계산/판정 툴은 수치 검증의 원본 근거이므로 자르지 않는다.
+        items.append({"source": tool_name, "content": str(raw), "node": node})
 
     return items

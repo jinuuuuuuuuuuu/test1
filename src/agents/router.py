@@ -39,6 +39,12 @@ ROUTER_SYSTEM_PROMPT = """당신은 연금 상담 AI의 질문 분류 게이트�
    처럼 과장되거나 잘못된 전제가 섞여 있어도 그 자체로는 차단 사유가 아닙니다 — 그 전제를
    바로잡아 답하면 되는 정상적인 정보형/종합 질문입니다.
 
+3. scope: 서비스 범위를 별도 판단하세요. is_safe와 scope는 서로 다른 축입니다.
+   - 범위내: 퇴직연금(DB/DC/IRP), 연금저축, 연금 세제, 연금 상품/펀드와 직접 관련 있음
+   - 부분관련: 일반 세금/투자/노후 질문이지만 연금 관점으로 재조준해 답할 수 있음
+   - 범위외: 연금과 무관한 일반 금융·사업·생활 질문이며 연금 관점으로도 답하기 어려움
+   범위외이면 intent는 빈 리스트로 두고, scope_reason에 한계를 적으세요.
+
 [이전 대화]가 함께 주어지면, "그거 다시 설명해줘", "방금 말한 상품 중 두 번째는?"처럼 현재
 질문만 봐서는 의도가 불분명한 후속 질문을 이전 대화 맥락으로 해석해서 분류하세요. 이전 대화가
 없으면 현재 질문만으로 판단하세요.
@@ -53,6 +59,8 @@ class RouterDecision(BaseModel):
     )
     is_safe: bool = Field(description="질문이 안전 가이드라인을 위반하지 않으면 True")
     safety_reason: Optional[str] = Field(default=None, description="is_safe=False일 때만 사유를 적는다")
+    scope: Literal["범위내", "부분관련", "범위외"] = Field(description="서비스 범위 판정")
+    scope_reason: Optional[str] = Field(default=None, description="부분관련/범위외일 때 범위 판단 사유")
 
 
 def build_router_node():
@@ -73,6 +81,8 @@ def build_router_node():
             "intent": decision.intent,
             "is_safe": decision.is_safe,
             "safety_reason": decision.safety_reason,
+            "scope": decision.scope,
+            "scope_reason": decision.scope_reason,
         }
 
     return router_node

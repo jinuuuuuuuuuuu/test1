@@ -34,6 +34,17 @@ def test_route_after_router_product_only_intent():
     assert _route_after_router({"is_safe": True, "intent": ["상품형"]}) == "product_agent"
 
 
+def test_route_after_router_forces_rule_heavy_question_to_info_agent():
+    assert (
+        _route_after_router({
+            "is_safe": True,
+            "intent": ["상품형"],
+            "question": "퇴직연금 실물이전이 안 되는 상품은 뭐가 있나요?",
+        })
+        == "info_agent"
+    )
+
+
 def test_route_after_router_composite_intent_goes_to_info_first():
     # 복합형(정보+상품)은 항상 정보 Agent가 먼저 실행된다 (순차 실행 설계)
     assert _route_after_router({"is_safe": True, "intent": ["정보형", "상품형"]}) == "info_agent"

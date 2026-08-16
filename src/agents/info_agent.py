@@ -14,9 +14,10 @@ from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage
 
 from src.agents.context import build_retrieved_context, history_to_messages
+from src.agents.deterministic_info import deterministic_info_response
 from src.agents.llm import get_llm, invoke_with_retry
 from src.agents.state import PensionAgentState
-from src.agents.tools import INFO_AGENT_TOOLS
+from src.agents.tools import INFO_AGENT_TOOLS, search_pension_docs
 
 INFO_AGENT_MODEL = "HCX-005"
 
@@ -41,11 +42,40 @@ INFO_AGENT_SYSTEM_PROMPT = """당신은 연금 제도·세금 전문 상담 에�
 적용됩니다 — 이전 답변 속 숫자를 그대로 베끼지 말고, 필요하면 툴을 다시 호출해 확인하세요."""
 
 
+def _force_doc_search(question: str) -> list[dict]:
+    """Fallback RAG search when the ReAct agent skipped tools for an info question."""
+    try:
+        results = search_pension_docs.invoke({"query": question, "k": 5})
+    except Exception:
+        return []
+    if not isinstance(results, list):
+        return []
+
+    context = []
+    for item in results:
+        if not isinstance(item, dict) or not item.get("content"):
+            continue
+        label = item.get("file_title") or "search_pension_docs"
+        section = item.get("section")
+        source = f"{label} — {section}" if section else label
+        context.append({"source": source, "content": item["content"], "node": "info_agent"})
+    return context
+
+
 def build_info_agent_node():
     llm = get_llm(INFO_AGENT_MODEL)
     react_agent = create_agent(model=llm, tools=INFO_AGENT_TOOLS, system_prompt=INFO_AGENT_SYSTEM_PROMPT)
 
     def info_agent_node(state: PensionAgentState) -> dict:
+        deterministic = deterministic_info_response(state["question"])
+        if deterministic is not None:
+            draft, retrieved_context = deterministic
+            return {
+                "info_draft": draft,
+                "retrieved_context": retrieved_context,
+                "deterministic_info": True,
+            }
+
         history_messages = history_to_messages(state.get("conversation_history"))
         result = invoke_with_retry(
             react_agent,
@@ -60,6 +90,14 @@ def build_info_agent_node():
             None,
         )
         draft = final_ai.content if final_ai else ""
+        if not retrieved_context:
+            forced_context = _force_doc_search(state["question"])
+            if forced_context:
+                retrieved_context = forced_context
+                draft = (
+                    "검색된 근거 문서를 바탕으로 답변하세요. 근거에 없는 수치·한도·세율·기간은 "
+                    "추가하지 말고, 질문이 묻는 범위 안에서 핵심만 정리하세요."
+                )
 
         return {
             "info_draft": draft,
