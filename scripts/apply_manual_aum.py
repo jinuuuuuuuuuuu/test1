@@ -1,11 +1,13 @@
 """수기 검수한 AUM 값을 aum_report.csv에서 읽어 prospectus.db에 반영한다.
 
 scripts/extract_aum.py가 자동 추출에 실패한 행(status=PARSE_FAIL/NOT_FOUND)을 사람이 원문
-대조해 채운 뒤 이 스크립트를 돌린다. 검수자는 CSV에서 세 칸만 채우면 된다:
+대조해 채운 뒤 이 스크립트를 돌린다. 검수자는 CSV에서 두 칸만 채우면 된다:
 
   - aum_krw_million : 최신 회계기수 자본총계(=순자산총액), **백만원 단위**
   - aum_base_date   : 그 기수의 결산일 (YYYY-MM-DD)
-  - status          : MANUAL_OK 로 변경  (원문에 데이터가 없으면 MANUAL_NONE)
+
+원문에 데이터가 없으면(신규 설정 펀드의 "해당사항없음" 등) 두 칸을 비워 두면 된다 —
+값이 비어 있는 행은 건너뛴다. status 열은 참고용이며 판정에 쓰지 않는다.
 
 단위 실수(원 단위를 그대로 입력)는 자동 감지해 백만원으로 환산하고 로그로 알린다.
 --dry-run으로 먼저 확인한 뒤 실제 반영하는 것을 권장한다.
@@ -47,26 +49,25 @@ def _parse_value(raw: str) -> float | None:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true", help="DB에 쓰지 않고 반영 예정 내용만 출력")
+    parser.add_argument("--csv", default=REPORT_PATH, help=f"검수본 CSV 경로 (기본: {REPORT_PATH})")
     args = parser.parse_args()
 
-    with open(REPORT_PATH, encoding="utf-8-sig") as f:
+    with open(args.csv, encoding="utf-8-sig") as f:
         rows = list(csv.DictReader(f))
 
     applied, skipped, errors = [], [], []
     for row in rows:
-        status = (row.get("status") or "").strip().upper()
-        if not status.startswith("MANUAL"):
-            continue
         code = row["product_code"]
-
-        if status == "MANUAL_NONE":
-            skipped.append((code, "원문에 데이터 없음으로 표기됨"))
-            continue
-
+        status = (row.get("status") or "").strip().upper()
         value = _parse_value(row.get("aum_krw_million", ""))
         base_date = (row.get("aum_base_date") or "").strip()
+
+        # 값이 채워져 있으면 적용 대상으로 본다 — status 문자열에 의존하지 않는다.
+        # (검수자가 MANUAL_OK/OK 중 무엇을 쓰든, 오타가 있어도 값 유무로 판단하는 편이
+        #  안전하다. 실측: 검수본이 28건을 "OK", 2건을 "MAUAL_NONE"으로 표기했다.)
         if value is None:
-            errors.append((code, "aum_krw_million이 비어 있거나 숫자가 아님"))
+            reason = "데이터 없음으로 표기됨" if "NONE" in status else f"값 비어 있음 (status={status or '없음'})"
+            skipped.append((code, reason))
             continue
         if len(base_date) != 10 or base_date[4] != "-" or base_date[7] != "-":
             errors.append((code, f"aum_base_date 형식 오류(YYYY-MM-DD 필요): {base_date!r}"))

@@ -20,8 +20,12 @@ from typing import Optional
 # 양식 A: "14기(24.12.22)" — 괄호 안이 그 회계기수의 결산일 (단위: 백만원이 일반적)
 _PERIOD_RE = re.compile(r"(\d+)\s*기\s*\(\s*(\d{2})[.\s]*(\d{2})[.\s]*(\d{2})\s*\)")
 # 양식 B (실측 KR5111420047): "제 18 기" 라벨과 "2025.04.16" 날짜가 별도 줄, 단위: 원
-_PERIOD_LABEL_RE = re.compile(r"제?\s*(\d+)\s*기")
-_FULL_DATE_RE = re.compile(r"(20\d{2})\.(\d{2})\.(\d{2})")
+# 회계기수 라벨 — "기타부채"의 앞 숫자를 "588기"로 오인하지 않도록 뒤 글자를 배제하고,
+# 기수는 두 자리 이하로 제한한다 (실측 오탐: "…588 기타부채…" → labels에 588이 섞임).
+_PERIOD_LABEL_RE = re.compile(r"제?\s*(\d{1,2})\s*기(?![가-힣])")
+# 4자리 연도 날짜 — 문서별 표기 차이를 모두 흡수한다: "2025.04.16" / "2025. 2.26" /
+# "(2025. 2.26)" / "2025.2.26" (실측: 삼성·NH 등은 공백 + 한 자리 월/일을 쓴다).
+_FULL_DATE_RE = re.compile(r"(20\d{2})\s*\.\s*(\d{1,2})\s*\.\s*(\d{1,2})")
 # "자본총계 5,697 9,185 7,339" (순자산총액 표기 변형 포함) — 첫 숫자가 최신 기 값
 _NET_ASSET_ROW_RE = re.compile(r"(자본\s*총계|순자산\s*총액)\s+([\d,]+(?:\.\d+)?|-)")
 # 양식 C (실측 KR5144420020): pypdf가 표를 역순으로 추출해 "424,167,622,451
@@ -32,6 +36,8 @@ _REVERSED_ROW_RE = re.compile(
     r"(\d[\d,]{6,})\s+(\d[\d,]{6,})\s+(\d[\d,]{6,})\s*(자본\s*총계|순자산\s*총액)"
 )
 _REVERSED_ASSET_RE = re.compile(r"(\d[\d,]{6,})\s+(\d[\d,]{6,})\s+(\d[\d,]{6,})\s*자산\s*총계")
+# 일반 배치의 자산총계 행 — 자본총계와 대소 비교(자본 ≤ 자산)로 열 매핑을 검증한다.
+_ASSET_ROW_RE = re.compile(r"자산\s*총계\s+([\d,]+(?:\.\d+)?)")
 _PAREN_DATE_RE = re.compile(r"\(\s*(20\d{2})\.(\d{2})\.(\d{2})\s*\)")
 # "(단위 : 원)" — 백만원 표기("단위: 백만원")는 콜론 뒤가 '백'이라 매치되지 않는다
 _UNIT_WON_RE = re.compile(r"단위\s*[:：]\s*원")
@@ -86,23 +92,42 @@ def _extract_standard(window: str) -> Optional[AumExtraction]:
     if value_text == "-":
         return None
 
+    # 회계기수·날짜는 표 머리글 영역(항목 머리글 ~ 자본총계 행 사이)에서만 찾는다 —
+    # 데이터 행의 숫자가 기수/날짜로 오인되는 것을 막는다.
+    header_area = body[: row.start()]
+
     # 양식 A: "14기(24.12.22)" / 양식 B: "제 18 기" + "2025.04.16" 별도 매치.
-    # 회계기수·날짜는 "항목" 머리글 뒤(body)에서만 찾는다.
-    period_a = _PERIOD_RE.search(body)
+    period_a = _PERIOD_RE.search(header_area)
     if period_a:
         label = f"{period_a.group(1)}기"
         base_date = f"20{period_a.group(2)}-{period_a.group(3)}-{period_a.group(4)}"
         header_line = next(
-            (line.strip() for line in body.splitlines() if _PERIOD_RE.search(line)), ""
+            (line.strip() for line in header_area.splitlines() if _PERIOD_RE.search(line)), ""
         )
     else:
-        label_m = _PERIOD_LABEL_RE.search(body)
-        date_m = _FULL_DATE_RE.search(body)
-        if not label_m or not date_m:
+        # 양식 B: "제 18 기"·"12기" 라벨과 4자리 연도 날짜가 따로 나온다.
+        # 값 행의 첫 숫자를 최신 기로 쓰므로, 첫 열이 정말 최신인지 반드시 검증한다 —
+        # pypdf가 열을 뒤섞어 라벨과 날짜 방향이 어긋나는 문서가 있어(실측 KR5127420034:
+        # 라벨 19·20·21기 ↔ 날짜 2024·2023·2022), 어긋나면 값을 쓰지 않고 수기 확인에 맡긴다.
+        dates = _FULL_DATE_RE.findall(header_area)
+        labels = [int(n) for n in _PERIOD_LABEL_RE.findall(header_area)]
+        if not dates or not labels:
             return None
-        label = f"{label_m.group(1)}기"
-        base_date = f"{date_m.group(1)}-{date_m.group(2)}-{date_m.group(3)}"
-        header_line = f"{label_m.group(0)} {date_m.group(0)}"
+        iso_dates = [f"{y}-{int(m):02d}-{int(d):02d}" for y, m, d in dates]
+        if iso_dates[0] != max(iso_dates):
+            return None
+        if labels[0] != max(labels):
+            return None
+        base_date = iso_dates[0]
+        label = f"{labels[0]}기"
+        header_line = f"{labels[0]}기 ({base_date})"
+
+    # 열 매핑 검증: 같은(첫) 열의 자산총계보다 자본총계가 크면 열이 뒤섞인 것이다.
+    asset_row = _ASSET_ROW_RE.search(body)
+    if asset_row:
+        assets = float(asset_row.group(1).replace(",", ""))
+        if float(value_text.replace(",", "")) > assets * 1.001:
+            return None
 
     value = float(value_text.replace(",", ""))
     # 단위 판정: "(단위 : 원)"이면 백만원으로 환산. 표기가 없어도 10조(백만원 단위로
