@@ -12,7 +12,7 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from src.agents.state import RetrievedItem
+from src.agents.state import RetrievedItem, ToolCallRecord
 
 _DOC_SEARCH_TOOLS = {"search_pension_docs"}
 _FUND_LIST_TOOLS = {"search_funds"}
@@ -136,6 +136,97 @@ def _parse_json(raw: Any):
         return json.loads(raw)
     except (TypeError, ValueError):
         return None
+
+
+# think_trace는 사람이 읽는 요약이라 근거 본문만큼 길 필요가 없다.
+_MAX_TRACE_VALUE_CHARS = 120
+_MAX_TRACE_RESULT_CHARS = 220
+
+
+def _format_args(args: dict) -> str:
+    """툴 호출 인자를 'k=v, k=v' 한 줄로 요약한다. 값이 길면 개별로 자른다."""
+    if not args:
+        return ""
+    parts = []
+    for key, value in args.items():
+        text = json.dumps(value, ensure_ascii=False) if not isinstance(value, str) else f'"{value}"'
+        parts.append(f"{key}={_truncate(text, _MAX_TRACE_VALUE_CHARS)}")
+    return ", ".join(parts)
+
+
+def _summarize_tool_result(tool_name: str, raw) -> str:
+    """툴 결과를 서사에 쓸 한 줄로 요약한다 (근거 본문은 retrieved_context가 따로 보관)."""
+    parsed = _parse_json(raw)
+
+    if tool_name in _DOC_SEARCH_TOOLS:
+        if isinstance(parsed, list) and parsed:
+            titles = "; ".join(filter(None, (r.get("file_title") for r in parsed[:3])))
+            return _truncate(f"{len(parsed)}건 검색: {titles}", _MAX_TRACE_RESULT_CHARS)
+        return "검색 결과 없음 (보유 문서에 관련 내용 없음)"
+
+    if tool_name in _PROSPECTUS_TEXT_TOOLS:
+        if isinstance(parsed, list) and parsed:
+            labels = "; ".join(f"{r.get('fund_name', '')}({r.get('section', '')})" for r in parsed[:3])
+            return _truncate(f"{len(parsed)}건 검색: {labels}", _MAX_TRACE_RESULT_CHARS)
+        return "검색 결과 없음"
+
+    if tool_name in _FUND_LIST_TOOLS:
+        if isinstance(parsed, list) and parsed:
+            labels = "; ".join(
+                f"{r.get('fund_name', '')}({r.get('class_name', '')})" for r in parsed[:3]
+            )
+            return _truncate(f"{len(parsed)}건 후보: {labels}", _MAX_TRACE_RESULT_CHARS)
+        return "조건에 맞는 후보 없음"
+
+    if tool_name in _FUND_DETAIL_TOOLS:
+        if isinstance(parsed, dict) and parsed.get("found"):
+            name = parsed.get("master", {}).get("fund_name", "")
+            classes = len(parsed.get("classes") or [])
+            return _truncate(f"{name} 상세 조회 (판매클래스 {classes}개)", _MAX_TRACE_RESULT_CHARS)
+        return "해당 상품코드 없음"
+
+    # 계산/판정 툴: 결과 dict가 이미 간결하므로 그대로 자른다.
+    return _truncate(str(raw), _MAX_TRACE_RESULT_CHARS)
+
+
+def build_tool_trace(messages: list, node: str) -> list[ToolCallRecord]:
+    """ReAct 실행 메시지에서 (툴, 인자, 결과요약)을 호출 순서대로 뽑아낸다.
+
+    build_retrieved_context는 ToolMessage의 '내용'만 근거로 남기고 어떤 인자로 호출했는지는
+    버리기 때문에, 서사형 think_trace를 만들려면 AIMessage.tool_calls까지 함께 봐야 한다.
+    tool_call_id로 호출과 결과를 짝지으며, 짝을 못 찾은 결과도 누락 없이 남긴다.
+    """
+    records: dict[str, dict] = {}
+    order: list[str] = []
+
+    for msg in messages:
+        if isinstance(msg, AIMessage):
+            for call in getattr(msg, "tool_calls", None) or []:
+                key = call.get("id") or f"{call.get('name')}#{len(order)}"
+                records[key] = {"tool": call.get("name") or "unknown_tool", "args": call.get("args") or {}}
+                order.append(key)
+        elif isinstance(msg, ToolMessage):
+            key = msg.tool_call_id
+            if key in records:
+                records[key]["result"] = _summarize_tool_result(msg.name or "", msg.content)
+            else:
+                orphan = f"orphan#{len(order)}"
+                records[orphan] = {
+                    "tool": msg.name or "unknown_tool",
+                    "args": {},
+                    "result": _summarize_tool_result(msg.name or "", msg.content),
+                }
+                order.append(orphan)
+
+    return [
+        {
+            "node": node,
+            "tool": records[key]["tool"],
+            "args": _format_args(records[key]["args"]),
+            "result": records[key].get("result", "(결과 미수신)"),
+        }
+        for key in order
+    ]
 
 
 def build_retrieved_context(messages: list, node: str) -> list[RetrievedItem]:

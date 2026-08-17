@@ -16,6 +16,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from src.agents.context import (
     build_repair_note,
     build_retrieved_context,
+    build_tool_trace,
     history_to_messages,
     split_clarification_marker,
 )
@@ -93,6 +94,7 @@ def build_info_agent_node():
         return {
             "info_draft": draft,
             "retrieved_context": retrieved_context,
+            "tool_trace": build_tool_trace(messages, node="info_agent"),
             "needs_clarification": needs_clarification,
             "repair_attempted": state.get("verification") is not None,
         }

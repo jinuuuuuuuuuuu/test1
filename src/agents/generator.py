@@ -34,19 +34,151 @@ GENERATOR_SYSTEM_PROMPT = """당신은 연금 상담 AI의 최종 답변 작성�
   생략합니다."""
 
 
-def _format_think_trace(state: PensionAgentState) -> str:
-    context = dedupe_context(state.get("retrieved_context") or [])
-    context_lines = "\n".join(f"  - [{c['source']}] {c['content']}" for c in context) or "  (없음)"
-    verification = state.get("verification") or {}
-    return (
-        f"[①분류] intent={state.get('intent')}, scope={state.get('scope')}, is_safe={state.get('is_safe')}\n"
-        f"[②③근거 {len(context)}건] needs_clarification={state.get('needs_clarification')}, "
-        f"repair_attempted={state.get('repair_attempted')}\n{context_lines}\n"
-        f"[④검증] grounded={verification.get('grounded')}, issues={verification.get('issues')}, "
-        f"premise_issues={verification.get('premise_issues')}, "
-        f"requirements_met={verification.get('requirements_met')}, "
-        f"missing_requirements={verification.get('missing_requirements')}"
+_NODE_LABELS = {
+    "info_agent": "② 정보 Agent — 제도·세제 조사",
+    "product_agent": "③ 상품 Agent — 상품 확인",
+}
+
+
+def _classification_lines(state: PensionAgentState) -> list[str]:
+    intent = state.get("intent") or []
+    if len(intent) > 1:
+        intent_label = "복합형(제도·세제 + 상품)"
+    elif intent:
+        intent_label = intent[0]
+    else:
+        intent_label = "분류 실패"
+    safety = "차단" if state.get("is_safe") is False else "통과"
+
+    lines = [
+        "[① 질문 분류]",
+        f"- 의도: {intent_label} / 서비스 범위: {state.get('scope') or '미판정'} / 안전성: {safety}",
+    ]
+    if state.get("scope_note"):
+        lines.append(f"- 범위 판단: {state['scope_note']}")
+    return lines
+
+
+def _plan_sentence(state: PensionAgentState) -> str:
+    """①의 분류 결과가 어떤 실행 경로로 이어졌는지 한 문장으로 설명한다."""
+    if state.get("is_safe") is False:
+        return "안전 가이드라인 위반으로 ②③④를 건너뛰고 정형 거절 응답을 반환"
+    if state.get("scope") == "범위외":
+        return "연금 상담 범위를 벗어나 ②③④를 건너뛰고 정형 한계 고지를 반환"
+    intent = state.get("intent") or []
+    if "정보형" in intent and "상품형" in intent:
+        return "②정보 Agent로 제도·세제 근거를 먼저 확보한 뒤, 그 근거를 넘겨 ③상품 Agent를 순차 실행"
+    if "상품형" in intent:
+        return "상품 질의이므로 ③상품 Agent를 곧바로 실행"
+    if "정보형" in intent:
+        return "제도·세제 질의이므로 ②정보 Agent를 실행"
+    return "의도 분류에 실패해 검색 툴을 가진 ②정보 Agent로 폴백"
+
+
+def _tool_trace_lines(state: PensionAgentState) -> list[str]:
+    """툴 호출 기록을 노드별 구간으로 묶어 실행 순서대로 서술한다."""
+    trace = state.get("tool_trace") or []
+    lines: list[str] = []
+
+    # 연속된 같은 노드 기록을 한 구간으로 묶는다 — repair 재실행은 뒤에 다시 붙으므로
+    # 자연히 별도 구간("재실행")으로 드러난다.
+    segments: list[tuple[str, list]] = []
+    for record in trace:
+        if segments and segments[-1][0] == record["node"]:
+            segments[-1][1].append(record)
+        else:
+            segments.append((record["node"], [record]))
+
+    seen_nodes: set[str] = set()
+    for node, records in segments:
+        label = _NODE_LABELS.get(node, node)
+        suffix = " (④검증 후 재실행)" if node in seen_nodes else ""
+        seen_nodes.add(node)
+        lines.append(f"[{label}{suffix}]")
+        for i, record in enumerate(records, 1):
+            call = f"{record['tool']}({record['args']})"
+            lines.append(f"  {i}. {call} → {record['result']}")
+
+    # 툴을 한 번도 호출하지 않고 답을 낸 노드는 기록이 없어 위 구간에 안 나타난다 —
+    # 근거 없는 답변의 신호이므로 명시한다 (실측된 실패 유형).
+    for node, draft_key in (("info_agent", "info_draft"), ("product_agent", "product_draft")):
+        if state.get(draft_key) and node not in seen_nodes:
+            lines.append(f"[{_NODE_LABELS[node]}]")
+            lines.append("  - 툴 호출 없이 답변 작성 (근거 미확보)")
+    return lines
+
+
+def _verification_lines(state: PensionAgentState) -> list[str]:
+    verification = state.get("verification")
+    if not verification:
+        return ["[④ 검증] 수행하지 않음 (①에서 종료된 경로)"]
+
+    suspects = verification.get("l0_suspect_numbers") or []
+    confirmed = verification.get("unsupported_numbers_confirmed") or []
+    lines = ["[④ 검증]"]
+    if suspects:
+        lines.append(
+            f"  - L0 결정론적 수치 대조: 근거에서 확인되지 않는 수치 {len(suspects)}개 발견"
+            f"({', '.join(suspects)}) → 그중 {len(confirmed)}개가 근거 부재로 확정"
+            + (f"({', '.join(confirmed)})" if confirmed else "")
+        )
+    else:
+        lines.append("  - L0 결정론적 수치 대조: 초안의 모든 수치가 근거/질문에서 확인됨")
+
+    grounded = verification.get("grounded")
+    issues = verification.get("issues") or []
+    lines.append(
+        f"  - L1 근거 부합: {'통과' if grounded else '불합격'}"
+        + (f" — {'; '.join(issues)}" if issues else "")
     )
+
+    premise = verification.get("premise_issues") or []
+    lines.append(
+        f"  - 전제 교정: {'; '.join(premise)}" if premise else "  - 전제 교정: 잘못된 전제 없음"
+    )
+
+    if verification.get("clarification_mode"):
+        lines.append("  - 요구사항 충족: 검증 면제 (조건 불충분으로 역질문한 초안)")
+    else:
+        missing = verification.get("missing_requirements") or []
+        lines.append(
+            f"  - 요구사항 충족: {'충족' if verification.get('requirements_met') else '미충족'}"
+            + (f" — 누락: {'; '.join(missing)}" if missing else "")
+        )
+    return lines
+
+
+def _assembly_lines(state: PensionAgentState, context: list) -> list[str]:
+    lines = ["[⑤ 최종 답변 조립]"]
+    if context:
+        sources = "; ".join(dict.fromkeys(c["source"] for c in context))
+        lines.append(f"  - 근거 {len(context)}건 사용: {sources}")
+    else:
+        lines.append("  - 사용한 근거 없음 (근거가 필요한 수치는 답변에서 제외)")
+    if state.get("needs_clarification"):
+        lines.append("  - 조건 불충분 → 답을 만들지 않고 역질문을 다듬어 전달")
+    if state.get("repair_attempted"):
+        lines.append("  - ④검증 탈락으로 ②③을 1회 재실행한 결과를 반영 (재실행 한도 1회 소진)")
+    return lines
+
+
+def _format_think_trace(state: PensionAgentState) -> str:
+    """대회 평가 스키마의 think_trace — "사고·추론·도구 사용 과정"을 시간순 서사로 조립한다.
+
+    추가 LLM 호출 없이 State에 이미 있는 값(①분류, tool_trace, ④검증 결과)만으로 만든다.
+    """
+    context = dedupe_context(state.get("retrieved_context") or [])
+    lines = _classification_lines(state)
+    lines.append(f"- 실행 계획: {_plan_sentence(state)}")
+    lines.extend(_tool_trace_lines(state))
+    lines.extend(_verification_lines(state))
+    lines.extend(_assembly_lines(state, context))
+    lines.append("[참고: 근거 원문]")
+    if context:
+        lines.extend(f"  - [{c['source']}] {c['content']}" for c in context)
+    else:
+        lines.append("  (없음)")
+    return "\n".join(lines)
 
 
 def build_generator_node():
@@ -57,7 +189,11 @@ def build_generator_node():
             reason = state.get("safety_reason") or "요청하신 내용은 안내해드리기 어렵습니다."
             return {
                 "answer": f"죄송하지만 해당 질문에는 답변드릴 수 없습니다. ({reason})",
-                "think_trace": f"[①가드레일 차단] {reason}",
+                "think_trace": "\n".join([
+                    *_classification_lines(state),
+                    f"- 차단 사유: {reason}",
+                    f"- 실행 계획: {_plan_sentence(state)}",
+                ]),
             }
 
         if state.get("scope") == "범위외":
@@ -71,7 +207,12 @@ def build_generator_node():
                     "연금 제도(DB/DC/IRP · 연금저축), 세액공제 등 연금 세제, 연금 상품에 대해 "
                     "질문해 주시면 도움을 드리겠습니다."
                 ),
-                "think_trace": f"[①분류] scope=범위외({note}) — 정형 한계 고지 응답",
+                "think_trace": "\n".join([
+                    *_classification_lines(state),
+                    f"- 실행 계획: {_plan_sentence(state)}",
+                    "[⑤ 최종 답변 조립]",
+                    "  - 보유 자료로 답할 수 없는 범위이므로 한계를 고지 (추측 답변 생성 금지)",
+                ]),
             }
 
         # 복합형에서는 info_draft/product_draft가 둘 다 있으므로 반드시 병합해서 조립한다.

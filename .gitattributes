@@ -1,0 +1,6 @@
+# 빌드된 DB/벡터스토어는 바이너리라 git이 내용 병합을 할 수 없다 — 자동 병합을 시도하다
+# 파일이 깨지는 것을 막고, 충돌 시 "한쪽을 통째로 선택"하도록 명시한다.
+# (팀 규칙: 데이터 파일은 담당자 1명만 커밋한다. 여러 명이 각자 재생성하면 충돌이 반복된다.)
+data/processed/prospectus.db binary -merge -diff
+data/processed/chroma_docs/** binary -merge -diff
+data/processed/chroma_prospectus/** binary -merge -diff

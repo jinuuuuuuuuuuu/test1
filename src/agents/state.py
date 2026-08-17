@@ -19,6 +19,18 @@ class RetrievedItem(TypedDict):
     node: str     # 어느 노드에서 생성됐는지: "info_agent" | "product_agent"
 
 
+class ToolCallRecord(TypedDict):
+    """②③이 실제로 호출한 툴 1건의 기록 — think_trace 서사화용.
+
+    retrieved_context는 근거 '내용'만 남기고 "어떤 인자로 무엇을 호출했는지"는 버리기
+    때문에 별도로 모은다 (대회 평가지표 "추론 논리성" 대응).
+    """
+    node: str     # "info_agent" | "product_agent"
+    tool: str     # 툴 이름
+    args: str     # 호출 인자 요약 (예: 'query="세액공제 한도", k=5')
+    result: str   # 결과 요약 (예: "3건 검색: 연금저축계좌·IRP 세액공제 안내 …")
+
+
 class PensionAgentState(TypedDict, total=False):
     question_id: str
     question: str
@@ -41,6 +53,9 @@ class PensionAgentState(TypedDict, total=False):
     # ②③ 출력 — retrieved_context는 여러 노드가 이어서 채우므로 누적(operator.add) 리듀서 사용.
     # repair 재실행 시 같은 근거가 중복 누적되므로 읽는 쪽은 context.dedupe_context를 거친다.
     retrieved_context: Annotated[list[RetrievedItem], operator.add]
+    # 툴 호출 기록도 실행 순서대로 누적한다 — ⑤가 이걸 시간순 서사(think_trace)로 재구성한다.
+    # repair 재실행 시 같은 노드 기록이 뒤에 다시 붙어, 서사에서 "재실행" 구간으로 드러난다.
+    tool_trace: Annotated[list[ToolCallRecord], operator.add]
     info_draft: str | None
     product_draft: str | None
     # ②③이 조건 불충분으로 역질문 초안([추가 확인 필요] 마커)을 낸 경우 True —
