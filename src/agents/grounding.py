@@ -103,6 +103,7 @@ def build_grounding_node():
         suspects_text = "\n".join(f"- {n}" for n in suspects) or "(없음)"
 
         clarification = bool(state.get("needs_clarification"))
+        type_recommendation = state.get("recommendation_stage") == "type_recommendation"
         clarification_note = (
             "\n\n[참고] 초안은 답변 조건이 불충분해 사용자에게 되묻는 역질문으로 마무리한 "
             "초안입니다. 역질문으로 답한 것 자체를 요구사항 누락으로 판정하지 마세요."
@@ -136,7 +137,7 @@ def build_grounding_node():
             suspects=suspects,
             has_evidence=bool(context),
         )
-        if clarification:
+        if clarification or type_recommendation:
             # 역질문 초안은 요구사항 검증을 코드로 면제한다 (프롬프트 지시만으로는 ④가
             # "추천 누락"으로 판정 → ⑤가 추천을 되살리는 경로를 막을 수 없다).
             verification = apply_clarification_override(verification)

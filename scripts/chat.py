@@ -25,6 +25,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from src.agents.graph import build_graph  # noqa: E402
+from src.agents.text import normalize_user_text  # noqa: E402
 
 
 def main():
@@ -33,10 +34,11 @@ def main():
     print("준비 완료. 질문을 입력하세요 (빈 줄 입력 시 종료)\n")
 
     conversation_history: list[dict] = []
+    recommendation_profile: dict = {}
 
     while True:
         try:
-            question = input("질문> ").strip()
+            question = normalize_user_text(input("질문> "))
         except (EOFError, KeyboardInterrupt):
             print("\n종료합니다.")
             break
@@ -50,6 +52,7 @@ def main():
                 "question_id": str(uuid.uuid4())[:8],
                 "question": question,
                 "conversation_history": conversation_history,
+                "recommendation_profile": recommendation_profile,
             })
         except Exception as e:
             print(f"\n[오류] {e}\n")
@@ -66,6 +69,7 @@ def main():
 
         conversation_history.append({"question": question, "answer": answer})
         conversation_history[:] = conversation_history[-MAX_HISTORY_TURNS:]
+        recommendation_profile = result.get("recommendation_profile") or recommendation_profile
 
 
 if __name__ == "__main__":

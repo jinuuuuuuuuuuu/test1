@@ -40,6 +40,13 @@ _NODE_LABELS = {
 }
 
 
+def _append_reference_line(answer: str, context: list) -> str:
+    if not context or "참고 근거:" in answer:
+        return answer
+    sources = "; ".join(dict.fromkeys(c["source"] for c in context))
+    return f"{answer}\n\n참고 근거: {sources}"
+
+
 def _classification_lines(state: PensionAgentState) -> list[str]:
     intent = state.get("intent") or []
     if len(intent) > 1:
@@ -236,11 +243,21 @@ def build_generator_node():
             f"missing_requirements: {verification.get('missing_requirements')}"
         )
         if state.get("needs_clarification"):
-            prompt += (
-                "\n\n[참고] 초안은 답변에 필요한 조건이 불충분해 사용자에게 되묻는 "
-                "역질문입니다. 근거를 이용해 답이나 추천을 만들어 보충하지 말고, 어떤 조건이 "
-                "왜 필요한지가 잘 드러나도록 역질문을 자연스럽게 다듬어 전달만 하세요."
-            )
+            return {
+                "answer": draft,
+                "think_trace": _format_think_trace(state),
+            }
+        if state.get("recommendation_stage") == "type_recommendation":
+            return {
+                "answer": draft,
+                "think_trace": _format_think_trace(state),
+            }
+        if state.get("deterministic_info"):
+            return {
+                "answer": _append_reference_line(draft, context),
+                "think_trace": _format_think_trace(state),
+            }
+
         response = invoke_with_retry(llm, [
             {"role": "system", "content": GENERATOR_SYSTEM_PROMPT},
             {"role": "user", "content": prompt},

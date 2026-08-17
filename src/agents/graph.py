@@ -24,6 +24,7 @@ from langgraph.graph.state import CompiledStateGraph
 from src.agents.generator import build_generator_node
 from src.agents.grounding import build_grounding_node
 from src.agents.info_agent import build_info_agent_node
+from src.agents.deterministic_info import should_force_info_agent
 from src.agents.product_agent import build_product_agent_node
 from src.agents.router import build_router_node
 from src.agents.state import PensionAgentState
@@ -37,6 +38,8 @@ def _route_after_router(state: PensionAgentState) -> str:
     if state.get("scope") == "범위외":
         # 연금과 접점이 없는 질문 — ②③④를 건너뛰고 ⑤가 정형 한계 고지 응답을 만든다.
         return "generator"
+    if should_force_info_agent(state.get("question", "")):
+        return "info_agent"
     intent = state.get("intent") or []
     if "정보형" in intent:
         return "info_agent"
@@ -56,6 +59,14 @@ def _route_after_info(state: PensionAgentState) -> str:
     return "grounding"
 
 
+def _route_after_product(state: PensionAgentState) -> str:
+    if state.get("needs_clarification"):
+        return "generator"
+    if state.get("recommendation_stage") == "type_recommendation":
+        return "generator"
+    return "grounding"
+
+
 def _route_after_grounding(state: PensionAgentState) -> str:
     """④ 탈락 시 담당 에이전트로 1회 되돌리는 bounded repair loop.
 
@@ -63,6 +74,8 @@ def _route_after_grounding(state: PensionAgentState) -> str:
     두 번째 재실행 없이 ⑤로 넘긴다 — ⑤가 검증결과를 반영해 방어적으로 답을 조립한다.
     """
     if state.get("needs_clarification") or state.get("repair_attempted"):
+        return "generator"
+    if state.get("recommendation_stage") == "type_recommendation":
         return "generator"
     verification = state.get("verification") or {}
     failed = verification.get("grounded") is False or verification.get("requirements_met") is False
@@ -95,7 +108,11 @@ def build_graph() -> CompiledStateGraph:
         _route_after_info,
         {"product_agent": "product_agent", "grounding": "grounding"},
     )
-    graph.add_edge("product_agent", "grounding")
+    graph.add_conditional_edges(
+        "product_agent",
+        _route_after_product,
+        {"grounding": "grounding", "generator": "generator"},
+    )
     graph.add_conditional_edges(
         "grounding",
         _route_after_grounding,

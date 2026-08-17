@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import operator
-from typing import Annotated, Literal, TypedDict
+from typing import Annotated, Literal, NotRequired, TypedDict
 
 Intent = Literal["정보형", "상품형"]
 Scope = Literal["범위내", "부분관련", "범위외"]
@@ -17,6 +17,11 @@ class RetrievedItem(TypedDict):
     source: str   # 툴 이름(예: calculate_tax_credit) 또는 "RAG"
     content: str  # 근거 텍스트 / 툴 반환값 (JSON 문자열 또는 요약)
     node: str     # 어느 노드에서 생성됐는지: "info_agent" | "product_agent"
+    chunk_id: NotRequired[str]
+    document_id: NotRequired[str]
+    file_title: NotRequired[str]
+    section: NotRequired[str]
+    source_location: NotRequired[str]
 
 
 class ToolCallRecord(TypedDict):
@@ -63,6 +68,12 @@ class PensionAgentState(TypedDict, total=False):
     needs_clarification: bool
     # ④ 탈락으로 ②③을 재실행한 적이 있으면 True — repair 루프를 1회로 제한하는 가드.
     repair_attempted: bool
+    # 상품 추천 멀티턴에서 수집한 투자자 조건. chat.py/API 호출자가 다음 invoke에 다시 넘긴다.
+    recommendation_profile: dict
+    # clarification/type_recommendation/specific_recommendation — 상품 추천 2단계 흐름 식별용.
+    recommendation_stage: str | None
+    # 세액공제·중도인출 등 고위험 정보질의를 결정론 답변 경로로 처리했는지 여부.
+    deterministic_info: bool
 
     # ④ 검증/Grounding 출력
     verification: dict | None

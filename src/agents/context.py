@@ -246,8 +246,19 @@ def build_retrieved_context(messages: list, node: str) -> list[RetrievedItem]:
                     label = r.get("file_title") or tool_name
                     section = r.get("section")
                     source = f"{label} — {section}" if section else label
+                    chunk_id = r.get("chunk_id", "")
+                    document_id = chunk_id.split("_chunk", 1)[0] if "_chunk" in chunk_id else chunk_id
                     items.append(
-                        {"source": source, "content": _truncate(r.get("content", ""), _MAX_DOC_EVIDENCE_CHARS), "node": node}
+                        {
+                            "source": source,
+                            "content": _truncate(r.get("content", ""), _MAX_DOC_EVIDENCE_CHARS),
+                            "node": node,
+                            "chunk_id": chunk_id,
+                            "document_id": document_id,
+                            "file_title": r.get("file_title", ""),
+                            "section": section or "",
+                            "source_location": r.get("source_location", ""),
+                        }
                     )
             else:
                 items.append({"source": tool_name, "content": "(검색 결과 없음)", "node": node})

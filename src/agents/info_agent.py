@@ -20,9 +20,10 @@ from src.agents.context import (
     history_to_messages,
     split_clarification_marker,
 )
+from src.agents.deterministic_info import deterministic_info_response
 from src.agents.llm import get_llm, invoke_with_retry
-from src.agents.state import PensionAgentState
-from src.agents.tools import INFO_AGENT_TOOLS
+from src.agents.state import PensionAgentState, RetrievedItem, ToolCallRecord
+from src.agents.tools import INFO_AGENT_TOOLS, search_pension_docs
 
 INFO_AGENT_MODEL = "HCX-005"
 
@@ -58,11 +59,66 @@ search_pension_docs가 빈 결과([])를 반환하면 그 내용은 보유 자�
 적용됩니다 — 이전 답변 속 숫자를 그대로 베끼지 말고, 필요하면 툴을 다시 호출해 확인하세요."""
 
 
+def _doc_search_context(question: str) -> tuple[list[RetrievedItem], list[ToolCallRecord]]:
+    """LLM이 RAG 호출을 건너뛴 경우에도 정보형 질문은 한 번 직접 검색해 근거를 확보한다."""
+    results = search_pension_docs.invoke({"query": question, "k": 5})
+    if not isinstance(results, list) or not results:
+        return [], [
+            {
+                "node": "info_agent",
+                "tool": "search_pension_docs",
+                "args": f'query="{question}", k=5',
+                "result": "검색 결과 없음 (보유 문서에 관련 내용 없음)",
+            }
+        ]
+
+    items: list[RetrievedItem] = []
+    for r in results:
+        chunk_id = r.get("chunk_id", "")
+        document_id = chunk_id.split("_chunk", 1)[0] if "_chunk" in chunk_id else chunk_id
+        label = r.get("file_title") or "search_pension_docs"
+        section = r.get("section")
+        source = f"{label} — {section}" if section else label
+        items.append(
+            {
+                "source": source,
+                "content": r.get("content", ""),
+                "node": "info_agent",
+                "chunk_id": chunk_id,
+                "document_id": document_id,
+                "file_title": r.get("file_title", ""),
+                "section": section or "",
+                "source_location": r.get("source_location", ""),
+            }
+        )
+    titles = "; ".join(item["source"] for item in items[:3])
+    return items, [
+        {
+            "node": "info_agent",
+            "tool": "search_pension_docs",
+            "args": f'query="{question}", k=5',
+            "result": f"{len(items)}건 검색: {titles}",
+        }
+    ]
+
+
 def build_info_agent_node():
     llm = get_llm(INFO_AGENT_MODEL)
     react_agent = create_agent(model=llm, tools=INFO_AGENT_TOOLS, system_prompt=INFO_AGENT_SYSTEM_PROMPT)
 
     def info_agent_node(state: PensionAgentState) -> dict:
+        deterministic = deterministic_info_response(state["question"])
+        if deterministic is not None:
+            draft, retrieved_context = deterministic
+            return {
+                "info_draft": draft,
+                "retrieved_context": retrieved_context,
+                "tool_trace": [],
+                "needs_clarification": False,
+                "repair_attempted": state.get("verification") is not None,
+                "deterministic_info": True,
+            }
+
         question = state["question"]
         if state.get("scope") == "부분관련" and state.get("scope_note"):
             question += (
@@ -82,6 +138,7 @@ def build_info_agent_node():
         messages = result["messages"]
 
         retrieved_context = build_retrieved_context(messages, node="info_agent")
+        tool_trace = build_tool_trace(messages, node="info_agent")
 
         final_ai = next(
             (m for m in reversed(messages) if isinstance(m, AIMessage) and m.content),
@@ -90,13 +147,18 @@ def build_info_agent_node():
         draft, needs_clarification = split_clarification_marker(
             final_ai.content if final_ai else ""
         )
+        if not needs_clarification and not retrieved_context:
+            forced_context, forced_trace = _doc_search_context(state["question"])
+            retrieved_context = forced_context
+            tool_trace = [*tool_trace, *forced_trace]
 
         return {
             "info_draft": draft,
             "retrieved_context": retrieved_context,
-            "tool_trace": build_tool_trace(messages, node="info_agent"),
+            "tool_trace": tool_trace,
             "needs_clarification": needs_clarification,
             "repair_attempted": state.get("verification") is not None,
+            "deterministic_info": False,
         }
 
     return info_agent_node
