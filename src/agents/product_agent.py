@@ -31,6 +31,26 @@ PRODUCT_AGENT_SYSTEM_PROMPT = """당신은 연금 상품(펀드) 추천 에이�
 호출하지 말고, 답변을 확인이 필요한 조건을 묻는 역질문으로 작성하세요(예: "투자 가능한
 계좌유형과 감내 가능한 위험 수준을 알려주시면 후보를 좁혀드릴게요").
 
+[역질문 규칙]
+
+상품 추천에 필요한 정보가 부족하여 역질문을 해야 하는 경우,
+반드시 답변의 맨 앞에 정확히 "[CLARIFY]"를 붙이세요.
+
+예:
+[CLARIFY] 적합한 연금 상품을 추천하려면 몇 가지 정보를 먼저 확인해야 합니다.
+
+1. 어느 계좌에서 운용할 상품을 찾고 계신가요? (IRP/DC/연금저축)
+2. 투자 기간은 어느 정도인가요?
+3. 원금 손실을 어느 정도 감수할 수 있으신가요?
+4. 현재 보유 중인 연금상품이나 위험자산 비중이 있나요?
+
+이미 이전 대화에서 확인된 정보는 다시 묻지 마세요.
+현재 대화에서 부족한 정보만 질문하세요.
+
+나이, 직업, 소득 등의 개인정보는 상품 추천에 실제로 필요한 경우에만 질문하세요.
+
+역질문 단계에서는 특정 상품명, 수익률, 위험등급 등을 임의로 제시하지 마세요.
+
 조건이 충분한 경우의 진행 순서:
 1. search_funds로 조건에 맞는 후보를 찾으세요 (risk_grade/keyword 등 실제 질문에서 나온
    조건만 사용하고, 없는 조건을 임의로 지어내지 마세요).
@@ -73,9 +93,14 @@ def build_product_agent_node():
         )
         draft = final_ai.content if final_ai else ""
 
+        needs_clarification = draft.startswith("[CLARIFY]")
+
+        if needs_clarification:
+            draft = draft.removeprefix("[CLARIFY]").strip()
+
         return {
             "product_draft": draft,
             "retrieved_context": retrieved_context,
+            "needs_clarification": needs_clarification,
         }
-
     return product_agent_node

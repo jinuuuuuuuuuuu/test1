@@ -73,45 +73,108 @@ def build_retrieved_context(messages: list, node: str) -> list[RetrievedItem]:
     for msg in messages:
         if not isinstance(msg, ToolMessage):
             continue
+
         tool_name = msg.name or "unknown_tool"
         raw = msg.content
 
+        # 1. 연금 문서 RAG 검색 결과
         if tool_name in _DOC_SEARCH_TOOLS:
             results = _parse_json(raw)
+
             if isinstance(results, list) and results:
                 for r in results:
-                    label = r.get("file_title") or tool_name
-                    section = r.get("section")
-                    source = f"{label} — {section}" if section else label
-                    items.append({"source": source, "content": _truncate(r.get("content", "")), "node": node})
+                    chunk_id = r.get("chunk_id", "")
+                    section = r.get("section", "")
+                    source_location = r.get("source_location", "")
+                    file_title = r.get("file_title", "")
+
+                    # 예: doc19_chunk03 -> doc19
+                    document_id = (
+                        chunk_id.split("_chunk", 1)[0]
+                        if "_chunk" in chunk_id
+                        else chunk_id
+                    )
+
+                    items.append({
+                        "source": document_id or tool_name,
+                        "content": _truncate(r.get("content", "")),
+                        "node": node,
+                        "chunk_id": chunk_id,
+                        "document_id": document_id,
+                        "file_title": file_title,
+                        "section": section,
+                        "source_location": source_location,
+                    })
+
             else:
-                items.append({"source": tool_name, "content": "(검색 결과 없음)", "node": node})
+                items.append({
+                    "source": tool_name,
+                    "content": "(검색 결과 없음)",
+                    "node": node,
+                })
+
             continue
 
+        # 2. 펀드 목록 검색 결과
         if tool_name in _FUND_LIST_TOOLS:
             results = _parse_json(raw)
+
             if isinstance(results, list) and results:
                 for r in results:
-                    label = f"{r.get('fund_name', tool_name)} ({r.get('class_name', '')})"
-                    items.append(
-                        {"source": label, "content": _truncate(json.dumps(r, ensure_ascii=False)), "node": node}
+                    label = (
+                        f"{r.get('fund_name', tool_name)} "
+                        f"({r.get('class_name', '')})"
                     )
+
+                    items.append({
+                        "source": label,
+                        "content": _truncate(
+                            json.dumps(r, ensure_ascii=False)
+                        ),
+                        "node": node,
+                    })
+
             else:
-                items.append({"source": tool_name, "content": "(검색 결과 없음)", "node": node})
+                items.append({
+                    "source": tool_name,
+                    "content": "(검색 결과 없음)",
+                    "node": node,
+                })
+
             continue
 
+        # 3. 펀드 상세 조회 결과
         if tool_name in _FUND_DETAIL_TOOLS:
             result = _parse_json(raw)
+
             if isinstance(result, dict) and result.get("found"):
-                label = result.get("master", {}).get("fund_name", tool_name)
-                items.append(
-                    {"source": label, "content": _truncate(json.dumps(result, ensure_ascii=False)), "node": node}
+                label = result.get("master", {}).get(
+                    "fund_name",
+                    tool_name,
                 )
+
+                items.append({
+                    "source": label,
+                    "content": _truncate(
+                        json.dumps(result, ensure_ascii=False)
+                    ),
+                    "node": node,
+                })
+
             else:
-                items.append({"source": tool_name, "content": "(해당 상품코드 없음)", "node": node})
+                items.append({
+                    "source": tool_name,
+                    "content": "(해당 상품코드 없음)",
+                    "node": node,
+                })
+
             continue
 
-        # 계산/판정 툴: 결과가 이미 간결한 dict라 그대로 근거로 남기되 길이만 방어적으로 자른다.
-        items.append({"source": tool_name, "content": _truncate(str(raw)), "node": node})
+        # 4. 계산/판정 툴
+        items.append({
+            "source": tool_name,
+            "content": _truncate(str(raw)),
+            "node": node,
+        })
 
     return items

@@ -12,11 +12,17 @@ from typing import Annotated, Literal, TypedDict
 Intent = Literal["정보형", "상품형"]
 
 
-class RetrievedItem(TypedDict):
-    source: str   # 툴 이름(예: calculate_tax_credit) 또는 "RAG"
-    content: str  # 근거 텍스트 / 툴 반환값 (JSON 문자열 또는 요약)
-    node: str     # 어느 노드에서 생성됐는지: "info_agent" | "product_agent"
+class RetrievedItem(TypedDict, total=False):
+    source: str
+    content: str
+    node: str
 
+    # 문서 RAG 근거 정보
+    chunk_id: str
+    document_id: str
+    file_title: str
+    section: str
+    source_location: str
 
 class PensionAgentState(TypedDict, total=False):
     question_id: str
@@ -37,6 +43,9 @@ class PensionAgentState(TypedDict, total=False):
     retrieved_context: Annotated[list[RetrievedItem], operator.add]
     info_draft: str | None
     product_draft: str | None
+
+# 상품 추천 전 추가 정보가 필요한지
+    needs_clarification: bool
 
     # ④ 검증/Grounding 출력
     verification: dict | None

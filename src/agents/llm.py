@@ -35,9 +35,17 @@ def get_llm(
     thinking_effort: HCX-007처럼 Thinking이 기본 활성화된 모델에서 bind_tools()/
     with_structured_output()을 쓰려면 "none"을 넘겨 꺼야 한다.
     """
-    kwargs = {"model": model_name, "temperature": temperature, "disabled_params": _DISABLE_PARALLEL_TOOL_CALLS}
+    kwargs = {
+        "model": model_name,
+        "temperature": temperature,
+        "max_tokens": 2048,
+        "disabled_params": _DISABLE_PARALLEL_TOOL_CALLS,
+    }
     if thinking_effort is not None:
-        kwargs["thinking"] = {"effort": thinking_effort}
+        kwargs["thinking"] = {
+            "effort": thinking_effort
+        }
+
     return ChatClovaX(**kwargs)
 
 
