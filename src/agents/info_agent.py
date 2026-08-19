@@ -44,7 +44,9 @@ INFO_AGENT_SYSTEM_PROMPT = """당신은 연금 제도·세금 전문 상담 에�
    찾아 그 내용을 근거로 답하세요.
 2. 사용자의 구체적인 금액·나이·날짜 등을 대입해 결과를 계산해야 하는 질문 → 해당 계산/판정
    툴(calculate_tax_credit 등)을 호출하세요. 계산에 필요한 값이 질문에 없으면 그 값을
-   사용자에게 되물으세요 — 임의로 가정해서 답하지 마세요. 이렇게 조건이 부족해 되묻는
+   사용자에게 되물으세요 — 임의로 가정해서 답하지 마세요. 평가 환경은 단일턴이므로 조건이
+   부족하면 한 가지 값만 묻지 말고, 현재 제공된 정보·현재 답변 가능한 일반 기준·부족한 입력값
+   전체·입력값별 구체적 역질문을 첫 답변 안에 모두 포함하세요. 이렇게 조건이 부족해 되묻는
    답변은 반드시 [추가 확인 필요] 로 시작하세요.
 
 두 경우 모두 해당하지 않는 순수 개념 설명(예: "IRP가 뭔가요")만 툴 없이 답할 수 있습니다.
@@ -57,6 +59,27 @@ search_pension_docs가 빈 결과([])를 반환하면 그 내용은 보유 자�
 이전 대화가 함께 주어지면 "그거", "방금 그 조건대로" 같은 지시어를 이전 턴 내용으로 풀어서
 이해하세요. 다만 지시어가 가리키는 구체적 수치가 필요한 경우에도 절대 규칙은 그대로
 적용됩니다 — 이전 답변 속 숫자를 그대로 베끼지 말고, 필요하면 툴을 다시 호출해 확인하세요."""
+
+
+def _missing_context_response(state: PensionAgentState) -> tuple[str, list[RetrievedItem]] | None:
+    question = state["question"]
+    if state.get("conversation_history"):
+        return None
+    if not any(word in question for word in ("그거", "그중", "방금", "앞에서", "위에서", "다시 계산")):
+        return None
+
+    draft = (
+        "현재 평가 호출에는 이전 대화 내용이 함께 제공되지 않아, 질문이 가리키는 조건이나 대상을 "
+        "확인할 수 없습니다.\n\n"
+        "이전 조건을 추측해서 계산하거나 판단하면 잘못된 세액공제액, 인출 가능 여부, 상품 정보를 "
+        "안내할 수 있으므로 확정 답변은 보류하겠습니다.\n\n"
+        "정확한 답변을 위해 다음 정보를 한 번에 알려주세요.\n"
+        "1. 다시 계산하거나 확인할 대상이 무엇인가요? 예: 세액공제, 연금수령한도, 중도인출 가능 여부\n"
+        "2. 계산 질문이라면 필요한 금액, 나이, 계좌유형, 소득금액을 함께 알려주세요.\n"
+        "3. 상품 질문이라면 상품명 또는 상품코드를 알려주세요.\n"
+        "4. 이전 답변의 특정 항목을 묻는 것이라면 해당 항목의 내용을 질문에 함께 적어주세요."
+    )
+    return draft, []
 
 
 def _doc_search_context(question: str) -> tuple[list[RetrievedItem], list[ToolCallRecord]]:
@@ -107,14 +130,45 @@ def build_info_agent_node():
     react_agent = create_agent(model=llm, tools=INFO_AGENT_TOOLS, system_prompt=INFO_AGENT_SYSTEM_PROMPT)
 
     def info_agent_node(state: PensionAgentState) -> dict:
-        deterministic = deterministic_info_response(state["question"])
-        if deterministic is not None:
-            draft, retrieved_context = deterministic
+        missing_context = _missing_context_response(state)
+        if missing_context is not None:
+            draft, retrieved_context = missing_context
             return {
                 "info_draft": draft,
                 "retrieved_context": retrieved_context,
                 "tool_trace": [],
-                "needs_clarification": False,
+                "needs_clarification": True,
+                "missing_information": ["이전 대화 문맥", "계산 또는 확인 대상", "필요 입력값"],
+                "clarification_questions": [
+                    "다시 계산하거나 확인할 대상이 무엇인가요?",
+                    "계산에 필요한 금액, 나이, 계좌유형, 소득금액을 함께 알려주세요.",
+                    "상품 질문이라면 상품명 또는 상품코드를 알려주세요.",
+                ],
+                "response_mode": "clarification_included",
+                "repair_attempted": state.get("verification") is not None,
+                "deterministic_info": False,
+            }
+
+        deterministic = deterministic_info_response(state["question"])
+        if deterministic is not None:
+            draft, retrieved_context = deterministic
+            deterministic_needs_clarification = "정확한 계산을 위해 다음 정보를 한 번에 알려주세요" in draft
+            return {
+                "info_draft": draft,
+                "retrieved_context": retrieved_context,
+                "tool_trace": [],
+                "needs_clarification": deterministic_needs_clarification,
+                "missing_information": ["연금저축 납입액", "IRP 납입액", "총급여 또는 종합소득금액"]
+                if deterministic_needs_clarification
+                else [],
+                "clarification_questions": [
+                    "올해 연금저축에 납입한 금액은 얼마인가요?",
+                    "올해 IRP에 납입한 금액은 얼마인가요?",
+                    "직장인 총급여 또는 개인사업자 종합소득금액은 얼마인가요?",
+                ]
+                if deterministic_needs_clarification
+                else [],
+                "response_mode": "clarification_included" if deterministic_needs_clarification else "complete",
                 "repair_attempted": state.get("verification") is not None,
                 "deterministic_info": True,
             }

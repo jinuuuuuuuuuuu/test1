@@ -46,11 +46,10 @@ PRODUCT_AGENT_SYSTEM_PROMPT = """당신은 연금 상품(펀드) 추천 에이�
 계좌유형과 감내 가능한 위험 수준을 알려주시면 후보를 좁혀드릴게요"). 이런 역질문 답변은
 반드시 [추가 확인 필요] 로 시작하세요.
 
-역질문은 꼭 필요한 것만 최소로 물으세요. 위험선호·투자기간 등 핵심 조건이 파악됐다면(이전
-대화에서 이미 답한 것 포함) 더 되묻지 말고 추천을 진행하세요 — 이때 지금까지 확인된 조건을
-먼저 정리해 보여주고, 아직 확인 안 된 조건(예: 계좌유형)은 "IRP·DC 등 계좌유형에 따라 매수
-가능 여부가 달라질 수 있습니다"처럼 추천의 전제·유의사항으로 명시하는 조건부 추천으로
-답하세요. 단정적 표현("이 상품이 가장 좋습니다")은 쓰지 마세요.
+역질문은 첫 답변 안에서 필요한 항목 전체를 한꺼번에 물으세요. 평가 환경은 단일턴이므로
+"한 달에 얼마를 투자할 예정인가요?"처럼 한 항목만 묻고 종료하면 안 됩니다. 계좌유형·위험선호·
+투자기간·투자금액·투자목적 중 부족한 항목을 모두 나열하고, 부족한 상태에서는 특정 펀드명이나
+상품코드를 임의로 추천하지 마세요. 단정적 표현("이 상품이 가장 좋습니다")은 쓰지 마세요.
 
 조건이 충분한 경우의 진행 순서:
 1. search_funds로 조건에 맞는 후보를 찾으세요 (risk_grade/keyword 등 실제 질문에서 나온
@@ -75,6 +74,14 @@ _RECOMMENDATION_WORDS = ("추천", "뭐 사면", "뭐살", "투자하면 좋", "
 _SPECIFIC_RECOMMENDATION_WORDS = ("상품추천", "구체", "실제 상품", "펀드명", "상품명")
 _SPECIFIC_PRODUCT_WORDS = ("어때", "위험", "수수료", "보수", "수익률", "설명", "분석")
 _COMPARISON_WORDS = ("비교", "차이", " vs ", "VS")
+_REFERENCE_WORDS = ("그중", "방금", "앞에서", "위에서", "두 번째", "첫 번째", "이 상품", "이 펀드")
+_PROFILE_FIELD_LABELS = {
+    "account_type": "계좌유형",
+    "risk_profile": "위험성향",
+    "investment_horizon": "투자기간",
+    "monthly_investment": "투자금액",
+    "investment_goal": "투자목적",
+}
 
 
 def _combined_user_text(state: PensionAgentState) -> str:
@@ -106,6 +113,34 @@ def _is_specific_product_or_comparison(text: str) -> bool:
     if any(word in text for word in _COMPARISON_WORDS):
         return True
     return ("펀드" in text or "상품" in text) and any(word in text for word in _SPECIFIC_PRODUCT_WORDS)
+
+
+def _is_context_reference_without_target(state: PensionAgentState) -> bool:
+    text = state["question"]
+    if state.get("conversation_history"):
+        return False
+    if "코드:" in text or "상품코드" in text:
+        return False
+    return any(word in text for word in _REFERENCE_WORDS)
+
+
+def _context_reference_response(state: PensionAgentState) -> tuple[str, list[RetrievedItem], dict, bool] | None:
+    if not _is_context_reference_without_target(state):
+        return None
+    questions = [
+        "어떤 상품을 말하는지 상품명 또는 상품코드를 알려주세요.",
+        "비교 질문이라면 비교할 상품명 또는 상품코드를 모두 알려주세요.",
+        "원하시는 확인 항목이 위험, 보수, 수익률, 투자전략 중 무엇인지 알려주세요.",
+    ]
+    draft = (
+        "현재 평가 호출에는 이전 대화 내용이 함께 제공되지 않아, 질문의 '그중' 또는 '이 펀드'가 "
+        "어떤 상품을 가리키는지 확인할 수 없습니다.\n\n"
+        "상품을 추측해서 답하면 다른 펀드의 위험·보수·수익률을 잘못 안내할 수 있으므로, "
+        "특정 상품에 대한 판단은 보류하겠습니다.\n\n"
+        "정확한 답변을 위해 다음 정보를 한 번에 알려주세요.\n"
+        + "\n".join(f"{i}. {question}" for i, question in enumerate(questions, start=1))
+    )
+    return draft, [], dict(state.get("recommendation_profile") or {}), True
 
 
 def _extract_recommendation_profile(state: PensionAgentState) -> dict:
@@ -228,25 +263,44 @@ def _extract_preferred_product_type(text: str) -> str | None:
 
 def _missing_profile_fields(profile: dict) -> list[str]:
     missing = []
-    if not profile.get("monthly_investment"):
-        missing.append("monthly_investment")
+    if not profile.get("account_type"):
+        missing.append("account_type")
     if not profile.get("risk_profile") and not profile.get("loss_tolerance"):
         missing.append("risk_profile")
     if not profile.get("investment_horizon") and not profile.get("age_or_retirement_horizon"):
         missing.append("investment_horizon")
+    if not profile.get("monthly_investment"):
+        missing.append("monthly_investment")
     if not profile.get("investment_goal"):
         missing.append("investment_goal")
     return missing
 
 
-def _next_profile_question(missing: list[str]) -> str:
+def _clarification_questions(missing: list[str]) -> list[str]:
     prompts = {
-        "monthly_investment": "추천을 위해 몇 가지만 먼저 확인할게요.\n한 달에 어느 정도 금액을 투자할 예정인가요?",
-        "risk_profile": "투자할 때 어느 정도의 가격 변동까지 감수할 수 있나요?\n예를 들어 안정형 / 중립형 / 공격형 중 가장 가까운 성향을 알려주세요.",
-        "investment_horizon": "예상 투자 기간은 어느 정도인가요?\n예를 들어 3년 이하, 5년 이상, 은퇴 전까지처럼 알려주세요.",
-        "investment_goal": "투자 목적은 무엇에 가장 가까운가요?\n예를 들어 노후 준비, 절세, 목돈 마련, 안정적 현금흐름 중에서 알려주세요.",
+        "account_type": "어떤 계좌에서 투자할 예정인가요? IRP, DC, DB, 연금저축 중 선택해 주세요.",
+        "risk_profile": "안정형, 중립형, 공격형 중 어느 투자성향에 가깝나요?",
+        "investment_horizon": "예상 투자기간은 어느 정도인가요?",
+        "monthly_investment": "투자 가능 금액 또는 월 납입금액은 얼마인가요?",
+        "investment_goal": "가장 중요한 투자목적은 무엇인가요? 예: 노후 준비, 절세, 안정적 운용",
     }
-    return prompts[missing[0]]
+    return [prompts[field] for field in missing]
+
+
+def _clarification_answer(profile: dict, missing: list[str]) -> str:
+    questions = _clarification_questions(missing)
+    known = _format_profile_summary(profile)
+    missing_labels = ", ".join(_PROFILE_FIELD_LABELS.get(field, field) for field in missing)
+    known_block = f"\n\n현재 확인된 조건은 다음과 같습니다.\n{known}" if known else ""
+    return (
+        "현재 질문만으로는 계좌별 투자 제한과 투자성향을 확인할 수 없어 특정 상품을 바로 추천하기 어렵습니다."
+        f"{known_block}\n\n"
+        "현재 정보만으로는 연금계좌에서 일반적으로 고려할 수 있는 상품 유형을 설명하는 정도는 가능하지만, "
+        "개별 펀드명·상품코드·수익률 순위를 확정 추천하는 것은 안전하지 않습니다.\n\n"
+        f"구체적인 추천을 위해 부족한 정보는 {missing_labels}입니다. 다음 정보를 한 번에 알려주세요.\n"
+        + "\n".join(f"{i}. {question}" for i, question in enumerate(questions, start=1))
+        + "\n\n위 정보가 확인되지 않은 상태에서는 특정 펀드명이나 상품코드를 임의로 추천하지 않겠습니다."
+    )
 
 
 def _recommend_product_types(profile: dict) -> list[str]:
@@ -315,6 +369,10 @@ def _product_type_reasons(types: list[str]) -> str:
 
 
 def _recommendation_flow_response(state: PensionAgentState) -> tuple[str, list[RetrievedItem], dict, bool] | None:
+    reference_response = _context_reference_response(state)
+    if reference_response is not None:
+        return reference_response
+
     current = state["question"]
     combined = _combined_user_text(state)
     if _is_specific_product_or_comparison(current) and not _is_specific_recommendation_request(current):
@@ -327,9 +385,9 @@ def _recommendation_flow_response(state: PensionAgentState) -> tuple[str, list[R
     wants_specific = _is_specific_recommendation_request(current)
 
     if missing:
-        return _next_profile_question(missing), [], profile, True
+        return _clarification_answer(profile, missing), [], profile, True
 
-    if wants_specific:
+    if wants_specific or _is_recommendation_intent(current):
         draft, context = _specific_product_recommendation(profile, state)
         return draft, context, profile, False
 
@@ -499,6 +557,7 @@ def build_product_agent_node():
         recommendation_flow = _recommendation_flow_response(state)
         if recommendation_flow is not None:
             draft, context, profile, needs_clarification = recommendation_flow
+            missing = _missing_profile_fields(profile)
             recommendation_stage = (
                 "clarification"
                 if needs_clarification
@@ -513,6 +572,17 @@ def build_product_agent_node():
                 "recommendation_profile": profile,
                 "needs_clarification": needs_clarification,
                 "recommendation_stage": recommendation_stage,
+                "missing_information": [_PROFILE_FIELD_LABELS.get(field, field) for field in missing]
+                if needs_clarification
+                else [],
+                "clarification_questions": _clarification_questions(missing)
+                if needs_clarification
+                else [],
+                "response_mode": "clarification_included"
+                if needs_clarification
+                else "complete"
+                if context
+                else "conditional",
                 "repair_attempted": state.get("verification") is not None,
             }
 

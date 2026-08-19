@@ -12,10 +12,12 @@ import pytest
 
 os.environ.setdefault("CLOVASTUDIO_API_KEY", "dummy-key-for-wiring-test-only")
 
+import src.agents.graph as graph_module
 from src.agents.graph import (
     NODE_NAMES,
     _route_after_grounding,
     _route_after_info,
+    _route_after_product,
     _route_after_router,
     build_graph,
 )
@@ -127,9 +129,44 @@ def test_route_after_grounding_clarification_is_not_repaired():
     assert _route_after_grounding(state) == "generator"
 
 
+def test_route_after_product_clarification_goes_to_generator():
+    assert _route_after_product({"needs_clarification": True}) == "generator"
+
+
+def test_graph_accepts_minimal_evaluation_input(monkeypatch):
+    def fake_router_builder():
+        return lambda state: {"is_safe": True, "scope": "범위내", "intent": ["상품형"]}
+
+    def fake_product_builder():
+        return lambda state: {
+            "product_draft": "현재 질문만으로는 특정 상품 추천이 어렵습니다.",
+            "retrieved_context": [],
+            "tool_trace": [],
+            "needs_clarification": True,
+            "response_mode": "clarification_included",
+        }
+
+    def fake_generator_builder():
+        return lambda state: {
+            "answer": state["product_draft"],
+            "think_trace": "ok",
+        }
+
+    monkeypatch.setattr(graph_module, "build_router_node", fake_router_builder)
+    monkeypatch.setattr(graph_module, "build_product_agent_node", fake_product_builder)
+    monkeypatch.setattr(graph_module, "build_generator_node", fake_generator_builder)
+
+    app = graph_module.build_graph()
+    result = app.invoke({"question_id": "single-1", "question": "상품 추천해줘"})
+
+    for key in ("question_id", "question", "retrieved_context", "think_trace", "answer"):
+        assert key in result
+    assert result["answer"]
+
+
 @pytest.mark.skipif(
-    os.environ.get("CLOVASTUDIO_API_KEY", "").startswith("dummy-"),
-    reason="실제 CLOVASTUDIO_API_KEY가 있어야 엔드투엔드 실행이 가능합니다",
+    os.environ.get("RUN_LIVE_AGENT_TESTS") != "1",
+    reason="실제 API 네트워크 호출이 필요하므로 RUN_LIVE_AGENT_TESTS=1일 때만 실행합니다",
 )
 def test_graph_end_to_end_smoke():
     """실제 API 키가 있을 때만 도는 엔드투엔드 스모크 테스트. 지금은 항상 skip된다."""

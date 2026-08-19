@@ -35,6 +35,8 @@ from src.rules.withdrawal_limit import (
 def deterministic_info_response(question: str) -> tuple[str, list[RetrievedItem]] | None:
     text = _compact(question)
 
+    if _is_tax_credit_calculation_missing_question(question):
+        return _tax_credit_calculation_missing_response()
     if _is_tax_benefit_overview_question(text):
         return _tax_benefit_overview_response()
     if _is_tax_credit_limit_question(text):
@@ -59,6 +61,7 @@ def should_force_info_agent(question: str) -> bool:
     text = _compact(question)
     return any(
         (
+            _is_tax_credit_calculation_missing_question(question),
             _is_tax_credit_limit_question(text),
             _is_tax_benefit_overview_question(text),
             _is_early_withdrawal_general_question(text),
@@ -87,6 +90,43 @@ def _pct(rate: float) -> str:
 
 def _context(source: str, content: str) -> list[RetrievedItem]:
     return [{"source": source, "content": content, "node": "info_agent"}]
+
+
+def _is_tax_credit_calculation_missing_question(question: str) -> bool:
+    text = _compact(question)
+    if "세액공제" not in text:
+        return False
+    if not any(word in text for word in ("계산", "받을수", "받을수있는", "금액", "얼마받")):
+        return False
+    has_contribution = any(word in text for word in ("연금저축", "IRP")) and bool(re.search(r"\d", text))
+    has_income = any(word in text for word in ("연봉", "총급여", "종합소득", "소득금액")) and bool(re.search(r"\d", text))
+    return not (has_contribution and has_income)
+
+
+def _tax_credit_calculation_missing_response() -> tuple[str, list[RetrievedItem]]:
+    source = "doc41 세액공제 계산 입력값 규칙"
+    content = (
+        f"세액공제액 계산에는 연금저축 납입액, IRP 납입액, 총급여 또는 종합소득금액이 필요합니다. "
+        f"세액공제 대상 납입한도는 연금저축 단독 {_won(PENSION_SAVINGS_ONLY_LIMIT)}, "
+        f"연금저축+IRP 합산 {_won(COMBINED_CREDIT_LIMIT)}입니다. "
+        f"세액공제율은 총급여 {_won(INCOME_THRESHOLD_SALARY)} 이하 또는 종합소득금액 "
+        f"{_won(INCOME_THRESHOLD_COMPREHENSIVE)} 이하이면 {_pct(CREDIT_RATE_LOW)}, "
+        f"초과이면 {_pct(CREDIT_RATE_HIGH)}입니다."
+    )
+    draft = (
+        "세액공제 금액은 납입액과 소득구간이 함께 있어야 계산할 수 있습니다.\n\n"
+        "현재 질문에는 실제 계산에 필요한 입력값이 부족하므로, 세액공제액을 임의로 산출하지 않겠습니다.\n\n"
+        "현재 답변 가능한 범위는 다음과 같습니다.\n"
+        "- 세액공제 대상 한도는 연금저축 단독 연 600만원, 연금저축+IRP 합산 연 900만원입니다.\n"
+        "- 세액공제율은 총급여 5,500만원 이하 또는 종합소득금액 4,500만원 이하이면 16.5%, "
+        "그 초과 구간이면 13.2%입니다.\n\n"
+        "정확한 계산을 위해 다음 정보를 한 번에 알려주세요.\n"
+        "1. 올해 연금저축에 납입한 금액은 얼마인가요?\n"
+        "2. 올해 IRP에 납입한 금액은 얼마인가요?\n"
+        "3. 직장인이라면 총급여, 개인사업자라면 종합소득금액은 얼마인가요?\n"
+        "4. 이미 회사 DC/IRP 추가납입 등 다른 연금계좌 납입액이 있다면 함께 알려주세요."
+    )
+    return draft, _context(source, content)
 
 
 def _is_tax_benefit_overview_question(text: str) -> bool:

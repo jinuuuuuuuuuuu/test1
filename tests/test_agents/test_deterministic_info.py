@@ -22,6 +22,19 @@ def test_tax_benefit_overview_question_gets_grounded_deterministic_answer():
     assert "1,500만원" in context[0]["content"]
 
 
+def test_tax_credit_calculation_missing_inputs_asks_all_required_values():
+    question = "제가 받을 수 있는 세액공제 금액을 계산해 주세요."
+    draft, context = deterministic_info_response(question)
+
+    assert should_force_info_agent(question) is True
+    assert "임의로 산출하지 않겠습니다" in draft
+    assert "연금저축에 납입한 금액" in draft
+    assert "IRP에 납입한 금액" in draft
+    assert "총급여" in draft
+    assert "종합소득금액" in draft
+    assert context
+
+
 def test_early_withdrawal_general_question_gets_reasons():
     draft, context = deterministic_info_response("IRP에서 중도인출은 어떤 경우에 가능한가요?")
 

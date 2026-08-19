@@ -11,6 +11,7 @@ from typing import Annotated, Literal, NotRequired, TypedDict
 
 Intent = Literal["정보형", "상품형"]
 Scope = Literal["범위내", "부분관련", "범위외"]
+ResponseMode = Literal["complete", "conditional", "clarification_included"]
 
 
 class RetrievedItem(TypedDict):
@@ -72,6 +73,10 @@ class PensionAgentState(TypedDict, total=False):
     recommendation_profile: dict
     # clarification/type_recommendation/specific_recommendation — 상품 추천 2단계 흐름 식별용.
     recommendation_stage: str | None
+    # 싱글턴 평가 응답 내부 메타데이터 — 외부 EvaluationResponse에는 노출하지 않는다.
+    missing_information: list[str]
+    clarification_questions: list[str]
+    response_mode: ResponseMode
     # 세액공제·중도인출 등 고위험 정보질의를 결정론 답변 경로로 처리했는지 여부.
     deterministic_info: bool
 

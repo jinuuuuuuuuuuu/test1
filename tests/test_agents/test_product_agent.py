@@ -8,7 +8,9 @@ from src.agents.product_agent import (
 def test_recommendation_flow_starts_with_one_question():
     draft, context, profile, needs_clarification = _recommendation_flow_response({"question": "상품 추천해줘"})
 
-    assert "한 달에 어느 정도" in draft
+    for word in ("계좌유형", "위험성향", "투자기간", "투자금액", "투자목적"):
+        assert word in draft
+    assert "특정 펀드명이나 상품코드를 임의로 추천하지 않겠습니다" in draft
     assert context == []
     assert profile == {}
     assert needs_clarification is True
@@ -25,7 +27,10 @@ def test_recommendation_flow_keeps_context_and_asks_next_missing_field():
     draft, context, profile, needs_clarification = _recommendation_flow_response(state)
 
     assert profile["monthly_investment"] == "월 30만원 정도"
-    assert "안정형 / 중립형 / 공격형" in draft
+    assert "투자 가능 금액 또는 월 납입금액" not in draft
+    assert "계좌에서 투자할 예정" in draft
+    assert "안정형, 중립형, 공격형" in draft
+    assert "예상 투자기간" in draft
     assert context == []
     assert needs_clarification is True
 
@@ -41,8 +46,9 @@ def test_recommendation_flow_accepts_plain_amount_follow_up():
     draft, context, profile, needs_clarification = _recommendation_flow_response(state)
 
     assert profile["monthly_investment"] == "월 20만원"
-    assert "한 달에 어느 정도" not in draft
-    assert "안정형 / 중립형 / 공격형" in draft
+    assert "투자 가능 금액 또는 월 납입금액" not in draft
+    assert "계좌에서 투자할 예정" in draft
+    assert "안정형, 중립형, 공격형" in draft
     assert context == []
     assert needs_clarification is True
 
@@ -66,8 +72,8 @@ def test_recommendation_flow_accepts_amount_with_suffix_follow_up():
     draft, context, profile, needs_clarification = _recommendation_flow_response(state)
 
     assert profile["monthly_investment"] == "월 30만원 이상"
-    assert "한 달에 어느 정도" not in draft
-    assert "예상 투자 기간" in draft
+    assert "투자 가능 금액 또는 월 납입금액" not in draft
+    assert "예상 투자기간" in draft
     assert context == []
     assert needs_clarification is True
 
@@ -80,12 +86,13 @@ def test_recommendation_flow_infers_retirement_goal_from_irp_request():
     assert profile["account_type"] == "IRP"
     assert profile["risk_profile"] == "안정형"
     assert profile["investment_goal"] == "노후/은퇴 준비"
-    assert "한 달에 어느 정도" in draft
+    assert "투자 가능 금액 또는 월 납입금액" in draft
+    assert "예상 투자기간" in draft
     assert context == []
     assert needs_clarification is True
 
 
-def test_recommendation_flow_recommends_product_types_before_specific_funds():
+def test_recommendation_flow_with_missing_account_asks_for_all_missing_info():
     state = {
         "question": "노후 준비 목적이야",
         "recommendation_profile": {
@@ -102,16 +109,13 @@ def test_recommendation_flow_recommends_product_types_before_specific_funds():
 
     draft, context, profile, needs_clarification = _recommendation_flow_response(state)
 
-    assert "TDF" in draft
-    assert "채권혼합형" in draft
-    assert "`상품추천`" in draft
-    assert "상품코드" not in draft
+    assert "계좌유형" in draft
+    assert "IRP, DC, DB, 연금저축" in draft
     assert context == []
-    assert profile["recommended_product_types"] == ["TDF", "채권혼합형 펀드"]
-    assert needs_clarification is False
+    assert needs_clarification is True
 
 
-def test_product_node_marks_type_recommendation_stage():
+def test_product_node_marks_clarification_stage_for_incomplete_recommendation():
     node = build_product_agent_node()
     result = node(
         {
@@ -125,15 +129,17 @@ def test_product_node_marks_type_recommendation_stage():
         }
     )
 
-    assert result["recommendation_stage"] == "type_recommendation"
-    assert "`상품추천`" in result["product_draft"]
+    assert result["recommendation_stage"] == "clarification"
+    assert result["response_mode"] == "clarification_included"
+    assert "계좌유형" in result["product_draft"]
     assert result["retrieved_context"] == []
 
 
-def test_recommendation_flow_specific_keyword_uses_fund_db():
+def test_recommendation_flow_sufficient_profile_uses_fund_db():
     state = {
-        "question": "상품추천",
+        "question": "IRP 계좌에서 월 30만원씩 20년간 투자할 중립형 상품을 추천해 주세요.",
         "recommendation_profile": {
+            "account_type": "IRP",
             "monthly_investment": "월 30만원",
             "risk_profile": "중립형",
             "investment_horizon": "20년 이상",
@@ -153,7 +159,7 @@ def test_recommendation_flow_specific_keyword_uses_fund_db():
 
 
 def test_recommendation_flow_does_not_capture_specific_product_question():
-    assert _recommendation_flow_response({"question": "이 펀드 위험이 뭐야?"}) is None
+    assert _recommendation_flow_response({"question": "미래에셋솔로몬단기국공채 펀드는 어때?"}) is None
 
 
 def test_specific_recommendation_with_missing_info_asks_only_needed_question():
@@ -161,9 +167,22 @@ def test_specific_recommendation_with_missing_info_asks_only_needed_question():
         "question": "위험등급 낮고 수수료 적은 상품을 구체적으로 추천해줘"
     })
 
-    assert "한 달에 어느 정도" in draft
+    for word in ("계좌유형", "투자기간", "투자금액", "투자목적"):
+        assert word in draft
     assert context == []
     assert profile["risk_profile"] == "안정형"
+    assert needs_clarification is True
+
+
+def test_context_reference_without_history_asks_for_product_identity():
+    draft, context, profile, needs_clarification = _recommendation_flow_response({
+        "question": "그중 두 번째 상품은 어때?"
+    })
+
+    assert "이전 대화 내용" in draft
+    assert "상품명 또는 상품코드" in draft
+    assert context == []
+    assert profile == {}
     assert needs_clarification is True
 
 

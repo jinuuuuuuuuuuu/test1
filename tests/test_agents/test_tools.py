@@ -32,6 +32,7 @@ _HAS_CHROMA_DOCS = os.path.exists(DEFAULT_CHROMA_DIR)
 _HAS_REAL_API_KEY = not os.environ.get("CLOVASTUDIO_API_KEY", "").startswith("dummy-") and os.environ.get(
     "CLOVASTUDIO_API_KEY"
 )
+_RUN_LIVE_AGENT_TESTS = os.environ.get("RUN_LIVE_AGENT_TESTS") == "1"
 
 
 def test_tool_registries_have_expected_members():
@@ -179,8 +180,8 @@ def test_get_fund_detail_tool_known_and_unknown_code():
 
 
 @pytest.mark.skipif(
-    not (_HAS_CHROMA_DOCS and _HAS_REAL_API_KEY),
-    reason="data/processed/chroma_docs 및 실제 CLOVASTUDIO_API_KEY가 있어야 임베딩 검색이 가능합니다",
+    not (_HAS_CHROMA_DOCS and _HAS_REAL_API_KEY and _RUN_LIVE_AGENT_TESTS),
+    reason="임베딩 API 네트워크 호출이 필요하므로 RUN_LIVE_AGENT_TESTS=1일 때만 실행합니다",
 )
 def test_search_pension_docs_tool_returns_relevant_chunks():
     out = search_pension_docs.invoke({"query": "연금저축계좌 중도인출 사유", "k": 3})

@@ -105,8 +105,8 @@ def build_grounding_node():
         clarification = bool(state.get("needs_clarification"))
         type_recommendation = state.get("recommendation_stage") == "type_recommendation"
         clarification_note = (
-            "\n\n[참고] 초안은 답변 조건이 불충분해 사용자에게 되묻는 역질문으로 마무리한 "
-            "초안입니다. 역질문으로 답한 것 자체를 요구사항 누락으로 판정하지 마세요."
+            "\n\n[참고] 초안은 답변 조건이 불충분해 첫 답변 안에 정보한계와 필요한 역질문을 "
+            "포함한 초안입니다. 부족한 정보를 묻는 것 자체를 요구사항 누락으로 판정하지 마세요."
             if clarification
             else ""
         )

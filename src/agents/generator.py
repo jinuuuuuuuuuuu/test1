@@ -163,7 +163,9 @@ def _assembly_lines(state: PensionAgentState, context: list) -> list[str]:
     else:
         lines.append("  - 사용한 근거 없음 (근거가 필요한 수치는 답변에서 제외)")
     if state.get("needs_clarification"):
-        lines.append("  - 조건 불충분 → 답을 만들지 않고 역질문을 다듬어 전달")
+        lines.append("  - 조건 불충분 → 첫 답변에 정보한계와 필요한 역질문 전체를 포함")
+    if state.get("response_mode"):
+        lines.append(f"  - 응답 모드: {state['response_mode']}")
     if state.get("repair_attempted"):
         lines.append("  - ④검증 탈락으로 ②③을 1회 재실행한 결과를 반영 (재실행 한도 1회 소진)")
     return lines
@@ -244,7 +246,7 @@ def build_generator_node():
         )
         if state.get("needs_clarification"):
             return {
-                "answer": draft,
+                "answer": _append_reference_line(draft, context),
                 "think_trace": _format_think_trace(state),
             }
         if state.get("recommendation_stage") == "type_recommendation":

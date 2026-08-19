@@ -171,4 +171,4 @@ def test_narrative_reports_clarification_mode():
     }
     trace = _format_think_trace(state)
     assert "검증 면제" in trace
-    assert "역질문을 다듬어 전달" in trace
+    assert "첫 답변에 정보한계와 필요한 역질문 전체를 포함" in trace
