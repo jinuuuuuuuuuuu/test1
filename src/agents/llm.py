@@ -24,18 +24,35 @@ from langchain_naver import ChatClovaX, ClovaXEmbeddings
 # with_structured_output()이 기본으로 얹는 parallel_tool_calls를 CLOVA가 인식하지 못해 꺼야 한다.
 _DISABLE_PARALLEL_TOOL_CALLS = {"parallel_tool_calls": None}
 
+# ⚠️ 타임아웃을 명시하지 않으면 openai SDK 기본값(read 600초)이 그대로 적용된다.
+# 실측: CLOVA가 응답하지 않는 호출 하나 때문에 질문 1건이 629초(600초 대기 + 재시도 성공)
+# 걸린 사례가 있었다. 대회 평가는 GET 엔드포인트 1회 호출이라 이 정도면 타임아웃 처리된다.
+# 정상 응답은 실측 1~4초라 30초면 충분한 여유다.
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 30.0
+
 
 def get_llm(
     model_name: str,
     temperature: float = 0.0,
     thinking_effort: Optional[str] = None,
+    timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
 ) -> ChatClovaX:
     """모델명(예: HCX-DASH-002, HCX-007, HCX-005)으로 ChatClovaX 인스턴스를 만든다.
 
     thinking_effort: HCX-007처럼 Thinking이 기본 활성화된 모델에서 bind_tools()/
     with_structured_output()을 쓰려면 "none"을 넘겨 꺼야 한다.
+
+    timeout: 호출 1건의 상한(초). max_retries=0으로 SDK 자체 재시도를 끄고 재시도는
+    call_with_retry 한 곳에서만 하도록 모은다 — 안 그러면 SDK 재시도(기본 2회)와
+    우리 재시도(3회)가 곱해져 최악의 경우 수십 분까지 늘어난다.
     """
-    kwargs = {"model": model_name, "temperature": temperature, "disabled_params": _DISABLE_PARALLEL_TOOL_CALLS}
+    kwargs = {
+        "model": model_name,
+        "temperature": temperature,
+        "disabled_params": _DISABLE_PARALLEL_TOOL_CALLS,
+        "request_timeout": timeout,
+        "max_retries": 0,
+    }
     if thinking_effort is not None:
         kwargs["thinking"] = {"effort": thinking_effort}
     return ChatClovaX(**kwargs)
@@ -48,11 +65,16 @@ def get_embeddings(model_name: str = "clir-emb-dolphin") -> ClovaXEmbeddings:
 
 def call_with_retry(fn, *args, max_retries: int = 3, backoff_seconds: float = 1.5, **kwargs):
     """CLOVA Studio가 간헐적으로 내는 일시적 오류(같은 요청인데 가끔 나는 "Unsupported
-    function" 400, 429 rate limit 등 — openai.APIError 계열)를 재시도로 흡수한다.
-    실측상 코드/설정 문제가 아니라 같은 입력으로 재요청하면 성공하는 경우가 많다.
+    function" 400, 429 rate limit, 응답 없음으로 인한 타임아웃 등 — openai.APIError 계열)를
+    재시도로 흡수한다. 실측상 코드/설정 문제가 아니라 같은 입력으로 재요청하면 성공하는
+    경우가 많다 (APITimeoutError도 APIError 하위라 여기서 함께 잡힌다).
 
     LLM invoke뿐 아니라 검색 시점 임베딩 호출(similarity_search 내부) 같은 일반 함수도
     감쌀 수 있다. APIError가 아닌 예외(코드 버그)는 재시도 없이 그대로 전파한다.
+
+    ⚠️ 호출 1건의 상한은 get_llm(timeout=...)이 정한다. 이 함수는 그 상한을 넘겨 실패한
+    호출을 몇 번 더 시도할지만 정한다 — 최악의 경우 시간은 (timeout × max_retries)다.
+    평가 API 서버(Phase 4)에서는 이와 별개로 요청 전체에 대한 데드라인이 필요하다.
     """
     import time
 

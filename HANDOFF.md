@@ -84,7 +84,7 @@ source .venv/bin/activate        # macOS/Linux — Windows는 README 참고
 pip install -r requirements.txt
 cp .env.sample .env              # CLOVASTUDIO_API_KEY 채우기 (본인 키 발급 필요)
 
-pytest -q                        # 223 passed, 2 skipped 나오면 정상
+pytest -q                        # 229 passed, 2 skipped 나오면 정상
 python scripts/chat.py           # 터미널에서 직접 질문해보기
 ```
 
@@ -93,6 +93,13 @@ python scripts/chat.py           # 터미널에서 직접 질문해보기
 1. **평가용 API 서버(Phase 4) 미착수** — `src/api/`가 빈 폴더입니다. `Dockerfile`의 CMD가
    존재하지 않는 `src.api.main:app`을 가리키고 있어서 지금 `docker run`하면 바로 실패합니다.
    제출 전 반드시 만들어야 하는 가장 중요한 남은 작업입니다.
+
+   ⚠️ 이때 **요청 전체에 대한 데드라인**을 반드시 넣어야 합니다. LLM 호출 1건의 상한은
+   `get_llm(timeout=30초)`으로 막아뒀지만, 한 질문은 라우터·에이전트(ReAct 루프)·검증·생성기로
+   여러 번 호출하므로 개별 상한만으로는 전체 시간이 보장되지 않습니다. 실측으로 타임아웃이
+   없을 때 질문 1건이 629초 걸린 사례가 있었고(원인: openai SDK 기본 read 타임아웃 600초),
+   평가는 GET 엔드포인트 1회 호출이라 이 경우 그대로 0점입니다. 서버 레벨에서 전체 데드라인을
+   두고, 초과 시 부분 답변이나 정형 응답이라도 반환하는 편이 무응답보다 낫습니다.
 2. **자체 평가셋 미실행** — `eval/eval_questions_100.csv`에 100문항(대주제/난이도/질문유형/
    중점평가지표/점검포인트까지 구조화)을 만들어뒀는데 아직 실제로 돌려서 정답률을 뽑아보진
    않았습니다.
