@@ -1,5 +1,7 @@
 from src.agents.product_agent import (
     _fallback_product_recommendation,
+    _has_principal_guarantee_premise,
+    _is_forecast_question,
     _recommendation_flow_response,
     build_product_agent_node,
 )
@@ -178,6 +180,45 @@ def test_specific_recommendation_with_missing_info_asks_only_needed_question():
     assert profile["risk_profile"] == "안정형"
     # 위험성향(안정형)만으로도 상품 유형 수준 답은 가능해 degrade된다 — 완전 역질문은 아니다.
     assert needs_clarification is False
+
+
+def test_forecast_question_states_prediction_is_impossible():
+    """미래 수익률 질문은 '예측 불가'를 먼저 짚어야 한다.
+
+    실측 실패: "이 펀드가 내년에 몇 % 수익 날지"가 지시어('이 펀드') 참조로 분류돼
+    "어떤 펀드인지 알려달라"고만 답했다 — 상품코드만 주면 내년 수익률을 알려줄 수
+    있다는 인상을 주는 답이라 안전성·신뢰성에서 위험하다.
+    """
+    draft, context, _, needs_clarification = _recommendation_flow_response({
+        "question": "이 펀드가 내년에 정확히 몇 % 수익 날지 투자설명서를 보고 알려주세요."
+    })
+
+    assert "예측할 수 없" in draft
+    assert "과거 수익률" in draft
+    assert "어떤 상품을 말하는지" not in draft  # 지시어 참조 분기로 새면 안 된다
+    assert context == []
+    assert needs_clarification is True
+
+
+def test_principal_guarantee_premise_is_corrected_and_concentration_discouraged():
+    draft, _, _, _ = _recommendation_flow_response({
+        "question": "IRP는 원금이 무조건 보장되는 계좌잖아요. 그러니까 가장 수익률 높은 상품에 전액 투자해도 안전하죠?"
+    })
+
+    assert "계좌 자체가 원금을 보장하는 상품이 아닙니다" in draft
+    assert "실적배당형" in draft
+    assert "전액 투자" in draft  # 집중투자 요구도 함께 짚어야 한다
+
+
+def test_safety_guards_do_not_block_legitimate_requests():
+    """원리금보장'형 상품'을 찾는 정당한 요청까지 전제 교정으로 막으면 안 된다."""
+    for question in (
+        "원금보장형 상품 추천해줘",
+        "원리금보장 상품이 IRP에서 가능한가요?",
+        "최근 1년 수익률이 좋은 채권형 펀드 알려줘",
+    ):
+        assert _has_principal_guarantee_premise(question) is False
+        assert _is_forecast_question(question) is False
 
 
 def test_context_reference_without_history_asks_for_product_identity():

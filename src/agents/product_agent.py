@@ -84,6 +84,114 @@ _PROFILE_FIELD_LABELS = {
 }
 
 
+# ── 안전성 가드 ─────────────────────────────────────────────────────────
+# 라우터에서 무조건 차단하던 질문들을 통과시키도록 바꾼 뒤(전제를 교정해서 답하기 위해),
+# 그 질문들이 상품 Agent의 일반 경로로 흘러 위험한 답을 내는 사례가 실측됐다.
+# 실측 사례: "원금 보장되니까 가장 수익률 높은 상품에 전액 투자해도 되죠?" -> 전제만 부정하고
+# 정작 '매우 높은 위험' 등급 주식형 펀드를 추천, '전액 투자'는 교정하지 않음.
+
+_FORECAST_TIME_WORDS = ("내년", "앞으로", "향후", "미래", "전망", "다음해", "내후년")
+_FORECAST_TARGET_WORDS = ("수익", "오를", "오른다", "떨어질", "얼마나벌", "상승")
+
+# 계좌 자체가 원금을 보장한다는 잘못된 전제 (원리금보장'형 상품'을 찾는 정당한 요청과 구분해야 한다)
+_PRINCIPAL_PREMISE_PATTERNS = (
+    "원금이무조건보장", "원금은무조건보장", "원금이보장되는계좌", "원금보장되는계좌",
+    "원금이보장되니까", "원금보장이니까", "원금손실이없는계좌", "원금손실없는계좌",
+    "원금이무조건", "무조건보장되는",
+)
+# 이 표현들이 있으면 상품 유형을 찾는 정당한 요청이므로 전제 교정 가드를 태우지 않는다.
+_PRINCIPAL_PRODUCT_WORDS = ("원금보장형", "원리금보장", "원리금지급")
+
+_CONCENTRATION_WORDS = ("전액투자", "전부투자", "몰빵", "올인", "전액을투자", "다넣")
+
+
+def _compact_text(text: str) -> str:
+    return re.sub(r"\s+", "", text or "")
+
+
+def _is_forecast_question(text: str) -> bool:
+    compact = _compact_text(text)
+    return any(w in compact for w in _FORECAST_TIME_WORDS) and any(
+        w in compact for w in _FORECAST_TARGET_WORDS
+    )
+
+
+def _forecast_response(state: PensionAgentState) -> tuple[str, list[RetrievedItem], dict, bool]:
+    draft = (
+        "먼저 짚어드릴 점이 있습니다. 특정 상품의 앞으로의 수익률은 누구도 예측할 수 없고, "
+        "투자설명서에도 미래 수익률을 알려주는 정보는 담겨 있지 않습니다. 과거 수익률은 미래 "
+        "수익을 보장하지 않으며, 확정 수익률을 제시하는 것은 가능하지도 적절하지도 않습니다.\n\n"
+        "대신 보유 자료로 확인해 드릴 수 있는 것은 다음과 같습니다.\n"
+        "- 과거 수익률(최근 1년·3년·설정 이후)\n"
+        "- 위험등급과 변동성\n"
+        "- 총보수 등 비용 구조\n"
+        "- 투자전략과 투자위험 설명\n\n"
+        "확인하고 싶은 상품의 상품명 또는 상품코드를 알려주시면 위 항목들을 정리해 드리겠습니다."
+    )
+    return draft, [], dict(state.get("recommendation_profile") or {}), True
+
+
+def _has_principal_guarantee_premise(text: str) -> bool:
+    compact = _compact_text(text)
+    if any(word in compact for word in _PRINCIPAL_PRODUCT_WORDS):
+        return False
+    return any(pattern in compact for pattern in _PRINCIPAL_PREMISE_PATTERNS)
+
+
+def _has_concentration_request(text: str) -> bool:
+    return any(word in _compact_text(text) for word in _CONCENTRATION_WORDS)
+
+
+# "원금 보장 + 높은 수익"을 동시에 요구 — 존재할 수 없는 조합이라 전제를 짚어야 한다.
+# 단, "원금 손실은 싫은데 그래도 수익률 좋은"처럼 선호를 말한 것은 정상적인 위험회피
+# 표현이므로 걸리면 안 된다 ('보장'을 단정하는 표현만 대상으로 삼는다).
+_GUARANTEE_ASSERTION_WORDS = ("원금보장", "원금이보장", "원금은보장", "원금을보장", "손실없이", "손실이없")
+_HIGH_RETURN_WORDS = ("수익률도높", "수익률높", "고수익", "수익률좋", "수익률도좋", "많이오를")
+
+
+def _is_guaranteed_high_return_request(text: str) -> bool:
+    compact = _compact_text(text)
+    if any(word in compact for word in _PRINCIPAL_PRODUCT_WORDS):
+        return False
+    return any(w in compact for w in _GUARANTEE_ASSERTION_WORDS) and any(
+        w in compact for w in _HIGH_RETURN_WORDS
+    )
+
+
+def _principal_guarantee_response(
+    state: PensionAgentState, concentration: bool, tradeoff: bool = False
+) -> tuple[str, list[RetrievedItem], dict, bool]:
+    if tradeoff:
+        draft = (
+            "먼저 전제를 짚어드려야 할 것 같습니다. 원금이 확실히 보장되면서 동시에 수익률도 "
+            "높은 상품은 존재하지 않습니다. 기대수익과 위험은 함께 움직여서, 원금을 보장하는 "
+            "구조일수록 기대할 수 있는 수익은 낮아집니다.\n\n"
+            "- 원리금보장형 상품(예금 등)은 약정된 원리금을 기대할 수 있는 대신 수익률이 제한적입니다.\n"
+            "- 실적배당형 상품(펀드 등)은 더 높은 수익을 기대할 수 있는 대신 원금 손실이 "
+            "발생할 수 있습니다.\n\n"
+        )
+    else:
+        draft = (
+            "먼저 전제를 바로잡아야 할 것 같습니다. IRP나 연금저축 같은 연금계좌는 계좌 자체가 "
+            "원금을 보장하는 상품이 아닙니다. 연금계좌는 여러 상품을 담는 그릇에 가깝고, 원금 "
+            "보장 여부는 그 안에서 어떤 상품을 운용하느냐에 따라 달라집니다.\n\n"
+            "- 원리금보장형 상품(예금 등)을 담으면 약정된 원리금을 기대할 수 있습니다.\n"
+            "- 실적배당형 상품(펀드 등)을 담으면 운용 성과에 따라 원금 손실이 발생할 수 있습니다.\n\n"
+        )
+    if concentration:
+        draft += (
+            "그래서 '수익률이 가장 높은 상품에 전액 투자'는 권해 드리기 어렵습니다. 과거 수익률이 "
+            "높았다는 것이 앞으로도 높다는 뜻은 아니고, 한 상품에 전액을 집중하면 그 상품이 부진할 때 "
+            "이를 완충할 수단이 없습니다. 연금은 장기간 운용하는 자산이라 손실이 났을 때 회복할 시간과 "
+            "여력이 함께 고려되어야 합니다.\n\n"
+        )
+    draft += (
+        "감내 가능한 위험 수준과 투자기간을 알려주시면, 그 조건에 맞는 상품 유형과 후보를 "
+        "위험등급·총보수·과거 수익률과 함께 비교해 안내해 드리겠습니다."
+    )
+    return draft, [], dict(state.get("recommendation_profile") or {}), True
+
+
 def _combined_user_text(state: PensionAgentState) -> str:
     history = state.get("conversation_history") or []
     previous_user_text = "\n".join(turn.get("question", "") for turn in history)
@@ -402,11 +510,23 @@ def _product_type_reasons(types: list[str]) -> str:
 
 
 def _recommendation_flow_response(state: PensionAgentState) -> tuple[str, list[RetrievedItem], dict, bool] | None:
+    current = state["question"]
+
+    # 안전성 가드가 가장 먼저다 — 아래 분기들(지시어 참조/특정상품 조회)이 먼저 가로채면
+    # "미래 수익률은 알 수 없다", "계좌가 원금을 보장하지 않는다" 같은 교정을 놓친다.
+    # 실측: "이 펀드가 내년에 몇 % 수익 날지" 질문이 지시어 참조로 분류돼, 미래 예측이
+    # 불가능하다는 핵심은 빼고 "어떤 펀드인지 알려달라"고만 답했다.
+    if _is_forecast_question(current):
+        return _forecast_response(state)
+    if _has_principal_guarantee_premise(current):
+        return _principal_guarantee_response(state, concentration=_has_concentration_request(current))
+    if _is_guaranteed_high_return_request(current):
+        return _principal_guarantee_response(state, concentration=False, tradeoff=True)
+
     reference_response = _context_reference_response(state)
     if reference_response is not None:
         return reference_response
 
-    current = state["question"]
     combined = _combined_user_text(state)
     if _is_specific_product_or_comparison(current) and not _is_specific_recommendation_request(current):
         return None
