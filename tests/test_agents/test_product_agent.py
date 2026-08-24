@@ -1,5 +1,7 @@
 from src.agents.product_agent import (
+    _extract_recommendation_profile,
     _fallback_product_recommendation,
+    _financial_limit_note,
     _recommendation_flow_response,
     build_product_agent_node,
 )
@@ -156,6 +158,66 @@ def test_recommendation_flow_sufficient_profile_uses_fund_db():
     assert context
     assert all("상품코드=" in item["content"] for item in context)
     assert needs_clarification is False
+
+
+def test_recommendation_uses_core_profile_without_requiring_amount():
+    draft, context, profile, needs_clarification = _recommendation_flow_response({
+        "question": (
+            "저는 60세이고 IRP 계좌에서 3년 정도 투자하려고 합니다. "
+            "손실을 최대한 줄이고 싶은데 상품 추천해주세요."
+        )
+    })
+
+    assert profile["account_type"] == "IRP"
+    assert profile["investment_horizon"] == "3년 정도"
+    assert profile["risk_profile"] == "안정형"
+    assert "monthly_investment" not in profile
+    assert context
+    assert "위험등급" in draft
+    assert needs_clarification is False
+
+
+def test_recommendation_parses_age_long_horizon_and_profit_seeking():
+    draft, context, profile, needs_clarification = _recommendation_flow_response({
+        "question": "30대이고 은퇴까지 오래 남아서 수익성을 추구하는 연금 상품을 추천해주세요."
+    })
+
+    assert profile["age_or_retirement_horizon"] == "30대"
+    assert profile["investment_horizon"] == "장기"
+    assert profile["risk_profile"] == "공격형"
+    assert "인덱스 펀드" in draft
+    assert "계좌유형" in draft
+    assert context == []
+    assert needs_clarification is True
+
+
+def test_recommendation_parses_lump_sum_and_high_equity_preference():
+    profile = _extract_recommendation_profile({
+        "question": (
+            "30대이고 IRP 계좌에서 5천만원을 굴리려고 합니다. "
+            "주식형 비중을 최대한 높이고 싶은데 상품 추천해주세요."
+        )
+    })
+
+    assert profile["account_type"] == "IRP"
+    assert profile["monthly_investment"] == "5천만원"
+    assert profile["risk_profile"] == "공격형"
+    assert profile["preferred_product_type"] == "주식형"
+    assert profile["age_or_retirement_horizon"] == "30대"
+
+
+def test_contradictory_return_request_gets_premise_correction_note():
+    note = _financial_limit_note("확실하게 원금 보장되면서 수익률도 높은 펀드 추천해주세요.")
+
+    assert "동시에 확정하는 펀드는 없습니다" in note
+    assert "원리금보장형" in note
+    assert "원금 손실 가능성" in note
+
+
+def test_account_specific_eligibility_request_reaches_tool_agent():
+    assert _recommendation_flow_response({
+        "question": "DC 계좌에서 투자 가능한 국내 상장주식형 상품 추천해주세요."
+    }) is None
 
 
 def test_recommendation_flow_does_not_capture_specific_product_question():

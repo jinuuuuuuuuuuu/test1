@@ -1,8 +1,9 @@
 # --- LLM / Agent orchestration ---
-langgraph
-langchain
-langchain-core
-langchain-naver   # ChatClovaX (HyperCLOVA X). CLOVASTUDIO_API_KEY 환경변수 필요 (.env.sample 참고)
+langgraph==1.2.11
+langchain==1.3.16
+langchain-core==1.6.0
+langchain-naver==0.1.1   # ChatClovaX (HyperCLOVA X). CLOVASTUDIO_API_KEY 환경변수 필요 (.env.sample 참고)
+langchain-openai==1.6.0  # ChatClovaX의 구조화 출력/Function calling 기반 구현
 
 # --- API server ---
 fastapi

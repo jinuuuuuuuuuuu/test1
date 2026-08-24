@@ -9,9 +9,12 @@ CLOVASTUDIO_API_KEY 환경변수가 필요하다 (.env.sample 참고). 이 함�
 Function calling/Structured Outputs/추론(Thinking)은 동시 이용 불가):
   - HCX-007은 기본적으로 Thinking이 켜져 있어, bind_tools()나 with_structured_output()을
     쓰려면 반드시 thinking={"effort": "none"}으로 꺼야 한다 (안 그러면 400 "tools, reasoning").
-  - with_structured_output()은 (모델 무관) LangChain이 기본으로 parallel_tool_calls를
-    같이 보내는데 CLOVA가 이 파라미터 자체를 모른다 — disabled_params={"parallel_tool_calls":
-    None}으로 꺼줘야 한다.
+  - langchain-naver의 with_structured_output() 기본 method는 function_calling이다. CLOVA의
+    Structured Outputs 엔드포인트를 쓰는 라우터/검증 노드는 반드시 method="json_schema"를
+    명시해야 한다. 그렇지 않으면 구조화 출력 요청이 Function calling으로 전송될 수 있다.
+  - Function calling을 쓰는 Agent에서는 LangChain이 기본으로 parallel_tool_calls를 같이
+    보낼 수 있는데 CLOVA가 이 파라미터를 모른다 — disabled_params={"parallel_tool_calls":
+    None}으로 꺼둔다.
   - HCX-DASH-002는 bind_tools()는 되지만 with_structured_output()은 (function_calling/
     json_mode 둘 다) "Unsupported function"으로 아예 안 된다 — 구조화 출력이 필요한 노드에는
     쓸 수 없다.

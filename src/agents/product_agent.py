@@ -40,7 +40,7 @@ PRODUCT_AGENT_SYSTEM_PROMPT = """당신은 연금 상품(펀드) 추천 에이�
 범위 밖 부분은 한계를 밝히고, 안내된 연금 관점으로만 답하세요.
 
 절대 규칙 — 단정적 추천 금지: "좋은 상품 추천해줘", "괜찮은 연금상품 3개 추천해줘"처럼
-계좌유형(DB/DC/IRP)·투자기간·위험선호·금액 등 구체적 조건이 없는 막연한 요청에는 상품을
+계좌유형(DB/DC/IRP)·투자기간·위험선호 등 핵심 조건이 없는 막연한 요청에는 상품을
 지어내서 추천하지 마세요. 이 경우 search_funds/check_product_pension_eligibility 등 툴을
 호출하지 말고, 답변을 확인이 필요한 조건을 묻는 역질문으로 작성하세요(예: "투자 가능한
 계좌유형과 감내 가능한 위험 수준을 알려주시면 후보를 좁혀드릴게요"). 이런 역질문 답변은
@@ -50,6 +50,14 @@ PRODUCT_AGENT_SYSTEM_PROMPT = """당신은 연금 상품(펀드) 추천 에이�
 "한 달에 얼마를 투자할 예정인가요?"처럼 한 항목만 묻고 종료하면 안 됩니다. 계좌유형·위험선호·
 투자기간·투자금액·투자목적 중 부족한 항목을 모두 나열하고, 부족한 상태에서는 특정 펀드명이나
 상품코드를 임의로 추천하지 마세요. 단정적 표현("이 상품이 가장 좋습니다")은 쓰지 마세요.
+다만 계좌유형·위험선호·투자기간이 확인됐다면 투자금액이나 목적이 명시되지 않았다는 이유만으로
+추천을 전부 보류하지 마세요. 확인된 조건으로 후보를 제시하되 빠진 조건에 따라 결과가 달라질 수
+있음을 밝히세요.
+
+원금보장과 높은 수익을 동시에 요구하거나 미래에 가장 많이 오를 상품을 확답해 달라는 요청은
+거절문만 출력하지 마세요. 두 조건을 동시에 보장하거나 미래수익률을 정확히 예측할 수 없다는 점을
+바로잡고, 원리금보장형과 실적배당형의 차이 또는 과거 수익률·위험등급·보수로 비교 가능한 범위를
+설명하세요.
 
 조건이 충분한 경우의 진행 순서:
 1. search_funds로 조건에 맞는 후보를 찾으세요 (risk_grade/keyword 등 실제 질문에서 나온
@@ -113,6 +121,14 @@ def _is_specific_product_or_comparison(text: str) -> bool:
     if any(word in text for word in _COMPARISON_WORDS):
         return True
     return ("펀드" in text or "상품" in text) and any(word in text for word in _SPECIFIC_PRODUCT_WORDS)
+
+
+def _requires_account_eligibility_check(text: str) -> bool:
+    """계좌와 상품유형의 투자 가능 여부를 툴로 먼저 확인해야 하는 요청인지 판정한다."""
+    return _has_account_type(text) and any(
+        product_type in text
+        for product_type in ("상장주식", "사모펀드", "증권예탁증권", "위험자산 100%", "위험자산100%")
+    )
 
 
 def _is_context_reference_without_target(state: PensionAgentState) -> bool:
@@ -194,16 +210,26 @@ def _extract_account_type(text: str) -> str | None:
 
 
 def _extract_amount(text: str, allow_standalone: bool = False) -> str | None:
-    monthly_match = re.search(r"(월|한 달|매달)\s*(\d+)\s*(만\s*원|만원|원)\s*(이상|정도|쯤|가량)?", text)
+    amount_token = r"\d[\d,]*(?:\.\d+)?\s*(?:억\s*원|억원|천만\s*원|천만원|백만\s*원|백만원|만\s*원|만원|원)"
+    monthly_match = re.search(
+        rf"(월|한 달|매달)\s*({amount_token})\s*(이상|정도|쯤|가량)?",
+        text,
+    )
     if monthly_match:
-        suffix = f" {monthly_match.group(4)}" if monthly_match.group(4) else ""
-        return f"월 {monthly_match.group(2)}만원{suffix}" if "만" in monthly_match.group(3) else monthly_match.group(0)
-    amount_match = re.search(r"(\d+)\s*(만\s*원|만원)\s*(이상|정도|쯤|가량)?", text)
+        amount = re.sub(r"\s+", "", monthly_match.group(2))
+        suffix = f" {monthly_match.group(3)}" if monthly_match.group(3) else ""
+        return f"월 {amount}{suffix}"
+    amount_match = re.search(rf"({amount_token})\s*(이상|정도|쯤|가량)?", text)
     if amount_match and (
         allow_standalone or any(word in text for word in ("투자", "납입", "가능", "넣", "불입"))
     ):
-        suffix = f" {amount_match.group(3)}" if amount_match.group(3) else ""
-        return f"월 {amount_match.group(1)}만원{suffix}"
+        amount = re.sub(r"\s+", "", amount_match.group(1))
+        suffix = f" {amount_match.group(2)}" if amount_match.group(2) else ""
+        # 독립적인 후속 응답("20만원")은 월 납입액으로 해석하되, "퇴직금 3억원",
+        # "IRP 5천만원" 같은 일시금은 임의로 월 금액으로 바꾸지 않는다.
+        if allow_standalone and re.fullmatch(rf"\s*{amount_token}\s*(?:이상|정도|쯤|가량)?\s*", text):
+            return f"월 {amount}{suffix}"
+        return f"{amount}{suffix}"
     return None
 
 
@@ -212,7 +238,7 @@ def _extract_horizon(text: str) -> str | None:
     if match:
         suffix = f" {match.group(2)}" if match.group(2) else ""
         return f"{match.group(1)}년{suffix}"
-    if "장기" in text:
+    if "장기" in text or ("은퇴" in text and any(word in text for word in ("오래", "한참", "많이 남"))):
         return "장기"
     if "중기" in text:
         return "중기"
@@ -222,17 +248,22 @@ def _extract_horizon(text: str) -> str | None:
 
 
 def _extract_risk_profile(text: str) -> str | None:
-    if any(word in text for word in ("안정형", "보수", "안정적", "크게 잃지", "손실 싫", "낮은 위험", "위험등급 낮")):
+    compact = re.sub(r"\s+", "", text)
+    if any(word in text for word in ("안정형", "보수", "안정적", "안전한", "크게 잃지", "손실 싫", "낮은 위험", "위험등급 낮")) or any(
+        word in compact for word in ("손실최대한줄", "손실을최대한줄", "손실최소", "원금손실은절대싫")
+    ):
         return "안정형"
     if any(word in text for word in ("중립형", "중립", "약간의 변동성", "어느 정도", "중간")):
         return "중립형"
-    if any(word in text for word in ("공격형", "공격", "적극", "높은 수익", "고위험")):
+    if any(word in text for word in ("공격형", "공격", "적극", "높은 수익", "고위험", "수익성", "수익 추구")) or any(
+        word in compact for word in ("주식형비중최대한", "주식형비중을최대한", "수익을추구", "수익률높", "수익률도높")
+    ):
         return "공격형"
     return None
 
 
 def _extract_loss_tolerance(text: str) -> str | None:
-    if "크게 잃지" in text or ("손실" in text and any(word in text for word in ("싫", "피", "낮"))):
+    if "크게 잃지" in text or ("손실" in text and any(word in text for word in ("싫", "피", "낮", "줄", "적", "최소", "절대"))):
         return "큰 손실 회피"
     if "약간의 변동성" in text:
         return "약간의 변동성 감수"
@@ -250,12 +281,12 @@ def _extract_goal(text: str) -> str | None:
 
 
 def _extract_age(text: str) -> str | None:
-    match = re.search(r"(\d{2})\s*세", text)
-    return f"{match.group(1)}세" if match else None
+    match = re.search(r"(\d{2})\s*(세|대)", text)
+    return f"{match.group(1)}{match.group(2)}" if match else None
 
 
 def _extract_preferred_product_type(text: str) -> str | None:
-    for product_type in ("TDF", "채권혼합형", "채권형", "주식형", "인덱스", "배당형", "원리금보장형"):
+    for product_type in ("TDF", "채권혼합형", "채권형", "국내 상장주식형", "상장주식형", "주식형", "인덱스", "배당형", "원리금보장형"):
         if product_type in text:
             return product_type
     return None
@@ -287,14 +318,42 @@ def _clarification_questions(missing: list[str]) -> list[str]:
     return [prompts[field] for field in missing]
 
 
-def _clarification_answer(profile: dict, missing: list[str]) -> str:
+def _financial_limit_note(question: str) -> str:
+    compact = re.sub(r"\s+", "", question or "")
+    guarantee_terms = ("원금보장", "원금손실은절대싫", "원금이무조건")
+    high_return_terms = ("수익률좋", "수익률높", "수익률도높", "고수익", "높은수익", "확정수익")
+    if any(term in compact for term in guarantee_terms) and any(
+        term in compact for term in high_return_terms
+    ):
+        return (
+            "\n\n먼저 원금 보장과 높은 수익률을 동시에 확정하는 펀드는 없습니다. "
+            "원리금보장형은 손실 위험을 낮추는 대신 기대수익이 제한되고, 실적배당형 펀드는 "
+            "더 높은 수익을 기대할 수 있지만 원금 손실 가능성이 있습니다."
+        )
+    if any(term in compact for term in ("정확히몇%", "제일많이오를", "가장많이오를", "무조건오를")):
+        return (
+            "\n\n미래 수익률이나 가장 많이 오를 상품은 사전에 확정할 수 없습니다. "
+            "대신 과거 수익률, 위험등급, 보수와 투자전략을 같은 기준으로 비교할 수 있습니다."
+        )
+    return ""
+
+
+def _clarification_answer(profile: dict, missing: list[str], question: str = "") -> str:
     questions = _clarification_questions(missing)
     known = _format_profile_summary(profile)
     missing_labels = ", ".join(_PROFILE_FIELD_LABELS.get(field, field) for field in missing)
     known_block = f"\n\n현재 확인된 조건은 다음과 같습니다.\n{known}" if known else ""
+    constraint_note = _financial_limit_note(question)
+    type_note = ""
+    if profile.get("risk_profile") or profile.get("loss_tolerance") or profile.get("investment_horizon"):
+        types = ", ".join(_recommend_product_types(profile))
+        type_note = (
+            f"\n\n현재 확인된 조건만 놓고 보면 우선 살펴볼 상품 유형은 **{types}**입니다. "
+            "이는 조건부 유형 안내이며 특정 펀드의 확정 추천은 아닙니다."
+        )
     return (
         "현재 질문만으로는 계좌별 투자 제한과 투자성향을 확인할 수 없어 특정 상품을 바로 추천하기 어렵습니다."
-        f"{known_block}\n\n"
+        f"{constraint_note}{known_block}{type_note}\n\n"
         "현재 정보만으로는 연금계좌에서 일반적으로 고려할 수 있는 상품 유형을 설명하는 정도는 가능하지만, "
         "개별 펀드명·상품코드·수익률 순위를 확정 추천하는 것은 안전하지 않습니다.\n\n"
         f"구체적인 추천을 위해 부족한 정보는 {missing_labels}입니다. 다음 정보를 한 번에 알려주세요.\n"
@@ -305,6 +364,8 @@ def _clarification_answer(profile: dict, missing: list[str]) -> str:
 
 def _recommend_product_types(profile: dict) -> list[str]:
     risk = profile.get("risk_profile")
+    if not risk and profile.get("loss_tolerance") == "큰 손실 회피":
+        risk = "안정형"
     horizon = profile.get("investment_horizon", "")
     goal = profile.get("investment_goal", "")
     preferred = profile.get("preferred_product_type")
@@ -375,6 +436,8 @@ def _recommendation_flow_response(state: PensionAgentState) -> tuple[str, list[R
 
     current = state["question"]
     combined = _combined_user_text(state)
+    if _requires_account_eligibility_check(current):
+        return None
     if _is_specific_product_or_comparison(current) and not _is_specific_recommendation_request(current):
         return None
     if not (_is_recommendation_intent(combined) or _is_specific_recommendation_request(current)):
@@ -382,10 +445,13 @@ def _recommendation_flow_response(state: PensionAgentState) -> tuple[str, list[R
 
     profile = _extract_recommendation_profile(state)
     missing = _missing_profile_fields(profile)
+    blocking_missing = [
+        field for field in missing if field in ("account_type", "risk_profile", "investment_horizon")
+    ]
     wants_specific = _is_specific_recommendation_request(current)
 
-    if missing:
-        return _clarification_answer(profile, missing), [], profile, True
+    if blocking_missing:
+        return _clarification_answer(profile, missing, current), [], profile, True
 
     if wants_specific or _is_recommendation_intent(current):
         draft, context = _specific_product_recommendation(profile, state)
@@ -550,10 +616,12 @@ def _select_primary_candidate(candidates: list[dict], text: str) -> dict:
 
 
 def build_product_agent_node():
-    llm = get_llm(PRODUCT_AGENT_MODEL)
-    react_agent = create_agent(model=llm, tools=PRODUCT_AGENT_TOOLS, system_prompt=PRODUCT_AGENT_SYSTEM_PROMPT)
+    # 결정론 추천 경로는 CLOVA 호출이 필요 없다. API 키가 없는 로컬 테스트/개발 환경에서도
+    # 이 경로를 실행할 수 있도록 ReAct agent는 실제로 필요할 때 한 번만 만든다.
+    react_agent = None
 
     def product_agent_node(state: PensionAgentState) -> dict:
+        nonlocal react_agent
         recommendation_flow = _recommendation_flow_response(state)
         if recommendation_flow is not None:
             draft, context, profile, needs_clarification = recommendation_flow
@@ -585,6 +653,14 @@ def build_product_agent_node():
                 else "conditional",
                 "repair_attempted": state.get("verification") is not None,
             }
+
+        if react_agent is None:
+            llm = get_llm(PRODUCT_AGENT_MODEL)
+            react_agent = create_agent(
+                model=llm,
+                tools=PRODUCT_AGENT_TOOLS,
+                system_prompt=PRODUCT_AGENT_SYSTEM_PROMPT,
+            )
 
         prior_context = dedupe_context(state.get("retrieved_context") or [])
         question = state["question"]

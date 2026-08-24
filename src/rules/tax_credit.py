@@ -55,7 +55,9 @@ def calculate_tax_credit(
 
     total_paid = pension_savings_paid + irp_paid
     over_contribution_limit = total_paid > TOTAL_CONTRIBUTION_LIMIT
-    excess_beyond_credit_limit = max(0, total_paid - COMBINED_CREDIT_LIMIT)
+    # 합산 900만원뿐 아니라 연금저축 단독 600만원 한도 때문에 제외된 금액도 포함한다.
+    # 예: 연금저축만 700만원이면 세액공제 대상 600만원, 제외액 100만원이다.
+    excess_beyond_credit_limit = max(0, total_paid - credited_total)
 
     return TaxCreditResult(
         credit_rate=credit_rate,

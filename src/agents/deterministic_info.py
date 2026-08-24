@@ -24,6 +24,7 @@ from src.rules.tax_credit import (
     INCOME_THRESHOLD_SALARY,
     PENSION_SAVINGS_ONLY_LIMIT,
     TOTAL_CONTRIBUTION_LIMIT,
+    calculate_tax_credit,
 )
 from src.rules.withdrawal_limit import (
     SIX_YEAR_EXCEPTION_CUTOFF,
@@ -35,12 +36,11 @@ from src.rules.withdrawal_limit import (
 def deterministic_info_response(question: str) -> tuple[str, list[RetrievedItem]] | None:
     text = _compact(question)
 
-    if _is_tax_credit_calculation_missing_question(question):
-        return _tax_credit_calculation_missing_response()
     if _is_tax_benefit_overview_question(text):
         return _tax_benefit_overview_response()
-    if _is_tax_credit_limit_question(text):
-        return _tax_credit_limit_response()
+    tax_credit_response = _tax_credit_response(question)
+    if tax_credit_response is not None:
+        return tax_credit_response
     if _is_early_withdrawal_general_question(text):
         return _early_withdrawal_general_response()
     if _is_default_option_auto_purchase_question(text):
@@ -61,10 +61,9 @@ def should_force_info_agent(question: str) -> bool:
     text = _compact(question)
     return any(
         (
-            _is_tax_credit_calculation_missing_question(question),
-            _is_tax_credit_limit_question(text),
+            _is_tax_credit_question(text),
             _is_tax_benefit_overview_question(text),
-            _is_early_withdrawal_general_question(text),
+            _is_early_withdrawal_question(text),
             _is_default_option_auto_purchase_question(text),
             _is_in_kind_transfer_block_question(text),
             _is_withdrawal_limit_question(text),
@@ -88,19 +87,218 @@ def _pct(rate: float) -> str:
     return f"{rate * 100:g}%"
 
 
+_MONEY_TOKEN = (
+    r"(?P<number>\d[\d,]*(?:\.\d+)?)\s*"
+    r"(?P<unit>억\s*원|억원|천만\s*원|천만원|백만\s*원|백만원|만\s*원|만원|원)"
+)
+
+
+def _money_value(number: str, unit: str) -> int:
+    value = float(number.replace(",", ""))
+    normalized_unit = unit.replace(" ", "")
+    multiplier = {
+        "억원": 100_000_000,
+        "천만원": 10_000_000,
+        "백만원": 1_000_000,
+        "만원": 10_000,
+        "원": 1,
+    }[normalized_unit]
+    return round(value * multiplier)
+
+
+def _extract_labeled_money(text: str, labels: tuple[str, ...]) -> int | None:
+    label_pattern = "(?:" + "|".join(re.escape(label) for label in labels) + ")"
+    patterns = (
+        rf"{label_pattern}\s*(?:계좌)?\s*(?:에|에는|으로|으로는)?\s*(?:이미\s*)?{_MONEY_TOKEN}",
+        rf"{label_pattern}\s*{_MONEY_TOKEN}\s*(?:을|를)?\s*(?:넣|납입|불입|적립)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return _money_value(match.group("number"), match.group("unit"))
+    return None
+
+
+def _extract_income(text: str, labels: tuple[str, ...]) -> int | None:
+    label_pattern = "(?:" + "|".join(re.escape(label) for label in labels) + ")"
+    match = re.search(
+        rf"{label_pattern}\s*(?:금액)?\s*(?:이|가|은|는)?\s*{_MONEY_TOKEN}",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    return _money_value(match.group("number"), match.group("unit"))
+
+
+def _extract_tax_credit_inputs(question: str) -> dict[str, int | None]:
+    pension_savings = _extract_labeled_money(question, ("연금저축",))
+    irp = _extract_labeled_money(question, ("IRP", "개인형퇴직연금"))
+
+    # "연금저축 ... 지금까지 350만원 넣었습니다"처럼 계좌명과 금액이 떨어진 표현을 보완한다.
+    if pension_savings is None and "연금저축" in question and "IRP" not in question.upper():
+        match = re.search(rf"지금까지\s*{_MONEY_TOKEN}\s*(?:을|를)?\s*(?:넣|납입|불입)", question)
+        if match:
+            pension_savings = _money_value(match.group("number"), match.group("unit"))
+
+    return {
+        "pension_savings": pension_savings,
+        "irp": irp,
+        "total_salary": _extract_income(question, ("연봉", "총급여")),
+        "comprehensive_income": _extract_income(question, ("종합소득금액", "종합소득")),
+    }
+
+
 def _context(source: str, content: str) -> list[RetrievedItem]:
     return [{"source": source, "content": content, "node": "info_agent"}]
 
 
-def _is_tax_credit_calculation_missing_question(question: str) -> bool:
-    text = _compact(question)
+def _is_tax_credit_question(text: str) -> bool:
     if "세액공제" not in text:
         return False
-    if not any(word in text for word in ("계산", "받을수", "받을수있는", "금액", "얼마받")):
-        return False
-    has_contribution = any(word in text for word in ("연금저축", "IRP")) and bool(re.search(r"\d", text))
-    has_income = any(word in text for word in ("연봉", "총급여", "종합소득", "소득금액")) and bool(re.search(r"\d", text))
-    return not (has_contribution and has_income)
+    # 세액공제받은 재원을 '인출/수령'할 때의 세금은 세액공제 계산 문제가 아니다.
+    return not any(word in text for word in ("중도인출", "인출하면", "찾으면", "꺼내", "수령할때", "연금받"))
+
+
+def _tax_credit_response(question: str) -> tuple[str, list[RetrievedItem]] | None:
+    text = _compact(question)
+    if not _is_tax_credit_question(text):
+        return None
+
+    values = _extract_tax_credit_inputs(question)
+    pension_savings = values["pension_savings"]
+    irp = values["irp"]
+    total_salary = values["total_salary"]
+    comprehensive_income = values["comprehensive_income"]
+    has_contribution = pension_savings is not None or irp is not None
+    has_income = total_salary is not None or comprehensive_income is not None
+
+    if "얼마를더" in text or "더넣" in text or "나머지" in text:
+        if has_contribution:
+            return _tax_credit_remaining_response(pension_savings or 0, irp or 0)
+
+    if ("공제율" in text or "세액공제율" in text) and has_income and not has_contribution:
+        return _tax_credit_rate_response(total_salary, comprehensive_income)
+
+    asks_calculation = any(
+        word in text
+        for word in ("계산", "얼마받", "세액공제액", "전부세액공제", "공제대상")
+    )
+    if has_contribution:
+        if has_income:
+            return _tax_credit_calculation_response(
+                pension_savings or 0,
+                irp or 0,
+                total_salary,
+                comprehensive_income,
+            )
+        return _tax_credit_contribution_response(pension_savings or 0, irp or 0)
+
+    if asks_calculation and not has_income:
+        return _tax_credit_calculation_missing_response()
+
+    return _tax_credit_limit_response()
+
+
+def _tax_credit_calculation_response(
+    pension_savings: int,
+    irp: int,
+    total_salary: int | None,
+    comprehensive_income: int | None,
+) -> tuple[str, list[RetrievedItem]]:
+    result = calculate_tax_credit(
+        pension_savings_paid=pension_savings,
+        irp_paid=irp,
+        total_salary=total_salary,
+        comprehensive_income=comprehensive_income,
+    )
+    income_label = "총급여" if total_salary is not None else "종합소득금액"
+    income_value = total_salary if total_salary is not None else comprehensive_income
+    content = (
+        f"연금저축 납입액 {_won(pension_savings)}, IRP 납입액 {_won(irp)}, "
+        f"{income_label} {_won(income_value or 0)}를 적용했습니다. "
+        f"인정 납입액은 {_won(result.credited_total)}, 적용 세액공제율은 {_pct(result.credit_rate)}, "
+        f"세액공제액은 {_won(result.tax_credit_amount)}입니다."
+    )
+    draft = (
+        f"입력하신 조건을 반영하면 세액공제 대상 납입액은 {_won(result.credited_total)}이고, "
+        f"적용 세액공제율은 {_pct(result.credit_rate)}입니다.\n\n"
+        f"- 연금저축 납입액: {_won(pension_savings)}\n"
+        f"- IRP 납입액: {_won(irp)}\n"
+        f"- {income_label}: {_won(income_value or 0)}\n"
+        f"- 예상 세액공제액: **{_won(result.tax_credit_amount)}**"
+    )
+    if result.excess_beyond_credit_limit:
+        draft += f"\n- 세액공제 한도 초과 납입액: {_won(result.excess_beyond_credit_limit)}"
+    return draft, _context("calculate_tax_credit / doc41", content)
+
+
+def _tax_credit_contribution_response(
+    pension_savings: int,
+    irp: int,
+) -> tuple[str, list[RetrievedItem]]:
+    credited_pension = min(pension_savings, PENSION_SAVINGS_ONLY_LIMIT)
+    credited_total = min(credited_pension + irp, COMBINED_CREDIT_LIMIT)
+    total_paid = pension_savings + irp
+    excess = max(0, total_paid - credited_total)
+    content = (
+        f"연금저축 {_won(pension_savings)}, IRP {_won(irp)} 납입 시 세액공제 대상 납입액은 "
+        f"{_won(credited_total)}입니다. 실제 세액공제액은 소득구간에 따라 "
+        f"{_pct(CREDIT_RATE_LOW)} 또는 {_pct(CREDIT_RATE_HIGH)}를 적용합니다."
+    )
+    draft = (
+        f"말씀하신 납입액 중 세액공제 대상이 되는 금액은 **{_won(credited_total)}**입니다.\n\n"
+        f"- 연금저축 납입액: {_won(pension_savings)}\n"
+        f"- IRP 납입액: {_won(irp)}\n"
+    )
+    if excess:
+        draft += f"- 합산 900만원을 넘는 {_won(excess)}은 세액공제 대상이 아닙니다.\n"
+    draft += (
+        "\n실제 세액공제액을 계산하려면 직장인은 총급여, 개인사업자 등 종합소득자는 "
+        "종합소득금액을 추가로 확인해야 합니다."
+    )
+    return draft, _context("doc41 세액공제 규칙", content)
+
+
+def _tax_credit_remaining_response(
+    pension_savings: int,
+    irp: int,
+) -> tuple[str, list[RetrievedItem]]:
+    credited_now = min(min(pension_savings, PENSION_SAVINGS_ONLY_LIMIT) + irp, COMBINED_CREDIT_LIMIT)
+    pension_remaining = max(0, PENSION_SAVINGS_ONLY_LIMIT - pension_savings)
+    combined_remaining = max(0, COMBINED_CREDIT_LIMIT - credited_now)
+    content = (
+        f"현재 연금저축 {_won(pension_savings)}, IRP {_won(irp)} 기준으로 연금저축 단독 한도까지 "
+        f"{_won(pension_remaining)}, 연금저축+IRP 합산 한도까지 {_won(combined_remaining)} 남았습니다."
+    )
+    draft = (
+        f"현재까지 말씀하신 납입액만 기준으로 계산하면, 연금저축 자체의 세액공제 한도까지는 "
+        f"**{_won(pension_remaining)}** 남았습니다.\n\n"
+        f"연금저축과 IRP 합산 900만원 한도까지는 **{_won(combined_remaining)}**를 더 채울 수 있습니다. "
+        "연금저축 단독 한도를 넘는 부분은 IRP에 납입해 합산 한도를 채울 수 있습니다."
+    )
+    return draft, _context("doc41 세액공제 규칙", content)
+
+
+def _tax_credit_rate_response(
+    total_salary: int | None,
+    comprehensive_income: int | None,
+) -> tuple[str, list[RetrievedItem]]:
+    if total_salary is not None:
+        rate = CREDIT_RATE_LOW if total_salary <= INCOME_THRESHOLD_SALARY else CREDIT_RATE_HIGH
+        income_label = "총급여"
+        income_value = total_salary
+    else:
+        rate = (
+            CREDIT_RATE_LOW
+            if (comprehensive_income or 0) <= INCOME_THRESHOLD_COMPREHENSIVE
+            else CREDIT_RATE_HIGH
+        )
+        income_label = "종합소득금액"
+        income_value = comprehensive_income or 0
+    content = f"{income_label} {_won(income_value)}에 적용되는 연금계좌 세액공제율은 {_pct(rate)}입니다."
+    draft = f"{income_label} {_won(income_value)} 기준으로 적용되는 세액공제율은 **{_pct(rate)}**입니다."
+    return draft, _context("doc41 세액공제율 규칙", content)
 
 
 def _tax_credit_calculation_missing_response() -> tuple[str, list[RetrievedItem]]:
@@ -207,8 +405,36 @@ def _tax_credit_limit_response() -> tuple[str, list[RetrievedItem]]:
     return draft, _context(source, content)
 
 
+def _is_early_withdrawal_question(text: str) -> bool:
+    return "중도인출" in text
+
+
 def _is_early_withdrawal_general_question(text: str) -> bool:
-    return "중도인출" in text and any(word in text for word in ("가능", "경우", "사유", "요건", "언제"))
+    if not _is_early_withdrawal_question(text):
+        return False
+    specific_reason_terms = (
+        "요양",
+        "입원",
+        "의료비",
+        "개인회생",
+        "회생절차",
+        "파산",
+        "워크아웃",
+        "신용회복",
+        "전세",
+        "월세",
+        "보증금",
+        "주택구입",
+        "집을사",
+        "집을구입",
+        "재난",
+        "태풍",
+        "홍수",
+        "재산피해",
+    )
+    if any(word in text for word in specific_reason_terms):
+        return False
+    return any(word in text for word in ("가능", "경우", "사유", "요건", "언제"))
 
 
 def _early_withdrawal_general_response() -> tuple[str, list[RetrievedItem]]:

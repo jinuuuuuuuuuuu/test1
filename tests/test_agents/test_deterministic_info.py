@@ -35,6 +35,49 @@ def test_tax_credit_calculation_missing_inputs_asks_all_required_values():
     assert context
 
 
+def test_tax_credit_calculates_from_korean_money_units():
+    question = (
+        "저는 연봉 5천만원 직장인인데 연금저축에 400만원, "
+        "IRP에 300만원 넣으면 세액공제 얼마 받나요?"
+    )
+    draft, context = deterministic_info_response(question)
+
+    assert "세액공제 대상 납입액은 700만원" in draft
+    assert "16.5%" in draft
+    assert "1,155,000원" in draft
+    assert context
+
+
+def test_tax_credit_explains_excess_before_income_is_known():
+    draft, context = deterministic_info_response(
+        "연금저축에 500만원, IRP에 500만원 넣으면 전부 세액공제 되나요?"
+    )
+
+    assert "900만원" in draft
+    assert "100만원" in draft
+    assert "총급여" in draft
+    assert context
+
+
+def test_tax_credit_calculates_remaining_pension_savings_limit():
+    draft, context = deterministic_info_response(
+        "연금저축에 지금까지 350만원 넣었습니다. 세액공제를 더 받으려면 얼마를 더 넣으면 되나요?"
+    )
+
+    assert "250만원" in draft
+    assert "550만원" in draft
+    assert context
+
+
+def test_tax_credit_rate_uses_comprehensive_income_threshold():
+    draft, context = deterministic_info_response(
+        "종합소득금액이 5천만원인 개인사업자인데 연금저축 세액공제율이 얼마인가요?"
+    )
+
+    assert "13.2%" in draft
+    assert context
+
+
 def test_early_withdrawal_general_question_gets_reasons():
     draft, context = deterministic_info_response("IRP에서 중도인출은 어떤 경우에 가능한가요?")
 
@@ -42,6 +85,16 @@ def test_early_withdrawal_general_question_gets_reasons():
     assert "개인회생" in draft
     assert "무주택자 주택구입" in draft
     assert context
+
+
+def test_specific_early_withdrawal_falls_through_to_rule_tools():
+    question = (
+        "저는 무주택자이고 전세보증금이 필요한데, IRP에서 중도인출이 가능한지랑 "
+        "가능하면 세금은 얼마나 나오는지 알려주세요."
+    )
+
+    assert should_force_info_agent(question) is True
+    assert deterministic_info_response(question) is None
 
 
 def test_default_option_auto_purchase_question_gets_schedule_rules():

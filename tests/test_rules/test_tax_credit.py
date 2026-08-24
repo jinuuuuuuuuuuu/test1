@@ -27,6 +27,7 @@ def test_pension_savings_only_capped_at_6m():
     assert r.credited_pension_savings == 6_000_000
     assert r.credited_total == 6_000_000
     assert r.tax_credit_amount == 990_000  # 600만 x 16.5%
+    assert r.excess_beyond_credit_limit == 1_000_000
 
 
 def test_combined_capped_at_9m_even_if_pension_savings_maxed():
