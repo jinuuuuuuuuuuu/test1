@@ -14,6 +14,7 @@ from src.rules.comprehensive_tax import (
     SEPARATE_TAXATION_RATE_OVER_THRESHOLD,
 )
 from src.rules.default_option import NOTICE_DELAY_DAYS_EXISTING, WAIT_DAYS_AFTER_NOTICE
+from src.rules.early_withdrawal import MEDICAL_EXPENSE_RATIO_THRESHOLD
 from src.rules.in_kind_transfer import TRANSFER_BLOCK_CODES
 from src.rules.retirement_tax_reduction import get_deferred_retirement_tax_rate
 from src.rules.tax_credit import (
@@ -41,6 +42,9 @@ def deterministic_info_response(question: str) -> tuple[str, list[RetrievedItem]
         return _tax_benefit_overview_response()
     if _is_tax_credit_limit_question(text):
         return _tax_credit_limit_response()
+    # 사유가 특정된 질문을 먼저 처리해야 한다 — 아래 general 분기가 가로채면 5개 사유 나열만 나간다.
+    if _is_early_withdrawal_reason_question(text):
+        return _early_withdrawal_reason_response(question)
     if _is_early_withdrawal_general_question(text):
         return _early_withdrawal_general_response()
     if _is_default_option_auto_purchase_question(text):
@@ -64,6 +68,7 @@ def should_force_info_agent(question: str) -> bool:
             _is_tax_credit_calculation_missing_question(question),
             _is_tax_credit_limit_question(text),
             _is_tax_benefit_overview_question(text),
+            _is_early_withdrawal_reason_question(text),
             _is_early_withdrawal_general_question(text),
             _is_default_option_auto_purchase_question(text),
             _is_in_kind_transfer_block_question(text),
@@ -92,15 +97,20 @@ def _context(source: str, content: str) -> list[RetrievedItem]:
     return [{"source": source, "content": content, "node": "info_agent"}]
 
 
+def _has_tax_credit_calculation_inputs(text: str) -> bool:
+    """세액공제를 실제로 계산할 수 있는 입력값(납입액+소득)이 질문에 이미 있는지."""
+    has_contribution = any(word in text for word in ("연금저축", "IRP")) and bool(re.search(r"\d", text))
+    has_income = any(word in text for word in ("연봉", "총급여", "종합소득", "소득금액")) and bool(re.search(r"\d", text))
+    return has_contribution and has_income
+
+
 def _is_tax_credit_calculation_missing_question(question: str) -> bool:
     text = _compact(question)
     if "세액공제" not in text:
         return False
     if not any(word in text for word in ("계산", "받을수", "받을수있는", "금액", "얼마받")):
         return False
-    has_contribution = any(word in text for word in ("연금저축", "IRP")) and bool(re.search(r"\d", text))
-    has_income = any(word in text for word in ("연봉", "총급여", "종합소득", "소득금액")) and bool(re.search(r"\d", text))
-    return not (has_contribution and has_income)
+    return not _has_tax_credit_calculation_inputs(text)
 
 
 def _tax_credit_calculation_missing_response() -> tuple[str, list[RetrievedItem]]:
@@ -174,6 +184,10 @@ def _tax_benefit_overview_response() -> tuple[str, list[RetrievedItem]]:
 
 
 def _is_tax_credit_limit_question(text: str) -> bool:
+    # 질문에 이미 계산 가능한 구체적 납입액+소득이 있으면 일반론 한도 설명 대신
+    # 실제 계산(calculate_tax_credit 툴)으로 넘겨야 한다 — 정형 답변으로 가로채면 안 됨.
+    if _has_tax_credit_calculation_inputs(text):
+        return False
     return "세액공제" in text and any(word in text for word in ("한도", "얼마", "최대", "합쳐", "공제율"))
 
 
@@ -207,7 +221,163 @@ def _tax_credit_limit_response() -> tuple[str, list[RetrievedItem]]:
     return draft, _context(source, content)
 
 
+# 사유가 이미 특정된 질문은 5개 사유 나열 대신 사유별 요건을 답해야 한다.
+# 컴팩트(공백 제거)된 텍스트 기준 키워드 — 앞쪽 항목부터 먼저 매칭한다.
+_WITHDRAWAL_REASON_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("요양", ("요양", "치료", "의료비", "입원", "수술", "간병")),
+    ("개인회생파산", ("개인회생", "회생절차", "회생", "파산", "워크아웃", "신용회복")),
+    ("무주택전월세", ("전세", "월세", "보증금", "임차")),
+    ("무주택주택구입", ("주택구입", "집구입", "생애최초", "내집마련", "주택을구입", "주택매매")),
+    ("재난피해", ("재난", "태풍", "지진", "화재", "홍수", "수해", "침수")),
+)
+
+
+def _detect_withdrawal_reason(text: str) -> str | None:
+    for reason, keywords in _WITHDRAWAL_REASON_KEYWORDS:
+        if any(keyword in text for keyword in keywords):
+            return reason
+    # "집을 사려고" 같은 표현은 위 키워드로 못 잡아 별도 정규식으로 본다(컴팩트 텍스트 기준).
+    if re.search(r"집.{0,3}사", text):
+        return "무주택주택구입"
+    return None
+
+
+def _topic_particle(word: str) -> str:
+    """받침 유무에 따라 '은/는'을 고른다 ('재난피해은'처럼 어색해지지 않도록)."""
+    last = word.strip()[-1:]
+    if not last or not ("가" <= last <= "힣"):
+        return "는"
+    return "은" if (ord(last) - 0xAC00) % 28 else "는"
+
+
+def _detect_plan_type(text: str) -> str | None:
+    for plan in ("IRP", "DC", "DB"):
+        if plan in text.upper():
+            return plan
+    return None
+
+
+def _is_early_withdrawal_reason_question(text: str) -> bool:
+    """사유가 특정된 중도인출 질문 — 사유별 요건을 결정론적으로 답한다."""
+    if "중도인출" not in text and "인출" not in text:
+        return False
+    return _detect_withdrawal_reason(text) is not None
+
+
+# 사유별 요건 — src/rules/early_withdrawal.py의 판정 로직과 같은 근거(doc46~doc50)에서 뽑았다.
+# 규칙엔진 함수는 날짜·금액 인자를 요구하는데 질문에는 그런 값이 없는 경우가 대부분이라,
+# "판정" 대신 "그 사유의 요건"을 안내한다.
+_WITHDRAWAL_REASON_RULES: dict[str, dict[str, str]] = {
+    "요양": {
+        "label": "6개월 이상 요양",
+        "doc": "doc46",
+        "requirements": (
+            f"- 6개월 이상 요양이 필요한 경우가 대상입니다.\n"
+            f"- DC는 신청일 기준 직전 1년간 본인이 부담한 의료비 총액이 직전년도 연간임금총액의 "
+            f"{MEDICAL_EXPENSE_RATIO_THRESHOLD * 100:g}%를 초과해야 합니다.\n"
+            f"- IRP에는 이 의료비 비율 기준이 적용되지 않습니다(요양 사유만 확인되면 됩니다).\n"
+            f"- 신청 기한은 요양종료일로부터 1개월 이내입니다."
+        ),
+        "inputs": "요양 기간, 직전 1년 본인부담 의료비 총액, 직전년도 연간임금총액, 요양종료일",
+    },
+    "개인회생파산": {
+        "label": "개인회생·파산선고",
+        "doc": "doc47",
+        "requirements": (
+            "- 개인회생: 개시결정일로부터 5년 이내이면서, 신청 시점에 회생절차의 효력이 진행 중이어야 합니다. "
+            "폐지결정·면책결정으로 절차가 이미 종료된 경우에는 신청할 수 없습니다.\n"
+            "- 파산선고: 선고일로부터 5년 이내이면 신청 가능하며, 면책·복권 여부는 영향을 주지 않습니다.\n"
+            "- 개인워크아웃과 신용회복지원은 이 사유의 대상이 아닙니다."
+        ),
+        "inputs": "개인회생 개시결정일 또는 파산선고일, 현재 회생절차 진행 여부",
+    },
+    "무주택전월세": {
+        "label": "무주택자 전월세보증금",
+        "doc": "doc48",
+        "requirements": (
+            "- 신청일 기준 근로자 본인 명의의 주택이 없어야 합니다(배우자 등 세대원의 주택 소유는 무관).\n"
+            "- 임차보증금이 있는 계약이어야 합니다. 보증금 없이 월세금만 있는 계약은 대상이 아닙니다.\n"
+            "- 연장계약이라면 보증금 인상분이 있어야 신청할 수 있습니다(월세금만 인상된 경우는 불가).\n"
+            "- DC는 하나의 사업장에서 재직 중 1회만 가능하고, 개인형 IRP는 횟수 제한이 없습니다.\n"
+            "- 신청 기한은 잔금지급일로부터 1개월 이내입니다."
+        ),
+        "inputs": "본인 명의 주택 보유 여부, 임차보증금 유무, 신규/연장 계약 구분, 잔금지급일",
+    },
+    "무주택주택구입": {
+        "label": "무주택자 주택구입",
+        "doc": "doc49",
+        "requirements": (
+            "- 신청일 기준 근로자 본인 명의의 주택이 없어야 합니다(배우자 등 세대원의 주택 소유는 무관).\n"
+            "- 증여·상속으로 취득하는 주택은 대상이 아닙니다.\n"
+            "- 신청 기한은 소유권 이전 등기일로부터 1개월 이내입니다."
+        ),
+        "inputs": "본인 명의 주택 보유 여부, 취득 형태(매매/증여/상속), 소유권 이전 등기일",
+    },
+    "재난피해": {
+        "label": "재난피해",
+        "doc": "doc50",
+        "requirements": (
+            "- 신청 기한은 피해발생일로부터 3개월 이내입니다.\n"
+            "- 3개월이 지났더라도 해당 피해 사유가 아직 해소되지 않았음을 증명하면, 그 사유가 해소되기 "
+            "전까지는 신청할 수 있습니다."
+        ),
+        "inputs": "피해발생일, 피해 사유의 해소 여부",
+    },
+}
+
+
+def _early_withdrawal_reason_response(question: str) -> tuple[str, list[RetrievedItem]]:
+    text = _compact(question)
+    reason = _detect_withdrawal_reason(text)
+    rule = _WITHDRAWAL_REASON_RULES[reason]
+    plan = _detect_plan_type(text)
+    asks_tax = any(word in text for word in ("세금", "세율", "과세", "얼마나나오"))
+    asks_docs = any(word in text for word in ("서류", "증빙", "제출"))
+
+    source = f"{rule['doc']} 중도인출 {rule['label']} 요건"
+    content = (
+        f"DB(확정급여형)는 중도인출이 허용되지 않고, DC와 IRP만 중도인출 대상 제도입니다. "
+        f"{rule['label']} 사유 요건: {rule['requirements']}"
+    )
+
+    if plan == "DB":
+        draft = (
+            f"DB(확정급여형)는 중도인출 자체가 허용되지 않는 제도입니다. "
+            f"{rule['label']} 사유에 해당하더라도 DB에서는 중도인출을 신청할 수 없습니다.\n\n"
+            "중도인출이 가능한 제도는 DC(확정기여형)와 IRP(개인형퇴직연금)입니다. "
+            "가입하신 제도가 DC나 IRP라면 아래 요건으로 판단할 수 있습니다.\n\n"
+            f"[{rule['label']} 요건]\n{rule['requirements']}"
+        )
+    else:
+        plan_line = (
+            f"{plan}는 중도인출 대상 제도입니다." if plan else
+            "중도인출이 가능한 제도는 DC와 IRP이며, DB는 중도인출이 허용되지 않습니다."
+        )
+        draft = (
+            f"{rule['label']}{_topic_particle(rule['label'])} 법에서 정한 중도인출 사유에 "
+            f"해당합니다. {plan_line}\n\n"
+            f"[{rule['label']} 요건]\n{rule['requirements']}\n\n"
+            f"실제 인출 가능 여부를 확정하려면 다음 정보가 필요합니다: {rule['inputs']}."
+        )
+
+    if asks_docs:
+        draft += (
+            "\n\n필요 제출서류의 구체적인 목록은 보유 자료로 확인이 어렵습니다. "
+            "가입한 금융기관에 문의하시면 사유별 증빙서류를 안내받을 수 있습니다."
+        )
+    if asks_tax:
+        draft += (
+            "\n\n중도인출 시 적용되는 세율은 인출 재원과 인출 사유에 따라 달라지는데, "
+            "구체적인 세율은 보유 자료로 확인이 어렵습니다. 이 부분은 금융기관이나 세무 전문가의 "
+            "확인이 필요합니다."
+        )
+
+    return draft, _context(source, content)
+
+
 def _is_early_withdrawal_general_question(text: str) -> bool:
+    if _detect_withdrawal_reason(text) is not None:
+        return False
     return "중도인출" in text and any(word in text for word in ("가능", "경우", "사유", "요건", "언제"))
 
 

@@ -193,17 +193,31 @@ def _extract_account_type(text: str) -> str | None:
     return None
 
 
+# "연봉 5천만원"처럼 소득을 가리키는 금액은 투자금액으로 잡으면 안 된다.
+_INCOME_CONTEXT_WORDS = ("연봉", "총급여", "종합소득", "소득금액", "연소득", "급여")
+
+
+def _is_income_amount(text: str, match_start: int) -> bool:
+    return any(word in text[max(0, match_start - 8):match_start] for word in _INCOME_CONTEXT_WORDS)
+
+
 def _extract_amount(text: str, allow_standalone: bool = False) -> str | None:
-    monthly_match = re.search(r"(월|한 달|매달)\s*(\d+)\s*(만\s*원|만원|원)\s*(이상|정도|쯤|가량)?", text)
+    # 억/천만/백만/만 단위 결합("5천만원", "1억원")까지 인식 — "만원"만 잡던 이전 정규식은
+    # "5천만원" 같은 결합 단위를 놓쳤다.
+    monthly_match = re.search(
+        r"(월|한\s*달|매달)\s*(\d+)\s*(억|천만|백만|만)\s*원?\s*(이상|정도|쯤|가량)?", text
+    )
     if monthly_match:
         suffix = f" {monthly_match.group(4)}" if monthly_match.group(4) else ""
-        return f"월 {monthly_match.group(2)}만원{suffix}" if "만" in monthly_match.group(3) else monthly_match.group(0)
-    amount_match = re.search(r"(\d+)\s*(만\s*원|만원)\s*(이상|정도|쯤|가량)?", text)
-    if amount_match and (
-        allow_standalone or any(word in text for word in ("투자", "납입", "가능", "넣", "불입"))
-    ):
-        suffix = f" {amount_match.group(3)}" if amount_match.group(3) else ""
-        return f"월 {amount_match.group(1)}만원{suffix}"
+        return f"월 {monthly_match.group(2)}{monthly_match.group(3)}원{suffix}"
+
+    if not (allow_standalone or any(word in text for word in ("투자", "납입", "가능", "넣", "불입"))):
+        return None
+    for match in re.finditer(r"(\d+)\s*(억|천만|백만|만)\s*원?\s*(이상|정도|쯤|가량)?", text):
+        if _is_income_amount(text, match.start()):
+            continue
+        suffix = f" {match.group(3)}" if match.group(3) else ""
+        return f"월 {match.group(1)}{match.group(2)}원{suffix}"
     return None
 
 
@@ -212,7 +226,7 @@ def _extract_horizon(text: str) -> str | None:
     if match:
         suffix = f" {match.group(2)}" if match.group(2) else ""
         return f"{match.group(1)}년{suffix}"
-    if "장기" in text:
+    if any(word in text for word in ("장기", "오래", "많이 남", "은퇴까지 오래")):
         return "장기"
     if "중기" in text:
         return "중기"
@@ -222,17 +236,28 @@ def _extract_horizon(text: str) -> str | None:
 
 
 def _extract_risk_profile(text: str) -> str | None:
-    if any(word in text for word in ("안정형", "보수", "안정적", "크게 잃지", "손실 싫", "낮은 위험", "위험등급 낮")):
+    if any(
+        word in text
+        for word in (
+            "안정형", "보수", "안정적", "크게 잃지", "손실 싫", "낮은 위험", "위험등급 낮",
+            "손실을 최대한", "손실을 줄이", "손실 최소화", "손실은 최대한",
+        )
+    ):
         return "안정형"
     if any(word in text for word in ("중립형", "중립", "약간의 변동성", "어느 정도", "중간")):
         return "중립형"
-    if any(word in text for word in ("공격형", "공격", "적극", "높은 수익", "고위험")):
+    if any(
+        word in text
+        for word in (
+            "공격형", "공격", "적극", "높은 수익", "고위험", "수익성을 추구", "수익성 추구", "수익률을 추구",
+        )
+    ):
         return "공격형"
     return None
 
 
 def _extract_loss_tolerance(text: str) -> str | None:
-    if "크게 잃지" in text or ("손실" in text and any(word in text for word in ("싫", "피", "낮"))):
+    if "크게 잃지" in text or ("손실" in text and any(word in text for word in ("싫", "피", "낮", "최대한", "줄이"))):
         return "큰 손실 회피"
     if "약간의 변동성" in text:
         return "약간의 변동성 감수"
@@ -251,7 +276,10 @@ def _extract_goal(text: str) -> str | None:
 
 def _extract_age(text: str) -> str | None:
     match = re.search(r"(\d{2})\s*세", text)
-    return f"{match.group(1)}세" if match else None
+    if match:
+        return f"{match.group(1)}세"
+    decade_match = re.search(r"(\d{1,2}0)\s*대", text)
+    return f"{decade_match.group(1)}대" if decade_match else None
 
 
 def _extract_preferred_product_type(text: str) -> str | None:
@@ -259,6 +287,11 @@ def _extract_preferred_product_type(text: str) -> str | None:
         if product_type in text:
             return product_type
     return None
+
+
+def _has_minimum_profile(profile: dict) -> bool:
+    """상품 유형 수준 안내라도 할 수 있는 최소 정보(위험선호 또는 계좌유형)가 있는지."""
+    return bool(profile.get("risk_profile") or profile.get("loss_tolerance") or profile.get("account_type"))
 
 
 def _missing_profile_fields(profile: dict) -> list[str]:
@@ -385,6 +418,17 @@ def _recommendation_flow_response(state: PensionAgentState) -> tuple[str, list[R
     wants_specific = _is_specific_recommendation_request(current)
 
     if missing:
+        # 필수 5개 항목 중 일부가 비어도, 위험선호·계좌유형처럼 상품 유형 정도는 안내할 수 있는
+        # 최소 정보가 있으면 완전 역질문 대신 "유형 안내 + 남은 정보 요청"으로 degrade한다.
+        # 평가가 싱글턴이라 역질문만 하고 끝내면 아무 정보도 못 주는 셈이라 이쪽이 낫다.
+        if _has_minimum_profile(profile):
+            draft = _product_type_recommendation_answer(profile)
+            missing_labels = ", ".join(_PROFILE_FIELD_LABELS.get(field, field) for field in missing)
+            draft += (
+                f"\n\n다만 {missing_labels} 정보가 없어 상품 유형 수준까지만 안내드렸습니다. "
+                "구체적인 상품명까지 확인하려면 위 정보를 추가로 알려주세요."
+            )
+            return draft, [], profile, False
         return _clarification_answer(profile, missing), [], profile, True
 
     if wants_specific or _is_recommendation_intent(current):

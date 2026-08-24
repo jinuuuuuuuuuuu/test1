@@ -72,10 +72,11 @@ def test_recommendation_flow_accepts_amount_with_suffix_follow_up():
     draft, context, profile, needs_clarification = _recommendation_flow_response(state)
 
     assert profile["monthly_investment"] == "월 30만원 이상"
-    assert "투자 가능 금액 또는 월 납입금액" not in draft
-    assert "예상 투자기간" in draft
+    # 계좌유형·위험성향·투자목적·투자금액이 다 있으니(투자기간만 없음) 완전 역질문 대신
+    # 상품 유형 안내 + 남은 정보 요청으로 degrade한다.
+    assert "투자기간" in draft
     assert context == []
-    assert needs_clarification is True
+    assert needs_clarification is False
 
 
 def test_recommendation_flow_infers_retirement_goal_from_irp_request():
@@ -86,10 +87,12 @@ def test_recommendation_flow_infers_retirement_goal_from_irp_request():
     assert profile["account_type"] == "IRP"
     assert profile["risk_profile"] == "안정형"
     assert profile["investment_goal"] == "노후/은퇴 준비"
-    assert "투자 가능 금액 또는 월 납입금액" in draft
-    assert "예상 투자기간" in draft
+    # 위험성향(안정형)을 알고 있으니 상품 유형 수준 답은 가능 — 남은 항목(투자금액·투자기간)만
+    # 안내에 덧붙여 물어본다. 완전 역질문은 아니다.
+    assert "투자금액" in draft
+    assert "투자기간" in draft
     assert context == []
-    assert needs_clarification is True
+    assert needs_clarification is False
 
 
 def test_recommendation_flow_with_missing_account_asks_for_all_missing_info():
@@ -109,10 +112,10 @@ def test_recommendation_flow_with_missing_account_asks_for_all_missing_info():
 
     draft, context, profile, needs_clarification = _recommendation_flow_response(state)
 
+    # 위험성향을 이미 알고 있어 계좌유형만 빠져도 상품 유형 수준 답변으로 degrade한다.
     assert "계좌유형" in draft
-    assert "IRP, DC, DB, 연금저축" in draft
     assert context == []
-    assert needs_clarification is True
+    assert needs_clarification is False
 
 
 def test_product_node_marks_clarification_stage_for_incomplete_recommendation():
@@ -129,8 +132,10 @@ def test_product_node_marks_clarification_stage_for_incomplete_recommendation():
         }
     )
 
-    assert result["recommendation_stage"] == "clarification"
-    assert result["response_mode"] == "clarification_included"
+    # 계좌유형만 빠졌고 위험성향은 있으니 완전 역질문이 아니라 상품 유형 안내로 degrade —
+    # response_mode는 "conditional"(부분 정보 기반 답변).
+    assert result["recommendation_stage"] == "type_recommendation"
+    assert result["response_mode"] == "conditional"
     assert "계좌유형" in result["product_draft"]
     assert result["retrieved_context"] == []
 
@@ -171,7 +176,8 @@ def test_specific_recommendation_with_missing_info_asks_only_needed_question():
         assert word in draft
     assert context == []
     assert profile["risk_profile"] == "안정형"
-    assert needs_clarification is True
+    # 위험성향(안정형)만으로도 상품 유형 수준 답은 가능해 degrade된다 — 완전 역질문은 아니다.
+    assert needs_clarification is False
 
 
 def test_context_reference_without_history_asks_for_product_identity():
