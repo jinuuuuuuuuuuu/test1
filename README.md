@@ -67,22 +67,29 @@ scripts/      배치 실행 스크립트 (파싱, 색인 등)
 
 ## 진행 단계
 
-- [x] **Phase 0** — Python 환경, 레포 스캐폴드
-  - [ ] NCP 크레딧 신청 / Clova Studio API 키 (미착수)
+- [x] **Phase 0** — Python 환경, 레포 스캐폴드, NCP 크레딧/Clova Studio API 키 발급
 - [x] **Phase 0.5** — 원본 데이터 검수/라벨링 QA (파싱·색인의 입력 신뢰도 확보)
-  - [x] `docs.zip` (58개) 다중 카테고리 라벨링
-  - [x] `docs.zip` "원문 대조 검수 필요" 19개 문서 106개 청크 전수 검증 + 수정 (`docs 수정.xlsm`)
-  - [x] `투자설명서.zip` "추가확인" 대상 1~33행(17개 고유 파일) 원문 전수 대조 검증 + NULL 필드 보완 + 오류 수정 (`[파싱]투자설명서.xlsm`)
-  - [ ] `docs.zip` 잔여 372개 "검수전" 청크 + `doc58_chunk01` (다음 세션으로 이월)
-  - [ ] `투자설명서.zip` 잔여 범위(34행 이후, 85개 고유 파일 중 미검증분)
-- [ ] **Phase 1** — `docs.zip`·`투자설명서.zip` 파싱 + 벡터DB/구조화DB 색인 (팀원 진행 중 — 완료본을 입력으로 사용 예정)
-- [x] **Phase 2** — 세제 규칙엔진(세액공제/연금수령한도/감면율/종합과세) + 제도 판정기 + 투자한도 판정기 (`src/rules/`, 8개 모듈, 99 tests passing)
-- [ ] **Phase 3** — LangGraph 에이전트 (①~⑤)
-  - [x] ②③ Agent용 규칙엔진 툴 6개 (`src/agents/tools.py`): `calculate_tax_credit`, `calculate_pension_withdrawal`, `check_early_withdrawal`, `check_default_option`, `check_in_kind_transfer`, `check_product_pension_eligibility`
-  - [ ] RAG/구조화DB 기반 툴 3개(`search_pension_docs`, `search_funds`, `get_fund_detail`) — Phase 1 완료 후 추가
-  - [ ] LangGraph 그래프 배선 (①라우터 → ②③ → ④검증 → ⑤생성기)
-- [ ] **Phase 4** — 평가용 API 서버 + NCP 배포
-- [ ] **Phase 5** — 자체 평가 반복, 기술제안서
+  - [x] `docs.zip`(58개) 다중 카테고리 라벨링 + 전수 원문 대조 검증
+  - [x] `투자설명서.zip`(100개) 전수 원문 대조 검증, AUM 98/100 수기검수 반영
+- [x] **Phase 1** — `docs.zip`·`투자설명서.zip` 파싱 + 벡터DB(Chroma)/구조화DB(SQLite) 색인
+  - `data/processed/prospectus.db`(fund_master/fund_class, 100펀드/198클래스) +
+    `data/processed/chroma_docs`(제도문서 708청크) + 투자설명서 서술형(투자전략·위험 등) 벡터
+    컬렉션(430문서) — 3개 데이터 저장소 완료, git에 포함
+- [x] **Phase 2** — 세제 규칙엔진(세액공제/연금수령한도/감면율/종합과세) + 제도 판정기 + 투자한도
+  판정기 (`src/rules/`, 8개 모듈)
+- [x] **Phase 3** — LangGraph 에이전트 (①라우터 → ②정보/③상품 Agent → ④검증 → ⑤생성기) 배선 완료
+  - ②③ 규칙엔진 툴 6개 + RAG/구조화DB 툴 3개(`search_pension_docs`, `search_funds`,
+    `get_fund_detail`) 전부 연결
+  - L0 결정론적 검증 게이트(수치 대사) + scope 축(범위내/부분관련/범위외) + 1회 repair 루프 반영
+  - 대회 평가가 싱글턴 기준으로 확정되어, 역질문 대신 조건부 답변(`response_mode`)으로
+    대응하도록 ②③ 응답 전략 조정 (2026-08-20)
+  - 멀티턴 대화(`conversation_history`)는 코드상 지원되지만 싱글턴 평가 API에서는 사용되지
+    않음 — 로컬 데모(`scripts/chat.py`)용 기능으로 남겨둠
+- [ ] **Phase 4** — 평가용 API 서버 + NCP 배포 — **미착수.** `src/api/`는 아직 빈 폴더(`.gitkeep`만
+  존재)이고, `Dockerfile`의 `CMD`는 존재하지 않는 `src.api.main:app`을 가리키고 있어 지금
+  `docker run`하면 바로 죽는다. 제출 전 반드시 완료해야 하는 최우선 작업.
+- [ ] **Phase 5** — 자체 평가 반복, 기술제안서 — `eval/eval_questions_100.csv`(100문항 자체
+  평가셋) 작성 완료, 실제 회귀 실행/결과 정리는 미착수
 
 ## 셋업
 
