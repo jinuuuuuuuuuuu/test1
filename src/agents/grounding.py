@@ -18,6 +18,11 @@ L0~L3" 체계를 반영):
 "Unsupported function" 에러로 애초에 구조화 출력을 못 한다). HCX-007은 기본적으로 Thinking이
 켜져 있어 Structured Outputs와 동시 사용이 안 되므로 thinking_effort="none"으로 꺼서 써야 한다.
 
+⚠️ with_structured_output()에 method="json_schema"를 명시해야 한다 — 안 넘기면
+langchain_openai.BaseChatOpenAI 기본값인 "function_calling"(구조화 출력을 가짜 툴 호출로
+위장)이 쓰이는데, CLOVA의 실제 Structured Outputs는 json_schema 방식이라 이 불일치가
+"Unsupported function"(40009) 실패와 응답 지연의 원인으로 보인다(자세한 근거는 router.py 참고).
+
 ⚠️ 이전 버전은 원본 질문(state["question"])을 프롬프트에 아예 넘기지 않아서 "질문에 다
 답했는지"를 구조적으로 검증할 수 없었다 — 이번에 질문을 포함하도록 고쳤다.
 """
@@ -80,7 +85,9 @@ class GroundingResult(BaseModel):
 
 
 def build_grounding_node():
-    llm = get_llm(GROUNDING_MODEL, thinking_effort="none").with_structured_output(GroundingResult)
+    llm = get_llm(GROUNDING_MODEL, thinking_effort="none").with_structured_output(
+        GroundingResult, method="json_schema"
+    )
 
     def grounding_node(state: PensionAgentState) -> dict:
         # 복합형에서는 info_draft/product_draft가 둘 다 있으므로 반드시 병합해서 검증한다.

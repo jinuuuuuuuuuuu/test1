@@ -7,6 +7,12 @@ retrieved_context를 State에서 그대로 읽어 쓸 수 있어야 하기 때�
 ⚠️ Structured Outputs는 네이버 공식 문서 기준 HCX-007에서만 지원된다(HCX-DASH-002는
 "Unsupported function" 에러). HCX-007은 기본적으로 Thinking이 켜져 있어 Structured
 Outputs와 동시 사용이 안 되므로 thinking_effort="none"으로 꺼서 써야 한다.
+
+⚠️ ChatClovaX가 상속하는 langchain_openai.BaseChatOpenAI의 with_structured_output()은
+method를 안 넘기면 기본값이 "function_calling"이다(구조화 출력을 가짜 툴 호출로 위장) —
+CLOVA의 실제 Structured Outputs는 "json_schema" 방식으로 설계돼 있어, method="json_schema"를
+명시하지 않으면 Thinking과 얽혀 "Unsupported function"(40009) 실패나 응답 지연이 잦다
+(실측: 같은 질문 기준 json_schema가 매번 약 2배 빠름, function_calling은 5분 타임아웃도 발생).
 """
 
 from typing import Literal, Optional
@@ -76,7 +82,9 @@ class RouterDecision(BaseModel):
 
 
 def build_router_node():
-    llm = get_llm(ROUTER_MODEL, thinking_effort="none").with_structured_output(RouterDecision)
+    llm = get_llm(ROUTER_MODEL, thinking_effort="none").with_structured_output(
+        RouterDecision, method="json_schema"
+    )
 
     def router_node(state: PensionAgentState) -> dict:
         history_text = format_conversation_history(state.get("conversation_history"))
