@@ -78,12 +78,24 @@ def test_early_withdrawal_tax_question_states_limitation_instead_of_inventing_ra
     assert "서류의 구체적인 목록은 보유 자료로 확인이 어렵습니다" in draft
 
 
-def test_tax_credit_question_with_full_inputs_is_left_to_calculation_tool():
-    """납입액+소득이 이미 있으면 한도 일반론으로 가로채지 말고 계산 경로로 보내야 한다."""
+def test_tax_credit_question_with_full_inputs_is_calculated_deterministically():
+    """납입액+소득이 이미 있으면 한도 일반론으로 가로채지 말고 규칙엔진으로 직접 계산해야 한다.
+
+    실측 실패: LLM에게 계산을 맡겼더니 calculate_tax_credit 툴을 부르지 않고 학습 지식으로
+    "700만원까지 공제"라고 답했다(우리 규칙엔진 기준 정답은 900만원 한도 내 700만원 대상,
+    16.5% 적용 시 세액공제액 1,155,000원 — 한도 자체를 틀리게 답한 것). 모델 판단에 맡기지
+    않고 결정론적으로 계산하도록 변경.
+    """
     question = "연봉 5천만원인데 연금저축에 400만원, IRP에 300만원 넣으면 세액공제 얼마 받나요?"
 
-    assert deterministic_info_response(question) is None
-    assert should_force_info_agent(question) is False
+    result = deterministic_info_response(question)
+    assert result is not None
+    draft, context = result
+    assert "700만원" in draft  # 세액공제 대상 납입액(900만원 한도 이내)
+    assert "1,155,000원" in draft  # 700만원 x 16.5%
+    assert context
+
+    assert should_force_info_agent(question) is True
 
 
 def test_default_option_auto_purchase_question_gets_schedule_rules():

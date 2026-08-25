@@ -7,6 +7,7 @@ whether to call a tool has repeatedly produced ungrounded answers.
 from __future__ import annotations
 
 import re
+from typing import Optional
 
 from src.agents.state import RetrievedItem
 from src.rules.comprehensive_tax import (
@@ -25,6 +26,7 @@ from src.rules.tax_credit import (
     INCOME_THRESHOLD_SALARY,
     PENSION_SAVINGS_ONLY_LIMIT,
     TOTAL_CONTRIBUTION_LIMIT,
+    calculate_tax_credit,
 )
 from src.rules.withdrawal_limit import (
     SIX_YEAR_EXCEPTION_CUTOFF,
@@ -36,6 +38,11 @@ from src.rules.withdrawal_limit import (
 def deterministic_info_response(question: str) -> tuple[str, list[RetrievedItem]] | None:
     text = _compact(question)
 
+    # 계산 입력값이 다 있으면 규칙엔진으로 직접 계산한다 — LLM에게 맡기면 툴을 부르지 않고
+    # 학습 지식으로 답해 틀린 숫자를 내는 사례가 실측됐다.
+    calculated = _tax_credit_calculation_response(question)
+    if calculated is not None:
+        return calculated
     if _is_tax_credit_calculation_missing_question(question):
         return _tax_credit_calculation_missing_response()
     if _is_tax_benefit_overview_question(text):
@@ -65,6 +72,7 @@ def should_force_info_agent(question: str) -> bool:
     text = _compact(question)
     return any(
         (
+            _parse_tax_credit_inputs(question) is not None,
             _is_tax_credit_calculation_missing_question(question),
             _is_tax_credit_limit_question(text),
             _is_tax_benefit_overview_question(text),
@@ -95,6 +103,112 @@ def _pct(rate: float) -> str:
 
 def _context(source: str, content: str) -> list[RetrievedItem]:
     return [{"source": source, "content": content, "node": "info_agent"}]
+
+
+# 금액 단위 — "5천만원"이 "5만원"으로 잘못 읽히지 않도록 긴 단위를 먼저 시도한다.
+_WON_UNITS = (("억", 100_000_000), ("천만", 10_000_000), ("백만", 1_000_000), ("만", 10_000))
+_WON_PATTERN = re.compile(r"(\d[\d,]*)\s*(억|천만|백만|만)")
+
+
+def _amount_after_label(text: str, labels: tuple[str, ...], window: int = 20) -> Optional[int]:
+    """라벨(예: '연금저축') 바로 뒤 구간에서 금액을 찾는다. 못 찾으면 None."""
+    for label in labels:
+        start = text.find(label)
+        while start != -1:
+            segment = text[start + len(label): start + len(label) + window]
+            match = _WON_PATTERN.search(segment)
+            if match:
+                digits = int(match.group(1).replace(",", ""))
+                unit = dict(_WON_UNITS)[match.group(2)]
+                return digits * unit
+            start = text.find(label, start + 1)
+    return None
+
+
+def _parse_tax_credit_inputs(question: str) -> Optional[dict]:
+    """세액공제 계산에 필요한 값(납입액 + 소득)을 질문에서 뽑는다. 하나라도 없으면 None."""
+    text = _compact(question)
+    pension_savings = _amount_after_label(text, ("연금저축",))
+    irp = _amount_after_label(text, ("IRP", "irp", "개인형퇴직연금"))
+    if pension_savings is None and irp is None:
+        return None
+
+    total_salary = _amount_after_label(text, ("연봉", "총급여"))
+    comprehensive_income = _amount_after_label(text, ("종합소득금액", "종합소득"))
+    if total_salary is None and comprehensive_income is None:
+        return None
+
+    return {
+        "pension_savings_paid": pension_savings or 0,
+        "irp_paid": irp or 0,
+        "total_salary": total_salary,
+        "comprehensive_income": comprehensive_income,
+    }
+
+
+def _tax_credit_calculation_response(question: str) -> Optional[tuple[str, list[RetrievedItem]]]:
+    """질문에 계산 입력값이 다 있으면 규칙엔진으로 직접 계산해 답한다.
+
+    LLM이 calculate_tax_credit 툴을 부르지 않고 학습 지식으로 답해버리는 사례가 실측됐다
+    (한도를 900만원이 아닌 700만원이라고 답하고 계산은 하지 않음). 계산 가능한 질문은
+    모델 판단에 맡기지 않고 결정론적으로 처리한다.
+    """
+    inputs = _parse_tax_credit_inputs(question)
+    if inputs is None:
+        return None
+
+    result = calculate_tax_credit(
+        pension_savings_paid=inputs["pension_savings_paid"],
+        irp_paid=inputs["irp_paid"],
+        total_salary=inputs["total_salary"],
+        comprehensive_income=inputs["comprehensive_income"],
+    )
+
+    income_label = "총급여" if inputs["total_salary"] is not None else "종합소득금액"
+    income_value = inputs["total_salary"] or inputs["comprehensive_income"]
+    threshold = (
+        INCOME_THRESHOLD_SALARY if inputs["total_salary"] is not None
+        else INCOME_THRESHOLD_COMPREHENSIVE
+    )
+    comparison = "이하" if income_value <= threshold else "초과"
+
+    source = "doc41 세액공제 계산 규칙"
+    content = (
+        f"세액공제 대상 납입한도는 연금저축 단독 {_won(PENSION_SAVINGS_ONLY_LIMIT)}, "
+        f"연금저축+IRP 합산 {_won(COMBINED_CREDIT_LIMIT)}입니다. 공제율은 총급여 "
+        f"{_won(INCOME_THRESHOLD_SALARY)} 이하 또는 종합소득금액 "
+        f"{_won(INCOME_THRESHOLD_COMPREHENSIVE)} 이하이면 {_pct(CREDIT_RATE_LOW)}, "
+        f"초과이면 {_pct(CREDIT_RATE_HIGH)}입니다. 입력값(연금저축 "
+        f"{_won(inputs['pension_savings_paid'])}, IRP {_won(inputs['irp_paid'])}, "
+        f"{income_label} {_won(income_value)}) 기준 계산 결과: 세액공제 대상액 "
+        f"{_won(result.credited_total)}, 적용 공제율 {_pct(result.credit_rate)}, "
+        f"세액공제액 {result.tax_credit_amount:,}원."
+    )
+
+    lines = [
+        f"말씀하신 조건({income_label} {_won(income_value)}, 연금저축 "
+        f"{_won(inputs['pension_savings_paid'])}, IRP {_won(inputs['irp_paid'])})으로 "
+        "계산하면 다음과 같습니다.\n",
+        f"- 세액공제 대상 납입액: {_won(result.credited_total)} "
+        f"(연금저축+IRP 합산 한도 {_won(COMBINED_CREDIT_LIMIT)} 이내)",
+        f"- 적용 공제율: {_pct(result.credit_rate)} "
+        f"({income_label} {_won(threshold)} {comparison})",
+        f"- **예상 세액공제액: {result.tax_credit_amount:,}원**",
+    ]
+    if result.excess_beyond_credit_limit:
+        lines.append(
+            f"- 참고: 납입액 중 {_won(result.excess_beyond_credit_limit)}은 세액공제 "
+            "한도를 넘어 공제 대상에서 제외됩니다."
+        )
+    if result.over_contribution_limit:
+        lines.append(
+            f"- 주의: 연금저축+IRP 납입 한도 {_won(TOTAL_CONTRIBUTION_LIMIT)}을 초과했습니다."
+        )
+    lines.append(
+        "\n실제 공제액은 산출세액 범위 내에서 적용되므로, 납부할 세금이 공제액보다 적으면 "
+        "그 범위까지만 공제됩니다."
+    )
+    return "\n".join(lines), _context(source, content)
 
 
 def _has_tax_credit_calculation_inputs(text: str) -> bool:
