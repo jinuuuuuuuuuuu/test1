@@ -11,6 +11,7 @@ invoke()되는 싱글턴 호출이고 LangGraph checkpointer 같은 세션 저�
 
 import os
 import sys
+import time
 import uuid
 
 # 턴이 계속 쌓이면 프롬프트 토큰이 무한히 늘어나므로 최근 N턴만 유지한다.
@@ -47,6 +48,7 @@ def main():
             print("종료합니다.")
             break
 
+        started = time.time()
         try:
             result = app.invoke({
                 "question_id": str(uuid.uuid4())[:8],
@@ -55,10 +57,21 @@ def main():
                 "recommendation_profile": recommendation_profile,
             })
         except Exception as e:
-            print(f"\n[오류] {e}\n")
+            # 원인별로 안내를 다르게 준다 — "[오류] Request timed out."만 보면
+            # 한도 초과인지 응답 지연인지 구분이 안 돼 대응할 수가 없다.
+            elapsed = time.time() - started
+            print(f"\n[오류] {type(e).__name__} ({elapsed:.1f}초 경과): {e}")
+            name = type(e).__name__
+            if name == "RateLimitError":
+                print("  → CLOVA 요청 한도(429)에 걸렸습니다. 같은 API 키를 다른 프로그램이")
+                print("     동시에 쓰고 있지 않은지 확인하고, 30초쯤 뒤에 다시 시도해 보세요.")
+            elif name in ("APITimeoutError", "APIConnectionError"):
+                print("  → CLOVA 응답이 없어 끊었습니다. 네트워크 상태를 확인하고 다시 시도해 보세요.")
+            print()
             continue
 
         answer = result.get("answer") or "(답변 없음)"
+        print(f"\n(응답 {time.time() - started:.1f}초)", end="")
 
         print("\n" + "=" * 60)
         print("[답변]")

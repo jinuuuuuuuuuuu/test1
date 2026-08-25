@@ -30,6 +30,10 @@ _DISABLE_PARALLEL_TOOL_CALLS = {"parallel_tool_calls": None}
 # 정상 응답은 실측 1~4초라 30초면 충분한 여유다.
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 30.0
 
+# 429(요청 한도 초과)용 대기 시간 — CLOVA 테스트 키는 한도가 낮아, 여러 질문을 연달아
+# 넣거나 다른 프로세스가 같은 키를 동시에 쓰면 쉽게 걸린다. 일반 오류보다 길게 기다린다.
+RATE_LIMIT_BACKOFF_SECONDS = 5.0
+
 
 def get_llm(
     model_name: str,
@@ -58,9 +62,18 @@ def get_llm(
     return ChatClovaX(**kwargs)
 
 
-def get_embeddings(model_name: str = "clir-emb-dolphin") -> ClovaXEmbeddings:
-    """CLOVA Studio 임베딩 모델 인스턴스를 만든다. ChatClovaX와 동일하게 CLOVASTUDIO_API_KEY를 쓴다."""
-    return ClovaXEmbeddings(model=model_name)
+def get_embeddings(
+    model_name: str = "clir-emb-dolphin",
+    timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+) -> ClovaXEmbeddings:
+    """CLOVA Studio 임베딩 모델 인스턴스를 만든다. ChatClovaX와 동일하게 CLOVASTUDIO_API_KEY를 쓴다.
+
+    ⚠️ LLM과 마찬가지로 타임아웃을 명시해야 한다 — RAG 검색(search_pension_docs)은 질의를
+    임베딩하려고 이 API를 호출하므로, 여기가 막히면 LLM 타임아웃과 무관하게 요청 전체가
+    SDK 기본값 600초까지 멈춘다.
+    """
+    # 필드명은 timeout이 아니라 request_timeout이다 — timeout=으로 넘기면 조용히 무시된다.
+    return ClovaXEmbeddings(model=model_name, request_timeout=timeout, max_retries=0)
 
 
 def call_with_retry(fn, *args, max_retries: int = 3, backoff_seconds: float = 1.5, **kwargs):
@@ -78,7 +91,7 @@ def call_with_retry(fn, *args, max_retries: int = 3, backoff_seconds: float = 1.
     """
     import time
 
-    from openai import APIError
+    from openai import APIError, RateLimitError
 
     last_error: Optional[Exception] = None
     for attempt in range(max_retries):
@@ -86,8 +99,14 @@ def call_with_retry(fn, *args, max_retries: int = 3, backoff_seconds: float = 1.
             return fn(*args, **kwargs)
         except APIError as e:
             last_error = e
-            if attempt < max_retries - 1:
-                time.sleep(backoff_seconds * (attempt + 1))
+            if attempt >= max_retries - 1:
+                break
+            # 429(요청 한도 초과)는 잠깐 기다린다고 풀리지 않는다 — 테스트 키는 한도가 낮아
+            # 짧은 백오프로 재시도하면 그대로 다시 429가 난다. 더 길게 기다린다.
+            wait = backoff_seconds * (attempt + 1)
+            if isinstance(e, RateLimitError):
+                wait = max(wait, RATE_LIMIT_BACKOFF_SECONDS * (attempt + 1))
+            time.sleep(wait)
     raise last_error
 
 
