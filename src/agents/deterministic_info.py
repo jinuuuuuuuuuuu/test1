@@ -55,13 +55,13 @@ def deterministic_info_response(question: str) -> tuple[str, list[RetrievedItem]
     if _is_early_withdrawal_general_question(text):
         return _early_withdrawal_general_response()
     if _is_default_option_auto_purchase_question(text):
-        return _default_option_auto_purchase_response()
+        return _default_option_auto_purchase_response(question)
     if _is_in_kind_transfer_block_question(text):
         return _in_kind_transfer_block_response()
     if _is_withdrawal_limit_question(text):
         return _withdrawal_limit_response()
     if _is_retirement_tax_reduction_question(text):
-        return _retirement_tax_reduction_response()
+        return _retirement_tax_reduction_response(question)
     if _is_pension_income_tax_question(text):
         return _pension_income_tax_response()
     return None
@@ -302,7 +302,11 @@ def _is_tax_credit_limit_question(text: str) -> bool:
     # 실제 계산(calculate_tax_credit 툴)으로 넘겨야 한다 — 정형 답변으로 가로채면 안 됨.
     if _has_tax_credit_calculation_inputs(text):
         return False
-    return "세액공제" in text and any(word in text for word in ("한도", "얼마", "최대", "합쳐", "공제율"))
+    if "세액공제" not in text:
+        return False
+    # "얼마"는 그 자체로 너무 범용적이라("세액공제 관련 서류는 얼마나 걸려?" 등) 단독으로는
+    # 인정하지 않는다 — "한도"/"최대"/"합쳐"처럼 한도를 직접 가리키는 단어와 공존해야 한다.
+    return any(word in text for word in ("한도", "최대", "합쳐", "공제율"))
 
 
 def _tax_credit_limit_response() -> tuple[str, list[RetrievedItem]]:
@@ -492,7 +496,12 @@ def _early_withdrawal_reason_response(question: str) -> tuple[str, list[Retrieve
 def _is_early_withdrawal_general_question(text: str) -> bool:
     if _detect_withdrawal_reason(text) is not None:
         return False
-    return "중도인출" in text and any(word in text for word in ("가능", "경우", "사유", "요건", "언제"))
+    if "중도인출" not in text:
+        return False
+    # "언제"는 단독이면 "중도인출 제도가 언제 도입됐어?"처럼 연혁을 묻는 질문과도 겹친다.
+    # "가능"/"경우"/"사유"/"요건"처럼 이 정형 답변(사유 목록)이 실제로 맞는 답인 단어와
+    # 함께 있을 때만 인정한다.
+    return any(word in text for word in ("가능", "경우", "사유", "요건"))
 
 
 def _early_withdrawal_general_response() -> tuple[str, list[RetrievedItem]]:
@@ -521,10 +530,21 @@ def _early_withdrawal_general_response() -> tuple[str, list[RetrievedItem]]:
 
 
 def _is_default_option_auto_purchase_question(text: str) -> bool:
-    return "디폴트옵션" in text and any(word in text for word in ("자동매수", "사전지정운용", "언제", "시점", "일정"))
+    # "언제"/"시점"/"일정" 단독으로는 다른 디폴트옵션 질문(예: 해지 시점)과 겹칠 수 있어
+    # "자동매수"/"사전지정운용"과 공존을 요구한다. "자동으로 매수되나요"처럼 두 단어가
+    # 떨어져 서술되는 자연스러운 표현도 놓치지 않도록 "자동"+"매수" 조합도 인정한다.
+    if "디폴트옵션" not in text:
+        return False
+    if any(word in text for word in ("자동매수", "사전지정운용")):
+        return True
+    return "자동" in text and "매수" in text
 
 
-def _default_option_auto_purchase_response() -> tuple[str, list[RetrievedItem]]:
+def _default_option_auto_purchase_response(question: str) -> tuple[str, list[RetrievedItem]]:
+    text = _compact(question)
+    is_existing = any(word in text for word in ("기존가입자", "기존"))
+    is_new = any(word in text for word in ("신규가입자", "신규", "처음가입"))
+
     source = "doc29 디폴트옵션 자동매수 규칙"
     content = (
         f"기존가입자는 상품 만기일로부터 4주({NOTICE_DELAY_DAYS_EXISTING}일) 후 통지하고, "
@@ -532,18 +552,41 @@ def _default_option_auto_purchase_response() -> tuple[str, list[RetrievedItem]]:
         f"신규가입자는 최초 부담금 납입 다음 영업일 통지하고, 통지 후 2주({WAIT_DAYS_AFTER_NOTICE}일) "
         "대기 뒤 자동매수합니다. 동일 상품 반복 만기 등 연속성이 유지되는 경우에는 통지·대기 없이 즉시 적용됩니다."
     )
-    draft = (
-        "디폴트옵션 자동매수 시점은 기존가입자인지, 신규가입자인지에 따라 다릅니다.\n\n"
+
+    schedule = (
         "- 기존가입자: 상품 만기일로부터 4주(28일) 후 통지, 그 뒤 2주(14일) 대기 후 자동매수\n"
         "- 신규가입자: 최초 부담금 납입 다음 영업일 통지, 그 뒤 2주(14일) 대기 후 자동매수\n"
-        "- 동일 상품 반복 만기처럼 연속성이 유지되는 경우: 통지·대기 없이 즉시 적용\n\n"
-        "다만 대기 중 전액을 다른 상품으로 이동해 연속성이 끊기면 다음 만기분부터 다시 통지와 대기 절차를 거칠 수 있습니다."
+        "- 동일 상품 반복 만기처럼 연속성이 유지되는 경우: 통지·대기 없이 즉시 적용"
     )
+
+    if is_existing and not is_new:
+        draft = (
+            "기존가입자 기준으로 안내드리면, 디폴트옵션 자동매수는 상품 만기일로부터 4주(28일) 후 "
+            "통지하고, 그 뒤 2주(14일) 대기 후 이뤄집니다.\n\n"
+            "다만 대기 중 전액을 다른 상품으로 이동해 연속성이 끊기면 다음 만기분부터 다시 통지와 대기 절차를 거칠 수 있습니다."
+        )
+    elif is_new and not is_existing:
+        draft = (
+            "신규가입자 기준으로 안내드리면, 디폴트옵션 자동매수는 최초 부담금 납입 다음 영업일에 "
+            "통지하고, 그 뒤 2주(14일) 대기 후 이뤄집니다.\n\n"
+            "다만 대기 중 전액을 다른 상품으로 이동해 연속성이 끊기면 다음 만기분부터 다시 통지와 대기 절차를 거칠 수 있습니다."
+        )
+    else:
+        draft = (
+            "기존가입자인지 신규가입자인지에 따라 자동매수 시점이 달라 정확히 안내드리려면 "
+            "어느 쪽에 해당하시는지 알려주시면 좋습니다. 다만 일반적으로는 다음과 같습니다.\n\n"
+            f"{schedule}\n\n"
+            "다만 대기 중 전액을 다른 상품으로 이동해 연속성이 끊기면 다음 만기분부터 다시 통지와 대기 절차를 거칠 수 있습니다."
+        )
     return draft, _context(source, content)
 
 
 def _is_in_kind_transfer_block_question(text: str) -> bool:
-    return "실물이전" in text and any(word in text for word in ("안되는", "안되는", "불가", "못", "제한", "상품", "사유"))
+    if "실물이전" not in text:
+        return False
+    # "상품" 단독으로는 "실물이전 되는 상품 뭐 있어?"(허용 목록을 묻는 질문)와도 겹친다.
+    # 부정어(안되는/불가/못/제한) 또는 "사유"와 함께 있을 때만 불가사유 목록으로 답한다.
+    return any(word in text for word in ("안되는", "불가", "못", "제한", "사유"))
 
 
 def _in_kind_transfer_block_response() -> tuple[str, list[RetrievedItem]]:
@@ -596,12 +639,15 @@ def _withdrawal_limit_response() -> tuple[str, list[RetrievedItem]]:
 
 
 def _is_retirement_tax_reduction_question(text: str) -> bool:
-    return any(word in text for word in ("퇴직소득세", "이연퇴직소득세")) and any(
-        word in text for word in ("감면", "비율", "세율", "납부")
-    )
+    if not any(word in text for word in ("퇴직소득세", "이연퇴직소득세")):
+        return False
+    # "세율" 단독은 연금소득세 등 다른 세율 질문과도 겹친다. "감면"/"비율"/"납부"처럼
+    # 이연퇴직소득세 감면 답변이 실제로 맞는 질문에서만 인정한다.
+    return any(word in text for word in ("감면", "비율", "납부"))
 
 
-def _retirement_tax_reduction_response() -> tuple[str, list[RetrievedItem]]:
+def _retirement_tax_reduction_response(question: str) -> tuple[str, list[RetrievedItem]]:
+    text = _compact(question)
     r1 = get_deferred_retirement_tax_rate(1)
     r11 = get_deferred_retirement_tax_rate(11)
     r21 = get_deferred_retirement_tax_rate(21)
@@ -612,20 +658,36 @@ def _retirement_tax_reduction_response() -> tuple[str, list[RetrievedItem]]:
         f"{_pct(r11.reduction_ratio)}를 감면합니다. 21년차 이상은 {_pct(r21.payment_ratio)}를 납부하고 "
         f"{_pct(r21.reduction_ratio)}를 감면합니다. 연금외수령은 감면 없이 전액 납부합니다."
     )
-    draft = (
-        "퇴직금을 연금으로 수령하면 이연퇴직소득세가 연차에 따라 감면됩니다.\n\n"
+    schedule = (
         "- 연금실제수령연차 1~10년차: 이연퇴직소득세의 70% 납부, 30% 감면\n"
         "- 연금실제수령연차 11~20년차: 60% 납부, 40% 감면\n"
-        "- 연금실제수령연차 21년차 이상: 50% 납부, 50% 감면\n\n"
-        "주의할 점은 여기서 쓰는 기준이 '연금수령연차'가 아니라 실제로 인출한 해만 세는 "
-        "'연금실제수령연차'라는 점입니다. 연금외수령이면 감면 없이 이연퇴직소득세 전액을 납부합니다."
+        "- 연금실제수령연차 21년차 이상: 50% 납부, 50% 감면"
     )
+    has_year_hint = bool(re.search(r"\d+\s*년차", text)) or "연금외수령" in text
+
+    if has_year_hint:
+        draft = (
+            f"{schedule}\n\n"
+            "주의할 점은 여기서 쓰는 기준이 '연금수령연차'가 아니라 실제로 인출한 해만 세는 "
+            "'연금실제수령연차'라는 점입니다. 연금외수령이면 감면 없이 이연퇴직소득세 전액을 납부합니다."
+        )
+    else:
+        draft = (
+            "정확한 감면율은 연금을 실제로 몇 년차째 수령 중이신지에 따라 달라집니다. "
+            "몇 년차인지 알려주시면 더 정확히 안내드릴 수 있습니다. 다만 일반적으로는 다음과 같습니다.\n\n"
+            f"{schedule}\n\n"
+            "주의할 점은 여기서 쓰는 기준이 '연금수령연차'가 아니라 실제로 인출한 해만 세는 "
+            "'연금실제수령연차'라는 점입니다. 연금외수령이면 감면 없이 이연퇴직소득세 전액을 납부합니다."
+        )
     return draft, _context(source, content)
 
 
 def _is_pension_income_tax_question(text: str) -> bool:
+    # "얼마"는 단독으로 두면 범용적이지만, 주제어 자체(연금소득세/종합과세/분리과세)가 이미
+    # 좁아서 다른 항목들과 달리 별도 제거 없이도 오분류 위험이 낮다 — 다만 일관성을 위해
+    # "얼마"는 나머지 구체 동반어와 함께일 때만 인정한다.
     return any(word in text for word in ("연금소득세", "종합과세", "분리과세")) and any(
-        word in text for word in ("1500", "1,500", "세율", "기준", "얼마", "초과")
+        word in text for word in ("1500", "1,500", "세율", "기준", "초과", "얼마")
     )
 
 

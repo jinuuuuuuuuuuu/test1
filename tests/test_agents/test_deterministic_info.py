@@ -116,6 +116,51 @@ def test_in_kind_transfer_block_question_forces_info_agent():
     assert context
 
 
+def test_generic_companion_words_alone_do_not_falsely_trigger():
+    """'얼마'/'언제'/'상품'처럼 범용적인 동반어는 단독으로 트리거를 확정하면 안 된다.
+
+    세액공제+얼마 사고(한도 질문이 아닌데 한도 정형 답변이 나간 사례)의 재발 방지 —
+    같은 구조의 다른 주제어들도 함께 좁혔다.
+    """
+    assert deterministic_info_response("세액공제 신청 서류는 얼마나 걸려요?") is None
+    assert deterministic_info_response("IRP는 제도가 언제 도입됐어요?") is None
+    assert deterministic_info_response("실물이전 되는 상품은 뭐가 있나요?") is None
+
+
+def test_default_option_general_question_combines_ask_back_with_best_answer():
+    """가입 유형(기존/신규)이 특정 안 된 질문은 역질문+일반 답변을 한 응답에 같이 낸다."""
+    draft, context = deterministic_info_response("디폴트옵션은 언제 자동으로 매수되나요?")
+
+    assert "기존가입자인지 신규가입자인지" in draft
+    assert "4주(28일)" in draft
+    assert "2주(14일)" in draft
+    assert context
+
+
+def test_default_option_existing_member_question_skips_ask_back():
+    draft, _ = deterministic_info_response("기존가입자인데 디폴트옵션 자동매수 언제 되나요?")
+
+    assert "기존가입자인지 신규가입자인지" not in draft
+    assert "4주(28일)" in draft
+    assert "최초 부담금 납입 다음 영업일" not in draft
+
+
+def test_retirement_tax_reduction_general_question_combines_ask_back_with_best_answer():
+    """연차가 특정 안 된 질문은 역질문+감면율표를 한 응답에 같이 낸다."""
+    draft, context = deterministic_info_response("이연퇴직소득세 감면 비율이 어떻게 되나요?")
+
+    assert "몇 년차인지 알려주시면" in draft
+    assert "30% 감면" in draft
+    assert context
+
+
+def test_retirement_tax_reduction_with_year_skips_ask_back():
+    draft, _ = deterministic_info_response("연금실제수령연차 5년차인데 이연퇴직소득세 감면 비율이 어떻게 되나요?")
+
+    assert "몇 년차인지 알려주시면" not in draft
+    assert "30% 감면" in draft
+
+
 def test_pension_income_tax_question_gets_threshold_rules():
     draft, context = deterministic_info_response("연금소득세 종합과세 기준 1500만원이 뭐야?")
 
