@@ -23,7 +23,7 @@ from src.agents.context import format_conversation_history
 from src.agents.llm import get_llm, invoke_with_retry
 from src.agents.state import PensionAgentState
 
-ROUTER_MODEL = "HCX-007"
+ROUTER_MODEL = "HCX-005"
 
 ROUTER_SYSTEM_PROMPT = """당신은 연금 상담 AI의 질문 분류 게이트입니다. 사용자 질문을 보고 다음을 판단하세요.
 
@@ -70,6 +70,10 @@ ROUTER_SYSTEM_PROMPT = """당신은 연금 상담 AI의 질문 분류 게이트�
 """
 
 
+import json
+import re
+
+from langchain_core.messages import AIMessage
 class RouterDecision(BaseModel):
     """사용자 질문의 의도 분류와 안전성 판정 결과."""
 
@@ -84,26 +88,103 @@ class RouterDecision(BaseModel):
         default=None,
         description="부분관련이면 연금 관점에서 답할 방향, 범위외면 짧은 사유 (범위내면 비움)",
     )
-    is_safe: bool = Field(description="질문이 안전 가이드라인을 위반하지 않으면 True")
-    safety_reason: Optional[str] = Field(default=None, description="is_safe=False일 때만 사유를 적는다")
+    is_safe: bool = Field(
+        description="질문이 안전 가이드라인을 위반하지 않으면 True"
+    )
+    safety_reason: Optional[str] = Field(
+        default=None,
+        description="is_safe=False일 때만 사유를 적는다"
+    )
+
+def _parse_router_json(content: str) -> RouterDecision:
+    """HCX-005가 반환한 JSON 문자열을 RouterDecision으로 변환한다."""
+
+    text = content.strip()
+
+    # ```json ... ``` 형태로 응답한 경우 코드펜스 제거
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+
+    # 앞뒤 설명문이 붙은 경우 첫 { ~ 마지막 }만 추출
+    start = text.find("{")
+    end = text.rfind("}")
+
+    if start == -1 or end == -1:
+        raise ValueError(f"Router JSON을 찾을 수 없습니다: {content}")
+
+    json_text = text[start:end + 1]
+
+    data = json.loads(json_text)
+
+    return RouterDecision.model_validate(data)
 
 
 def build_router_node():
-    llm = get_llm(ROUTER_MODEL, thinking_effort="none").with_structured_output(
-        RouterDecision, method="json_schema"
-    )
+    # HCX-005에서는 with_structured_output(..., method="json_schema")를 사용하지 않는다.
+    llm = get_llm(ROUTER_MODEL)
 
     def router_node(state: PensionAgentState) -> dict:
-        history_text = format_conversation_history(state.get("conversation_history"))
+        history_text = format_conversation_history(
+            state.get("conversation_history")
+        )
+
         user_content = (
             f"[이전 대화]\n{history_text}\n\n[현재 질문]\n{state['question']}"
             if history_text
             else state["question"]
         )
-        decision: RouterDecision = invoke_with_retry(llm, [
-            {"role": "system", "content": ROUTER_SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ])
+
+        # HCX-005에게 JSON 문자열로 출력하도록 명시
+        router_prompt = (
+            ROUTER_SYSTEM_PROMPT
+            + """
+
+반드시 아래 JSON 형식으로만 답하세요.
+JSON 앞뒤에 설명, 마크다운, 코드블록을 붙이지 마세요.
+
+{
+  "intent": ["정보형"],
+  "scope": "범위내",
+  "scope_note": null,
+  "is_safe": true,
+  "safety_reason": null
+}
+
+intent에는 "정보형", "상품형" 중 필요한 값을 모두 넣으세요.
+복합형이면 ["정보형", "상품형"]으로 출력하세요.
+
+scope는 반드시 다음 중 하나입니다.
+- "범위내"
+- "부분관련"
+- "범위외"
+
+scope_note와 safety_reason이 필요 없으면 null을 출력하세요.
+is_safe는 반드시 true 또는 false의 JSON boolean으로 출력하세요.
+"""
+        )
+
+        response = invoke_with_retry(
+            llm,
+            [
+                {
+                    "role": "system",
+                    "content": router_prompt,
+                },
+                {
+                    "role": "user",
+                    "content": user_content,
+                },
+            ],
+        )
+
+        # 일반 ChatModel 응답은 AIMessage이므로 content를 꺼낸다.
+        if isinstance(response, AIMessage):
+            content = response.content
+        else:
+            content = getattr(response, "content", str(response))
+
+        decision = _parse_router_json(content)
+
         return {
             "intent": decision.intent,
             "scope": decision.scope,

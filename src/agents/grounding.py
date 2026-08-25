@@ -40,7 +40,7 @@ from src.agents.verification import (
     find_unsupported_numbers,
 )
 
-GROUNDING_MODEL = "HCX-007"
+GROUNDING_MODEL = "HCX-005"
 
 GROUNDING_SYSTEM_PROMPT = """당신은 연금 상담 AI의 답변 검증기입니다. [질문], [초안 답변],
 [근거](번호 매김), [코드 검사: 근거에 없는 것으로 보이는 수치]를 보고 세 가지를 확인하세요.
@@ -65,6 +65,12 @@ GROUNDING_SYSTEM_PROMPT = """당신은 연금 상담 AI의 답변 검증기입�
    전부)을 초안이 빠짐없이 다뤘는지 확인하세요. 하나라도 빠졌다면 requirements_met=False로
    표시하고 missing_requirements에 빠진 항목을 구체적으로 적으세요."""
 
+import json
+import re
+from typing import List
+
+from langchain_core.messages import AIMessage
+from pydantic import BaseModel, Field
 
 class GroundingResult(BaseModel):
     """답변 초안이 근거·질문 요구사항과 부합하는지에 대한 검증 결과."""
@@ -85,9 +91,7 @@ class GroundingResult(BaseModel):
 
 
 def build_grounding_node():
-    llm = get_llm(GROUNDING_MODEL, thinking_effort="none").with_structured_output(
-        GroundingResult, method="json_schema"
-    )
+    llm = get_llm(GROUNDING_MODEL)
 
     def grounding_node(state: PensionAgentState) -> dict:
         # 복합형에서는 info_draft/product_draft가 둘 다 있으므로 반드시 병합해서 검증한다.
@@ -118,19 +122,58 @@ def build_grounding_node():
             else ""
         )
 
-        result: GroundingResult = invoke_with_retry(llm, [
-            {"role": "system", "content": GROUNDING_SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": (
-                    f"[질문]\n{state['question']}\n\n"
-                    f"[초안 답변]\n{draft}\n\n"
-                    f"[근거]\n{context_text}\n\n"
-                    f"[코드 검사: 근거에 없는 것으로 보이는 수치]\n{suspects_text}"
-                    f"{clarification_note}"
-                ),
-            },
-        ])
+        grounding_prompt = (
+            GROUNDING_SYSTEM_PROMPT
+            + """
+
+        반드시 아래 JSON 형식으로만 답하세요.
+        JSON 앞뒤에 설명, 마크다운, 코드블록을 붙이지 마세요.
+
+        {
+        "grounded": true,
+        "issues": [],
+        "unsupported_numbers_confirmed": [],
+        "premise_issues": [],
+        "requirements_met": true,
+        "missing_requirements": []
+        }
+
+        규칙:
+        - grounded와 requirements_met은 반드시 true 또는 false의 JSON boolean이어야 합니다.
+        - issues는 문자열 배열입니다.
+        - unsupported_numbers_confirmed는 문자열 배열입니다.
+        - premise_issues는 문자열 배열입니다.
+        - missing_requirements는 문자열 배열입니다.
+        - 문제가 없으면 해당 배열은 반드시 []로 출력하세요.
+        """
+        )
+
+        response = invoke_with_retry(
+            llm,
+            [
+                {
+                    "role": "system",
+                    "content": grounding_prompt,
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"[질문]\n{state['question']}\n\n"
+                        f"[초안 답변]\n{draft}\n\n"
+                        f"[근거]\n{context_text}\n\n"
+                        f"[코드 검사: 근거에 없는 것으로 보이는 수치]\n{suspects_text}"
+                        f"{clarification_note}"
+                    ),
+                },
+            ],
+        )
+
+        if isinstance(response, AIMessage):
+            content = response.content
+        else:
+            content = getattr(response, "content", str(response))
+
+        result = _parse_grounding_json(content)
 
         verification = apply_l0_overrides(
             {
@@ -151,3 +194,24 @@ def build_grounding_node():
         return {"verification": verification}
 
     return grounding_node
+
+def _parse_grounding_json(content: str) -> GroundingResult:
+    """HCX-005가 반환한 JSON 문자열을 GroundingResult로 변환한다."""
+
+    text = content.strip()
+
+    # ```json ... ``` 코드블록 제거
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+
+    # 앞뒤 설명이 붙더라도 첫 { ~ 마지막 } 추출
+    start = text.find("{")
+    end = text.rfind("}")
+
+    if start == -1 or end == -1:
+        raise ValueError(f"Grounding JSON을 찾을 수 없습니다: {content}")
+
+    json_text = text[start:end + 1]
+    data = json.loads(json_text)
+
+    return GroundingResult.model_validate(data)
