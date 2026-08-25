@@ -223,6 +223,20 @@ def _is_specific_product_or_comparison(text: str) -> bool:
     return ("펀드" in text or "상품" in text) and any(word in text for word in _SPECIFIC_PRODUCT_WORDS)
 
 
+def _requires_account_eligibility_check(text: str) -> bool:
+    """계좌유형과 투자 제한이 있는 상품유형을 함께 물으면 정형 응답 대신 LLM+툴로 넘긴다.
+
+    실측: "IRP로 사모펀드 투자 가능한가요? 추천해주세요"가 사모펀드 언급 없이 TDF/채권혼합형을
+    추천했다 — 퇴직연금계좌(IRP/DC)는 상장주식·사모펀드 등 투자 제한이 있는 상품유형이 있는데,
+    정형 응답은 이 제도적 제약을 모르고 일반 추천으로 답해버린다. 이런 조합은 규칙엔진/RAG
+    툴로 실제 투자 가능 여부부터 확인해야 하므로 여기서 가로채지 않고 None을 반환한다.
+    """
+    return _has_account_type(text) and any(
+        product_type in text
+        for product_type in ("상장주식", "사모펀드", "증권예탁증권", "위험자산 100%", "위험자산100%")
+    )
+
+
 def _is_context_reference_without_target(state: PensionAgentState) -> bool:
     text = state["question"]
     if state.get("conversation_history"):
@@ -522,6 +536,9 @@ def _recommendation_flow_response(state: PensionAgentState) -> tuple[str, list[R
         return _principal_guarantee_response(state, concentration=_has_concentration_request(current))
     if _is_guaranteed_high_return_request(current):
         return _principal_guarantee_response(state, concentration=False, tradeoff=True)
+
+    if _requires_account_eligibility_check(current):
+        return None
 
     reference_response = _context_reference_response(state)
     if reference_response is not None:

@@ -27,6 +27,10 @@ def test_pension_savings_only_capped_at_6m():
     assert r.credited_pension_savings == 6_000_000
     assert r.credited_total == 6_000_000
     assert r.tax_credit_amount == 990_000  # 600만 x 16.5%
+    # 합산 900만원 한도가 아니라 연금저축 단독 600만원 한도 때문에 제외된 케이스도
+    # excess_beyond_credit_limit에 반영돼야 한다 (기존 버그: total_paid - 900만원으로
+    # 계산해 이 케이스가 0으로 잘못 나왔다 — 실제로는 100만원이 제외된다).
+    assert r.excess_beyond_credit_limit == 1_000_000
 
 
 def test_combined_capped_at_9m_even_if_pension_savings_maxed():

@@ -3,8 +3,21 @@ from src.agents.product_agent import (
     _has_principal_guarantee_premise,
     _is_forecast_question,
     _recommendation_flow_response,
+    _requires_account_eligibility_check,
     build_product_agent_node,
 )
+
+
+def test_account_eligibility_question_is_not_intercepted_by_generic_recommendation():
+    """계좌유형+제한상품유형 조합은 정형 추천으로 가로채지 말고 LLM+툴로 넘겨야 한다.
+
+    실측 실패: "IRP로 사모펀드 투자 가능한가요?"가 사모펀드 언급 없이 TDF/채권혼합형을
+    추천했다 — 퇴직연금계좌는 사모펀드 등 투자 제한 상품유형이 있는데, 정형 응답은 이
+    제도적 제약을 모른다.
+    """
+    assert _requires_account_eligibility_check("IRP로 사모펀드 투자 가능한가요? 추천해주세요.") is True
+    result = _recommendation_flow_response({"question": "IRP로 사모펀드 투자 가능한가요? 추천해주세요."})
+    assert result is None
 
 
 def test_recommendation_flow_starts_with_one_question():
