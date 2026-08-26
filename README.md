@@ -116,9 +116,17 @@ cp .env.sample .env              # 키 채워넣기 (CLOVASTUDIO_API_KEY)
 
 **실행 확인**:
 ```bash
-pytest -q                        # 전체 테스트 (276 passed, 2 skipped면 정상)
+pytest -q                        # 전체 테스트 (276 passed, 19 skipped면 정상)
 python scripts/chat.py           # 터미널에서 직접 질문해보기 (.venv 활성화 상태에서 python만 쓰면 됨,
                                   #  .venv/Scripts/python.exe처럼 OS별 경로를 직접 안 써도 됨)
+```
+
+**제출 전 회귀 확인 (필수)**: 위 `pytest -q`는 실제 모델을 부르지 않으므로,
+"답할 수 있는 질문을 거부한다" 같은 파이프라인 전체 결함은 잡지 못합니다
+(실제로 단위 테스트 276개가 전부 통과하는 상태에서 대회 공식 질의가 거부되고
+있었습니다). 대회 참고 질의 5건을 실제로 통과시키는 E2E 회귀 테스트를 돌리세요:
+```bash
+RUN_LIVE_AGENT_TESTS=1 pytest tests/test_e2e -v   # 약 3~5분, API 크레딧 소모
 ```
 
 **평가용 API 서버 실행**:
