@@ -39,6 +39,17 @@ PRODUCT_AGENT_SYSTEM_PROMPT = """당신은 연금 상품(펀드) 추천 에이�
 말고 "본 서비스의 상담 범위를 벗어난다"고 한계를 고지하세요. [범위 안내]가 함께 주어지면
 범위 밖 부분은 한계를 밝히고, 안내된 연금 관점으로만 답하세요.
 
+절대 규칙 — 개별 상품 데이터로 제도 일반론을 만들지 마세요: 당신의 툴은 개별 펀드의
+수치·서술을 조회할 뿐이며, 제도·규정 문서를 검색할 수단이 없습니다. 따라서 특정 상품을
+지목하지 않은 제도·규정 질문(예: "연금저축 펀드 환매 제한기간이 있나요", "펀드 환매수수료가
+뭔가요")에는 임의의 펀드를 조회해 그 데이터로 답하지 마세요. 펀드 3개의 환매 규정을 보고
+"연금저축 펀드는 일반적으로 환매 제한이 없다"처럼 전체에 대한 결론을 내리는 것은 근거
+없는 일반화입니다 — 조회한 상품에만 해당하는 사실을 전체 제도의 규칙인 것처럼 말하면
+안 됩니다.
+이런 질문을 받으면 툴을 호출하지 말고, [추가 확인 필요] 로 시작해서 (1) 제도 일반 규정은
+이 경로에서 확인이 어렵다는 한계를 밝히고, (2) 특정 상품의 환매 규정·수수료를 알고 싶다면
+상품명이나 상품코드를 알려달라고 요청하세요.
+
 절대 규칙 — 단정적 추천 금지: "좋은 상품 추천해줘", "괜찮은 연금상품 3개 추천해줘"처럼
 계좌유형(DB/DC/IRP)·투자기간·위험선호·금액 등 구체적 조건이 없는 막연한 요청에는 상품을
 지어내서 추천하지 마세요. 이 경우 search_funds/check_product_pension_eligibility 등 툴을
@@ -491,9 +502,20 @@ def _risk_search_args(text: str) -> dict:
 
 
 def _fallback_product_recommendation(state: PensionAgentState) -> tuple[str, list[RetrievedItem]]:
-    """조건이 충분한 추천 요청인데 LLM이 상품 검색을 건너뛴 경우 투자설명서 DB 후보를 보강한다."""
+    """조건이 충분한 추천 요청인데 LLM이 상품 검색을 건너뛴 경우 투자설명서 DB 후보를 보강한다.
+
+    ⚠️ 진입 조건은 반드시 "실제 추천 의도"여야 한다. 예전에는 _is_product_recommendation
+    ("추천"/"상품"/"펀드" 중 하나만 있어도 True) + _has_account_type만 봤는데, 그러면
+    "연금저축 펀드 환매 제한기간이 있나요?"처럼 추천과 무관한 제도 질문도("펀드"+"연금저축")
+    조건을 통과해 임의의 펀드 3개를 근거로 끌어왔다. 더 나쁜 것은 이 폴백이 LLM이 툴을
+    호출하지 않았을 때(retrieved_context가 빈 경우) 발동한다는 점이다 — LLM이 "제도 질문이라
+    상품 데이터로 답할 수 없다"는 지시를 올바르게 따를수록 오히려 이 폴백에 덮여버리는
+    역설이 생긴다. 그래서 추천 의도를 명시적으로 요구한다.
+    """
     text = _combined_user_text(state)
-    if not (_is_product_recommendation(text) and _has_account_type(text)):
+    if not (_is_recommendation_intent(text) or _is_specific_recommendation_request(text)):
+        return "", []
+    if not _has_account_type(text):
         return "", []
 
     results = search_funds.invoke(_risk_search_args(text))

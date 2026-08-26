@@ -216,3 +216,31 @@ def test_fallback_product_recommendation_skips_without_account_type():
 
     assert draft == ""
     assert context == []
+
+
+def test_fallback_does_not_trigger_on_institutional_question():
+    """추천 의도가 없는 제도 질문에는 상품 후보 폴백이 발동하면 안 된다.
+
+    실측 사고: "연금저축 펀드 환매하는데 제한기간이 있나요?"가 _is_product_recommendation
+    ("펀드" 포함)과 _has_account_type("연금저축" 포함)을 둘 다 통과해, 추천 요청이 아닌데도
+    임의의 펀드 3개를 근거로 끌어와 "연금저축 펀드는 환매 제한이 없다"는 일반화를 만들었다.
+    더 나쁜 것은 이 폴백이 LLM이 툴을 호출하지 않았을 때 발동한다는 점이라, LLM이 "제도
+    질문이라 상품 데이터로 답할 수 없다"는 지시를 올바르게 따를수록 폴백에 덮여버렸다.
+    """
+    from src.agents.product_agent import _fallback_product_recommendation
+
+    draft, context = _fallback_product_recommendation(
+        {"question": "연금저축 펀드 환매하는데 제한기간이 있나요?", "conversation_history": []}
+    )
+
+    assert draft == ""
+    assert context == []
+
+
+def test_fallback_still_triggers_on_real_recommendation_request():
+    """실제 추천 요청에는 폴백이 그대로 동작해야 한다(과잉 차단 방지)."""
+    from src.agents.product_agent import _is_recommendation_intent, _has_account_type
+
+    text = "IRP에 넣을 펀드 추천해줘"
+    assert _is_recommendation_intent(text) is True
+    assert _has_account_type(text) is True

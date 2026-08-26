@@ -166,3 +166,39 @@ def test_clarification_override_keeps_grounded_verdict():
     verification["grounded"] = False
     result = apply_clarification_override(verification)
     assert result["grounded"] is False
+
+
+def test_issues_present_forces_grounded_false():
+    """④ LLM이 issues에 위반을 적고도 grounded=True로 통과시키는 모순을 코드가 바로잡는다.
+
+    실측: 개별 펀드 2건을 근거로 "연금저축 펀드는 일반적으로 환매 제한이 없다"고 단정한
+    초안에 대해, LLM이 issues에는 "일부 펀드 정보를 일반 규칙으로 단정했다"고 정확히
+    지적하면서도 grounded=True를 반환했다. 판정과 근거가 어긋나면 위반 쪽으로 확정한다.
+    """
+    from src.agents.verification import apply_l0_overrides
+
+    result = apply_l0_overrides(
+        {
+            "grounded": True,
+            "issues": ["일부 펀드에만 해당하는 정보를 전체 제도의 규칙으로 단정했습니다."],
+            "unsupported_numbers_confirmed": [],
+        },
+        suspects=[],
+        has_evidence=True,
+    )
+
+    assert result["grounded"] is False
+    assert result["issues"]
+
+
+def test_no_issues_keeps_grounded_true():
+    """위반 지적이 없으면 grounded=True는 그대로 유지되어야 한다(과잉 차단 방지)."""
+    from src.agents.verification import apply_l0_overrides
+
+    result = apply_l0_overrides(
+        {"grounded": True, "issues": [], "unsupported_numbers_confirmed": []},
+        suspects=[],
+        has_evidence=True,
+    )
+
+    assert result["grounded"] is True

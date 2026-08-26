@@ -93,6 +93,14 @@ def apply_l0_overrides(verification: dict, suspects: list[str], has_evidence: bo
         result["grounded"] = False
         issues.append(f"근거 원문에 없는 수치입니다: {', '.join(confirmed)}")
 
+    # ④ LLM이 issues에 위반 사항을 적어놓고도 grounded=True로 통과시키는 모순을 코드가
+    # 바로잡는다 — 실측: 개별 펀드 2건을 근거로 "연금저축 펀드는 일반적으로 환매 제한이
+    # 없다"고 단정한 초안에 대해 LLM이 issues에는 "일부 펀드 정보를 일반 규칙으로 단정했다"고
+    # 정확히 지적하면서도 grounded=True를 반환했다. 판정과 근거가 어긋나면 판정을 신뢰할 수
+    # 없으므로 위반 쪽으로 확정한다 (L0가 프롬프트 순종에 의존하지 않는다는 원칙과 동일).
+    if issues and result.get("grounded"):
+        result["grounded"] = False
+
     result["issues"] = issues
     result["unsupported_numbers_confirmed"] = confirmed
     result["l0_suspect_numbers"] = suspects
