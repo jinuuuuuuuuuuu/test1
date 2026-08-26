@@ -17,6 +17,7 @@ from src.agents.context import format_conversation_history
 from src.agents.deterministic_info import candidate_categories
 from src.agents.llm import get_llm, invoke_with_retry
 from src.agents.state import PensionAgentState
+from src.storage.queries import find_asset_overlap
 
 ROUTER_MODEL = "HCX-007"
 
@@ -37,9 +38,24 @@ ROUTER_SYSTEM_PROMPT = """당신은 연금 상담 AI의 질문 분류 게이트�
    - 상품형(상품 질문): "○○펀드 환매수수료가 얼마인가요", "수익률 높은 펀드 추천해줘" —
      특정 상품이 지목됐거나 상품 후보를 골라야 답이 나온다
 
+   [보유 상품 조회] 힌트를 함께 보세요. 조회 결과가 비어 있고 질문이 상품 추천·비교를
+   요구하지도 않는다면 상품형을 붙이지 마세요 — 상품 Agent가 할 일이 없는데 실행되면
+   임의의 펀드를 뽑아 근거로 삼는 경로가 열립니다. 특히 "퇴직금을 언제 얼마나 인출할 수
+   있고 세금은 얼마인가" 같은 질문은 제도·세제 계산이라 정보형만으로 충분합니다.
+
 2. scope: 이 서비스의 상담 범위는 ⓐ 연금 제도(DB/DC/IRP·연금저축, 디폴트옵션·실물이전·
    중도인출 등), ⓑ 연금 세제(세액공제·연금소득세·퇴직소득세 등), ⓒ 연금계좌에서 투자하는
    상품(펀드)의 설명·비교·추천입니다. 질문이 이 범위에 속하는지 판정하세요.
+
+   ★ 판정 원칙 — "보유 데이터로 답할 수 있으면 거부하지 않는다":
+   범위 판정은 "연금스러운 표현인가"가 아니라 "우리 자료로 답할 수 있는가"입니다.
+   [보유 상품 조회] 힌트가 함께 주어지는데, 이는 질문에 언급된 이름이 **우리 상품 DB에
+   실재하는지 코드가 직접 조회한 결과**입니다. 여기에 상품이 나왔다면 그 상품의
+   위험등급·총보수·수익률·자산유형·판매클래스를 실제로 조회해 답할 수 있으므로,
+   질문에 "연금"·"IRP" 같은 제도 단어가 없더라도 반드시 "범위내"입니다.
+   사용자는 상품명만 알고 제도 용어를 모를 수 있으며, 그런 질문을 거부하면 답할 수 있는
+   질문을 못 답한 것이 됩니다. 조회 결과가 비어 있을 때만 아래 기준으로 판단하세요.
+
    - 범위내: 질문 전체가 위 범위에 속함
    - 부분관련: 질문의 핵심은 범위 밖이지만 연금 관점에서 답할 가치가 있는 부분이 있음.
      scope_note에 연금 관점에서 답할 방향을 적으세요. (예: "부모님이 개인 사업을 하셔,
@@ -158,6 +174,32 @@ class RouterDecision(BaseModel):
     )
 
 
+def _apply_asset_scope_override(
+    scope: str, scope_note: Optional[str], intent: list[str], matched_funds: list[str]
+) -> tuple[str, Optional[str], list[str]]:
+    """보유 상품이 조회된 질문을 '범위외'로 판정한 결과를 코드가 뒤집는다.
+
+    ④검증의 L0 오버라이드와 같은 사상이다 — 반드시 지켜야 하는 것은 프롬프트 순종에
+    맡기지 않는다. 다만 오버라이드 조건은 **코드가 사실로 확정한 경우로만** 한정한다:
+    상품 DB 조회에서 실제 매칭이 나왔다면 그 상품의 위험등급·총보수·수익률을 조회해
+    답할 수 있다는 뜻이므로, "답할 수 없다"는 판정은 사실과 다르다.
+
+    범위외 오판은 답할 수 있는 질문을 통째로 거부하게 만들어 요구사항 충족이 0점이 된다
+    (실측: 대회 공식 참고 질의 "솔로몬 국공채 3종 비교"가 3/3 거부됨). 반대로 조회가
+    비었을 때는 개입하지 않는다 — 게이트를 무력화하면 범위 밖 질문까지 통과한다.
+    """
+    if not matched_funds or scope != "범위외":
+        return scope, scope_note, intent
+
+    note = (
+        f"질문에 언급된 상품이 보유 DB에 있어 상담 범위로 확정 "
+        f"(조회 결과: {', '.join(matched_funds[:3])})"
+    )
+    # 상품을 지목한 질문이므로 상품 Agent가 처리해야 한다. 범위외 판정과 함께 intent가
+    # 비어 나오는 경우가 있어(판정을 포기한 상태) 여기서 함께 보정한다.
+    return "범위내", note, (intent or ["상품형"])
+
+
 def build_router_node():
     # ⚠️ method 미지정 시 langchain_openai(ChatClovaX가 상속)의 기본값 "function_calling"이
     # 적용되는데, CLOVA Structured Outputs는 method="json_schema"만 지원한다 — 미지정 시
@@ -172,19 +214,35 @@ def build_router_node():
         candidate_hint = (
             f"[후보 카테고리 힌트] {', '.join(candidates)}" if candidates else "[후보 카테고리 힌트] (없음)"
         )
+
+        # scope 판정에 필요한 "우리가 무엇을 보유했는가"를 코드가 조회해 사실로 넘긴다.
+        # LLM에게 맡기면 자기 상식으로 추측하다 틀린다 — 실측: DB에 실재하는 펀드를 두고
+        # "개별 상품 정보는 제공 불가능"이라며 범위외로 판정(3/3 재현). candidate_hint가
+        # 정형 카테고리에 대해 하는 일을 scope 축에 동일하게 적용한 것이다.
+        matched_funds = find_asset_overlap(state["question"])
+        asset_hint = (
+            f"[보유 상품 조회] 질문에 언급된 이름이 상품 DB에 있음: {', '.join(matched_funds)}"
+            if matched_funds
+            else "[보유 상품 조회] 질문에서 보유 상품명을 찾지 못함"
+        )
+
+        hints = f"{candidate_hint}\n{asset_hint}"
         user_content = (
-            f"[이전 대화]\n{history_text}\n\n{candidate_hint}\n\n[현재 질문]\n{state['question']}"
+            f"[이전 대화]\n{history_text}\n\n{hints}\n\n[현재 질문]\n{state['question']}"
             if history_text
-            else f"{candidate_hint}\n\n[현재 질문]\n{state['question']}"
+            else f"{hints}\n\n[현재 질문]\n{state['question']}"
         )
         decision: RouterDecision = invoke_with_retry(llm, [
             {"role": "system", "content": ROUTER_SYSTEM_PROMPT},
             {"role": "user", "content": user_content},
         ])
+        scope, scope_note, intent = _apply_asset_scope_override(
+            decision.scope, decision.scope_note, decision.intent, matched_funds
+        )
         return {
-            "intent": decision.intent,
-            "scope": decision.scope,
-            "scope_note": decision.scope_note,
+            "intent": intent,
+            "scope": scope,
+            "scope_note": scope_note,
             "is_safe": decision.is_safe,
             "safety_reason": decision.safety_reason,
             "deterministic_category": decision.deterministic_category,

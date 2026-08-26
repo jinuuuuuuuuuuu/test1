@@ -187,6 +187,79 @@ def get_fund_detail(product_code: str, db_path: str = DEFAULT_DB_PATH) -> Option
         conn.close()
 
 
+# ── 보유 데이터 접점 조회 (①라우터 scope 판정 보조) ──────────────────────
+#
+# scope 판정은 "이 질문에 답할 수 있는가"인데, 라우터 LLM은 **우리가 무엇을 보유했는지
+# 모른 채** 자기 상식으로 그걸 추측한다. 실측(2026-08-27): DB에 실재하는 펀드를 두고
+#   "미래에셋솔로몬장기국공채 위험등급 알려줘" → 범위외
+#   scope_note: "특정 펀드의 위험등급 문의 — 개별 상품 정보는 제공 불가능"
+# 라고 판정했다. fund_master에 risk_grade 컬럼이 있는데도 "없다"고 단정한 것이다.
+# 반대로 "IRP에서 ~ 살 수 있나요"처럼 제도 어휘가 붙으면 정상 판정한다 — 즉 상품명만
+# 아는 고객일수록 거부당하는 역진적 실패다.
+#
+# 이는 "세액공제+얼마 = 한도질문"으로 단정하던 사고(7cddb1f)와 같은 클래스다: 판정에
+# 필요한 사실을 조회하지 않고 표면 신호로 단정한다. 그때의 해법(규칙이 사실을 조회해
+# LLM에 힌트를 주고, 판단은 LLM이 한다)을 scope 축에도 동일하게 적용한다.
+
+# 펀드명에 흔히 등장하지만 그 자체로는 특정 상품을 지목하지 못하는 어휘. 이걸 매칭에
+# 쓰면 "좋은 연금 상품 하나 추천해줘"의 "하나"가 "하나파워e단기채"에 걸리는 식으로
+# 게이트가 무력화된다 — 접점 판정은 "고유명사성"이 있는 토큰으로만 해야 한다.
+_ASSET_GENERIC_TOKENS = frozenset({
+    # 도메인 일반어
+    "펀드", "상품", "투자", "증권", "신탁", "자산", "수익", "연금", "퇴직", "계좌",
+    "자투자신탁", "증권자투자신탁", "투자신탁",
+    # 상품 속성어 (질문의 조건이지 상품 지목이 아니다)
+    "단기", "중기", "장기", "초단기", "중장기", "채권", "주식", "혼합", "국내", "해외",
+    "배당", "성장", "가치", "안정", "위험", "등급", "보수", "수익률", "잔고",
+    # 수량·지시어
+    "하나", "둘", "셋", "두개", "세개", "여러", "모든", "각각",
+    # 질문 상용어
+    "어때요", "알려줘", "얼마", "뭐가", "달라요", "어떤", "추천", "비교", "설명",
+    "좋은", "괜찮은", "적당한", "무엇", "어디", "언제",
+})
+
+
+def find_asset_overlap(question: str, db_path: str = DEFAULT_DB_PATH, limit: int = 5) -> list[str]:
+    """질문이 보유 펀드 데이터와 겹치는지 조회해, 매칭된 펀드명을 반환한다.
+
+    scope 판정의 **사실 확인용**이다 — 답을 만들지 않고 "답할 재료가 있는가"만 본다.
+    특정 상품명을 하드코딩하지 않고 fund_master 전체와 대조하므로, 데이터가 바뀌면
+    판정도 자동으로 따라간다.
+
+    판정 기준은 "질문에 우리 펀드를 **지목하는 고유명사가 있는가**"다:
+      - 일반어·속성어(_ASSET_GENERIC_TOKENS)는 제외 — 상품을 지목하지 못한다
+      - 3글자 이상만 본다 — 2글자는 우연 일치가 잦다("장기" 등은 위에서도 걸러진다)
+      - 한 펀드명 안에서 고유 토큰이 겹칠수록 확실하므로, 매칭 수가 많은 순으로 준다
+
+    "좋은 연금 상품 추천해줘"처럼 속성만 있는 질문은 0건이 정상이다 — 이런 질문은
+    이미 라우터가 범위내로 정상 판정하므로 이 보조 신호가 필요 없다.
+    """
+    tokens = [
+        _normalize_for_match(t)
+        for t in re.split(r"[\s·,()\[\]]+", question or "")
+    ]
+    tokens = [t for t in tokens if len(t) >= 3 and t not in _ASSET_GENERIC_TOKENS]
+    if not tokens:
+        return []
+
+    conn = _connect(db_path)
+    try:
+        rows = conn.execute("SELECT fund_name FROM fund_master").fetchall()
+    finally:
+        conn.close()
+
+    scored: list[tuple[int, str]] = []
+    for row in rows:
+        name = row["fund_name"] or ""
+        normalized = _normalize_for_match(name)
+        hits = sum(1 for t in tokens if t in normalized)
+        if hits:
+            scored.append((hits, name))
+
+    scored.sort(key=lambda pair: (-pair[0], pair[1]))
+    return [name for _, name in scored[:limit]]
+
+
 @dataclass
 class DocSearchResult:
     chunk_id: str

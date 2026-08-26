@@ -100,3 +100,43 @@ def test_get_fund_detail_returns_none_for_unknown_code(tmp_path):
     _seed(db_path)
 
     assert get_fund_detail("KR_NOT_EXIST", db_path=str(db_path)) is None
+
+
+# ── 보유 데이터 접점 조회 (①라우터 scope 판정 보조, F-2) ──────────────────
+
+def test_asset_overlap_finds_fund_named_in_question():
+    """상품명이 언급되면 제도 어휘가 없어도 접점을 찾아야 한다 (대회 공식 질의 유형)."""
+    from src.storage.queries import find_asset_overlap
+
+    hits = find_asset_overlap("솔로몬 국공채 단기 · 중장기 · 장기, 뭐가 달라요?")
+
+    assert hits
+    assert any("솔로몬" in name for name in hits)
+
+
+def test_asset_overlap_matches_without_spacing():
+    """붙여 쓴 상품명도 찾아야 한다 — 사용자는 정식 띄어쓰기를 모른다."""
+    from src.storage.queries import find_asset_overlap
+
+    assert find_asset_overlap("미래에셋솔로몬장기국공채 위험등급 알려줘")
+
+
+def test_asset_overlap_ignores_generic_words():
+    """일반어·속성어만 있는 질문은 접점 0건이어야 게이트가 유지된다.
+
+    "하나"가 "하나파워e단기채"에, "장기"가 "장기성장포커스"에 걸리면 범위 밖
+    질문까지 통과해 scope 게이트가 무력화된다 (실측으로 확인해 좁힌 조건).
+    """
+    from src.storage.queries import find_asset_overlap
+
+    assert find_asset_overlap("좋은 연금 상품 하나 추천해 주세요") == []
+    assert find_asset_overlap("위험등급 낮은 채권형 펀드 뭐가 있어요?") == []
+    assert find_asset_overlap("세액공제 한도가 얼마인가요") == []
+
+
+def test_asset_overlap_empty_for_out_of_scope():
+    from src.storage.queries import find_asset_overlap
+
+    assert find_asset_overlap("삼성전자 주가 지금 얼마인가요?") == []
+    assert find_asset_overlap("부동산 양도세 계산해주세요") == []
+    assert find_asset_overlap("오늘 점심 뭐 먹지") == []
