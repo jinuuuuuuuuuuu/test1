@@ -85,9 +85,13 @@ scripts/      배치 실행 스크립트 (파싱, 색인 등)
     대응하도록 ②③ 응답 전략 조정 (2026-08-20)
   - 멀티턴 대화(`conversation_history`)는 코드상 지원되지만 싱글턴 평가 API에서는 사용되지
     않음 — 로컬 데모(`scripts/chat.py`)용 기능으로 남겨둠
-- [ ] **Phase 4** — 평가용 API 서버 + NCP 배포 — **미착수.** `src/api/`는 아직 빈 폴더(`.gitkeep`만
-  존재)이고, `Dockerfile`의 `CMD`는 존재하지 않는 `src.api.main:app`을 가리키고 있어 지금
-  `docker run`하면 바로 죽는다. 제출 전 반드시 완료해야 하는 최우선 작업.
+- [~] **Phase 4** — 평가용 API 서버 **완료** / NCP 배포 **미착수**
+  - `src/api/main.py` — 요강 p8 스키마(`GET /answer` → `question_id`/`question`/
+    `retrieved_context`/`think_trace`/`answer`) 구현. 로컬 기동·공식 질의 응답 확인 완료.
+  - 파이프라인이 예외로 죽어도 500 대신 200 + 한계 고지를 반환한다 (무응답은 그 문항이
+    0점이므로). 원인은 `think_trace`에 남는다.
+  - **남은 것**: 주최측에 제출할 것은 코드가 아니라 **접속 가능한 End-point URL**이다.
+    `localhost`는 제출용이 될 수 없으므로 NCP 등에 배포하고 URL을 확보해야 한다.
 - [ ] **Phase 5** — 자체 평가 반복, 기술제안서 — `eval/eval_questions_100.csv`(100문항 자체
   평가셋) 작성 완료, 실제 회귀 실행/결과 정리는 미착수
 
@@ -112,20 +116,40 @@ cp .env.sample .env              # 키 채워넣기 (CLOVASTUDIO_API_KEY)
 
 **실행 확인**:
 ```bash
-pytest -q                        # 전체 테스트 (121 passed면 정상)
+pytest -q                        # 전체 테스트 (276 passed, 2 skipped면 정상)
 python scripts/chat.py           # 터미널에서 직접 질문해보기 (.venv 활성화 상태에서 python만 쓰면 됨,
                                   #  .venv/Scripts/python.exe처럼 OS별 경로를 직접 안 써도 됨)
 ```
+
+**평가용 API 서버 실행**:
+```bash
+uvicorn src.api.main:app --host 0.0.0.0 --port 8000
+```
+확인 (요강 p8 스펙):
+```bash
+curl -G "http://localhost:8000/answer" \
+  --data-urlencode "question_id=Q-001" \
+  --data-urlencode "question=연금저축이랑 IRP에 넣으면 세액공제 얼마까지 되나요?"
+```
+`GET /health`로 기동 여부만 따로 확인할 수 있습니다(모델 호출 없음).
+
+⚠️ Windows Git Bash의 `curl`은 한글 인자를 CP949로 보내 질문이 깨집니다. 한글 질의를
+테스트할 때는 요강 예시대로 Python `requests`(또는 `urllib`)를 쓰세요 — 서버 문제가
+아니라 클라이언트 인코딩 문제입니다.
 
 **데이터 자산(`data/processed/prospectus.db`, `data/processed/chroma_docs/`)은 git에
 포함돼 있어 별도로 다시 만들 필요가 없습니다** — `git pull` 받으면 바로 있습니다. 원본 xlsm
 트래커 파일(파싱 검수본)은 크기가 커서 git에 안 올렸으니, 그 원본 자체를 새로 처리해야 하는
 경우에만 별도로 공유가 필요합니다.
 
-**Docker로 실행 (OS 무관, 가장 안전한 방법)**: Phase 4(평가용 API 서버, `src/api/`)가 완성되면
-`docker build . && docker run -p 8000:8000 --env-file .env <image>`로 OS 상관없이 동일하게
-띄울 수 있습니다 — 지금은 `src/api/main.py`가 아직 없어서 Dockerfile의 CMD가 바로 실행되진
-않습니다(다음 작업 항목).
+**Docker로 실행 (OS 무관, 가장 안전한 방법)**:
+```bash
+docker build -t pension-agent .
+docker run -p 8000:8000 --env-file .env pension-agent
+```
+`.env`는 이미지에 넣지 않고 실행 시 주입합니다 — API 키가 이미지 레이어에 박히면
+이미지를 받는 사람 모두에게 키가 노출됩니다. 데이터 자산(`data/processed/`)은 이미지에
+포함되므로 별도 볼륨 마운트가 필요 없습니다.
 
 ## 대회 제출 요건 (요약)
 

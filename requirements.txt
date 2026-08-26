@@ -28,3 +28,4 @@ numpy
 
 # --- Testing ---
 pytest
+httpx           # fastapi TestClient가 요구 (API 서버 테스트용)
