@@ -4,10 +4,16 @@ doc49(무주택 주택구입), doc50(재난피해)
 공통 규칙 (5개 문서 공통 서두):
 - DC(확정기여형), IRP(개인형퇴직연금)만 중도인출 가능. DB(확정급여형)는 중도인출 자체가 불가.
   (근로자퇴직급여보장법 시행령 제14조·제18조 각호)
+
+신청기한 계산:
+- doc46/48/49/50 원문은 "1개월", "3개월"로 표현하며 30일/90일 일수 기준을 별도로 정의하지 않는다.
+- 따라서 규칙 계산기는 고정 일수가 아니라 달력 기준 월 단위로 만료일을 계산한다.
+- 중도인출 원문에는 휴일·영업시간·신청 도달시점 처리 기준이 명시되어 있지 않으므로 여기서는 별도 연장하지 않는다.
 """
 
+import calendar
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 from enum import Enum
 
 
@@ -21,6 +27,18 @@ class PlanType(Enum):
 class WithdrawalEligibilityResult:
     eligible: bool
     reason: str
+
+
+def add_calendar_months(base_date: date, months: int) -> date:
+    """달력 기준 월 단위 만료일을 계산한다.
+
+    예: 2026-01-31 + 1개월 = 2026-02-28, 2024-01-31 + 1개월 = 2024-02-29.
+    """
+    month_index = base_date.month - 1 + months
+    year = base_date.year + month_index // 12
+    month = month_index % 12 + 1
+    last_day = calendar.monthrange(year, month)[1]
+    return date(year, month, min(base_date.day, last_day))
 
 
 def check_plan_type_eligible(plan_type: PlanType) -> WithdrawalEligibilityResult:
@@ -46,7 +64,7 @@ def check_medical_treatment_eligibility(
     medical_expense_last_year: 신청일 기준 직전 1년간 근로자 본인이 부담한 의료비 총액.
     prior_year_annual_wage: 직전년도 연간임금총액.
     IRP는 12.5% 비율 기준 자체가 적용되지 않는다 (요양 사유만 있으면 됨) — DC만 이 비율을 따진다.
-    신청시기: 요양종료일로부터 1개월 이내.
+    신청시기: 요양종료일로부터 달력 기준 1개월 이내.
     """
     plan_check = check_plan_type_eligible(plan_type)
     if not plan_check.eligible:
@@ -59,9 +77,9 @@ def check_medical_treatment_eligibility(
                 "DC는 직전 1년 의료비 총액이 직전년도 연간임금총액의 12.5%를 초과해야 신청 가능합니다.",
             )
 
-    deadline = treatment_end_date + timedelta(days=30)
+    deadline = add_calendar_months(treatment_end_date, 1)
     if request_date > deadline:
-        return WithdrawalEligibilityResult(False, "요양종료일로부터 1개월(약 30일)이 지나 신청 기한이 지났습니다.")
+        return WithdrawalEligibilityResult(False, "요양종료일로부터 달력 기준 1개월이 지나 신청 기한이 지났습니다.")
 
     return WithdrawalEligibilityResult(True, "요양 사유 중도인출 요건을 충족합니다.")
 
@@ -117,7 +135,7 @@ def check_rental_deposit_eligibility(
 ) -> WithdrawalEligibilityResult:
     """무주택자 전월세보증금 사유 중도인출 요건을 판정한다 (doc48).
 
-    신청시기: 주택임대차계약 체결일로부터 잔금지급일 이후 1개월 이내.
+    신청시기: 주택임대차계약 체결일로부터 잔금지급일 이후 달력 기준 1개월 이내.
     DC는 동일 사업장 재직 중 1회 한정, 개인형IRP는 횟수 제한 없음.
     """
     plan_check = check_plan_type_eligible(plan_type)
@@ -136,9 +154,9 @@ def check_rental_deposit_eligibility(
     if plan_type == PlanType.DC and dc_already_used:
         return WithdrawalEligibilityResult(False, "DC는 하나의 사업장에서 재직 중 1회만 가능하며, 이미 사용한 이력이 있습니다.")
 
-    deadline = balance_payment_date + timedelta(days=30)
+    deadline = add_calendar_months(balance_payment_date, 1)
     if request_date > deadline:
-        return WithdrawalEligibilityResult(False, "잔금지급일로부터 1개월(약 30일)이 지나 신청 기한이 지났습니다.")
+        return WithdrawalEligibilityResult(False, "잔금지급일로부터 달력 기준 1개월이 지나 신청 기한이 지났습니다.")
 
     return WithdrawalEligibilityResult(True, "무주택자 전월세보증금 사유 중도인출 요건을 충족합니다.")
 
@@ -154,7 +172,7 @@ def check_home_purchase_eligibility(
 ) -> WithdrawalEligibilityResult:
     """무주택자 주택구입 사유 중도인출 요건을 판정한다 (doc49).
 
-    신청시기: 주택매매계약 체결일로부터 소유권 이전 등기 후 1개월 이내.
+    신청시기: 주택매매계약 체결일로부터 소유권 이전 등기접수일 이후 달력 기준 1개월 이내.
     증여, 상속으로 취득하는 경우는 대상이 아니다.
     """
     plan_check = check_plan_type_eligible(plan_type)
@@ -167,9 +185,9 @@ def check_home_purchase_eligibility(
     if ownership_type in ("증여", "상속"):
         return WithdrawalEligibilityResult(False, "증여·상속으로 취득하는 주택구입은 중도인출 대상이 아닙니다.")
 
-    deadline = ownership_registration_date + timedelta(days=30)
+    deadline = add_calendar_months(ownership_registration_date, 1)
     if request_date > deadline:
-        return WithdrawalEligibilityResult(False, "소유권 이전 등기일로부터 1개월(약 30일)이 지나 신청 기한이 지났습니다.")
+        return WithdrawalEligibilityResult(False, "소유권 이전 등기접수일로부터 달력 기준 1개월이 지나 신청 기한이 지났습니다.")
 
     return WithdrawalEligibilityResult(True, "무주택자 주택구입 사유 중도인출 요건을 충족합니다.")
 
@@ -184,14 +202,14 @@ def check_disaster_eligibility(
 ) -> WithdrawalEligibilityResult:
     """재난피해 사유 중도인출 요건을 판정한다 (doc50).
 
-    신청시기: 피해발생일로부터 3개월 이내. 단, 3개월이 지나도 해당 사유가 해소되지 않았음을
+    신청시기: 피해발생일로부터 달력 기준 3개월 이내. 단, 3개월이 지나도 해당 사유가 해소되지 않았음을
     증명하면 그 사유가 해소되기 전까지 신청 가능하다.
     """
     plan_check = check_plan_type_eligible(plan_type)
     if not plan_check.eligible:
         return plan_check
 
-    deadline = damage_date + timedelta(days=90)
+    deadline = add_calendar_months(damage_date, 3)
     if request_date > deadline and damage_resolved:
         return WithdrawalEligibilityResult(False, "피해발생일로부터 3개월이 지났고 피해 사유도 이미 해소되어 신청 기한이 지났습니다.")
 

@@ -67,6 +67,38 @@ def test_medical_deadline_exceeded():
     assert r.eligible is False
 
 
+def test_medical_deadline_uses_calendar_month_not_30_days():
+    r = check_medical_treatment_eligibility(
+        plan_type=PlanType.IRP,
+        medical_expense_last_year=100_000,
+        prior_year_annual_wage=50_000_000,
+        treatment_end_date=date(2026, 1, 31),
+        request_date=date(2026, 2, 28),
+    )
+    assert r.eligible is True
+
+    late = check_medical_treatment_eligibility(
+        plan_type=PlanType.IRP,
+        medical_expense_last_year=100_000,
+        prior_year_annual_wage=50_000_000,
+        treatment_end_date=date(2026, 1, 31),
+        request_date=date(2026, 3, 1),
+    )
+    assert late.eligible is False
+    assert "달력 기준 1개월" in late.reason
+
+
+def test_medical_deadline_handles_leap_year_month_end():
+    r = check_medical_treatment_eligibility(
+        plan_type=PlanType.IRP,
+        medical_expense_last_year=100_000,
+        prior_year_annual_wage=50_000_000,
+        treatment_end_date=date(2024, 1, 31),
+        request_date=date(2024, 2, 29),
+    )
+    assert r.eligible is True
+
+
 # ── 개인회생·파산 (doc47) ────────────────────────────────────────────
 
 def test_rehabilitation_within_5_years_and_effective():
@@ -195,6 +227,32 @@ def test_rental_deposit_irp_unlimited_uses():
     assert r.eligible is True
 
 
+def test_rental_deposit_deadline_uses_calendar_month():
+    r = check_rental_deposit_eligibility(
+        plan_type=PlanType.IRP,
+        is_homeless=True,
+        has_deposit=True,
+        is_lease_extension=False,
+        has_deposit_increase=False,
+        dc_already_used=False,
+        balance_payment_date=date(2026, 5, 10),
+        request_date=date(2026, 6, 10),
+    )
+    assert r.eligible is True
+
+    late = check_rental_deposit_eligibility(
+        plan_type=PlanType.IRP,
+        is_homeless=True,
+        has_deposit=True,
+        is_lease_extension=False,
+        has_deposit_increase=False,
+        dc_already_used=False,
+        balance_payment_date=date(2026, 5, 10),
+        request_date=date(2026, 6, 11),
+    )
+    assert late.eligible is False
+
+
 # ── 무주택 주택구입 (doc49) ──────────────────────────────────────────
 
 def test_home_purchase_eligible():
@@ -230,6 +288,27 @@ def test_home_purchase_deadline_exceeded():
     assert r.eligible is False
 
 
+def test_home_purchase_deadline_uses_registration_receipt_calendar_month():
+    r = check_home_purchase_eligibility(
+        plan_type=PlanType.IRP,
+        is_homeless=True,
+        ownership_type="본인단독",
+        ownership_registration_date=date(2026, 8, 31),
+        request_date=date(2026, 9, 30),
+    )
+    assert r.eligible is True
+
+    late = check_home_purchase_eligibility(
+        plan_type=PlanType.IRP,
+        is_homeless=True,
+        ownership_type="본인단독",
+        ownership_registration_date=date(2026, 8, 31),
+        request_date=date(2026, 10, 1),
+    )
+    assert late.eligible is False
+    assert "등기접수일" in late.reason
+
+
 # ── 재난피해 (doc50) ─────────────────────────────────────────────────
 
 def test_disaster_within_3_months():
@@ -259,3 +338,21 @@ def test_disaster_over_3_months_resolved_blocked():
         damage_resolved=True,
     )
     assert r.eligible is False
+
+
+def test_disaster_deadline_uses_calendar_months_not_90_days():
+    r = check_disaster_eligibility(
+        plan_type=PlanType.IRP,
+        damage_date=date(2026, 8, 31),
+        request_date=date(2026, 11, 30),
+        damage_resolved=True,
+    )
+    assert r.eligible is True
+
+    late = check_disaster_eligibility(
+        plan_type=PlanType.IRP,
+        damage_date=date(2026, 8, 31),
+        request_date=date(2026, 12, 1),
+        damage_resolved=True,
+    )
+    assert late.eligible is False

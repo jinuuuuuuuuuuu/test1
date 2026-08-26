@@ -25,6 +25,7 @@
 from __future__ import annotations
 
 import re
+from datetime import date
 from typing import Literal, Optional
 
 from src.agents.state import RetrievedItem
@@ -34,6 +35,7 @@ from src.rules.comprehensive_tax import (
     get_pension_income_tax_rate,
 )
 from src.rules.default_option import NOTICE_DELAY_DAYS_EXISTING, WAIT_DAYS_AFTER_NOTICE
+from src.rules.early_withdrawal import add_calendar_months
 from src.rules.in_kind_transfer import TRANSFER_BLOCK_CODES
 from src.rules.retirement_tax_reduction import get_deferred_retirement_tax_rate
 from src.rules.tax_credit import (
@@ -50,11 +52,15 @@ from src.rules.withdrawal_limit import (
     SIX_YEAR_EXCEPTION_START,
     UNLIMITED_FROM_YEAR,
 )
+from src.agents.tax_context import personal_tax_response
 
 DeterministicCategory = Literal[
     "세액공제_계산_입력부족",
     "세액공제_한도",
     "세금혜택_개요",
+    "개인세금_입력충분성",
+    "중도인출_요양_신청기한판정",
+    "중도인출_주택구입_신청기한",
     "중도인출_일반",
     "디폴트옵션_자동매수",
     "실물이전_불가사유",
@@ -70,6 +76,9 @@ DETERMINISTIC_CATEGORIES: tuple[str, ...] = (
     "세액공제_계산_입력부족",
     "세액공제_한도",
     "세금혜택_개요",
+    "개인세금_입력충분성",
+    "중도인출_요양_신청기한판정",
+    "중도인출_주택구입_신청기한",
     "중도인출_일반",
     "디폴트옵션_자동매수",
     "실물이전_불가사유",
@@ -90,12 +99,18 @@ def candidate_categories(question: str) -> list[str]:
     text = _compact(question)
     candidates: list[str] = []
 
+    if personal_tax_response(question) is not None:
+        candidates.append("개인세금_입력충분성")
     if "세액공제" in text:
         candidates.append("세액공제_계산_입력부족")
         candidates.append("세액공제_한도")
     if any(word in text for word in ("세금혜택", "세제혜택", "절세혜택", "세금상혜택")):
         candidates.append("세금혜택_개요")
     if "중도인출" in text:
+        if "요양" in text and "요양종료일" in text:
+            candidates.append("중도인출_요양_신청기한판정")
+        if "주택구입" in text and any(word in text for word in ("언제까지", "기한", "이내", "언제")):
+            candidates.append("중도인출_주택구입_신청기한")
         candidates.append("중도인출_일반")
     if "디폴트옵션" in text:
         candidates.append("디폴트옵션_자동매수")
@@ -240,6 +255,130 @@ def _tax_credit_limit_response(question: str) -> tuple[str, list[RetrievedItem]]
     )
     return draft, _context(source, content)
 
+def _is_early_withdrawal_general_question(text: str) -> bool:
+    return "중도인출" in text and any(word in text for word in ("가능", "경우", "사유", "요건", "언제"))
+
+
+def _parse_korean_dates(text: str) -> list[date]:
+    dates = []
+    current_year = None
+    pattern = re.compile(r"(?:(\d{4})년)?(\d{1,2})월(\d{1,2})일")
+    for year, month, day in pattern.findall(text):
+        if year:
+            current_year = int(year)
+        if current_year is None:
+            continue
+        try:
+            dates.append(date(current_year, int(month), int(day)))
+        except ValueError:
+            continue
+    return dates
+
+
+def _parse_first_korean_date_mention(text: str) -> tuple[int | None, int, int] | None:
+    match = re.search(r"(?:(\d{4})년)?(\d{1,2})월(\d{1,2})일", text)
+    if not match:
+        return None
+    year, month, day = match.groups()
+    parsed_year = int(year) if year else None
+    parsed_month = int(month)
+    parsed_day = int(day)
+    try:
+        date(parsed_year or 2001, parsed_month, parsed_day)
+    except ValueError:
+        return None
+    return parsed_year, parsed_month, parsed_day
+
+
+def _format_date(value: date) -> str:
+    return f"{value.year}년 {value.month}월 {value.day}일"
+
+
+def _format_month_day(value: date) -> str:
+    return f"{value.month}월 {value.day}일"
+
+
+def _early_withdrawal_date_judgement_response(question: str) -> tuple[str, list[RetrievedItem]] | None:
+    text = _compact(question)
+    if "중도인출" not in text or "요양" not in text:
+        return None
+    if "요양종료일" not in text or not any(word in text for word in ("신청일", "신청하면", "신청")):
+        return None
+
+    dates = _parse_korean_dates(text)
+    if len(dates) < 2:
+        return None
+
+    treatment_end_date = dates[0]
+    request_dates = dates[1:]
+    deadline = add_calendar_months(treatment_end_date, 1)
+
+    judgement_lines = []
+    for request_date in request_dates:
+        if request_date <= deadline:
+            judgement_lines.append(f"- {_format_date(request_date)} 신청: 신청기한 안에 들어갑니다.")
+        else:
+            judgement_lines.append(f"- {_format_date(request_date)} 신청: 신청기한이 지난 것으로 봅니다.")
+
+    source = "doc46 중도인출 6개월 이상 요양 신청기한 규칙"
+    content = (
+        "IRP는 중도인출 대상 제도입니다. 6개월 이상 요양 사유의 신청기한은 요양종료일로부터 "
+        "1개월 이내입니다. doc46은 1개월을 30일로 환산한다고 정의하지 않으므로, 규칙 계산기는 "
+        "달력 기준 1개월로 판정합니다. 중도인출 원문에는 휴일·영업시간·신청 도달시점 처리 기준이 "
+        "명시되어 있지 않습니다."
+    )
+    draft = (
+        f"요양종료일이 {_format_date(treatment_end_date)}이면 신청기한은 **달력 기준 1개월 이내**, "
+        f"즉 {_format_date(deadline)}까지로 판정합니다.\n\n"
+        + "\n".join(judgement_lines)
+        + "\n\n"
+        "다만 이 판정은 질문에 적어주신 날짜가 실제 요양종료일과 신청일이라는 전제에서의 **신청기한 판정**입니다. "
+        "6개월 이상 요양 사유 자체와 증빙서류는 별도로 확인되어야 합니다. "
+        "또한 제공 문서에는 휴일·영업시간·신청서 작성일/접수일 기준이 명확히 적혀 있지 않아 그 부분은 금융기관 확인이 필요합니다."
+    )
+    return draft, _context(source, content)
+
+
+def _early_withdrawal_home_purchase_deadline_response(question: str) -> tuple[str, list[RetrievedItem]] | None:
+    text = _compact(question)
+    if "중도인출" not in text or "주택구입" not in text:
+        return None
+    if not any(word in text for word in ("언제까지", "기한", "이내", "언제")):
+        return None
+
+    source = "doc49 중도인출 무주택자 주택구입 신청기한 규칙"
+    content = (
+        "무주택자 주택구입 중도인출은 주택매매계약 체결일로부터 소유권 이전 등기접수일 이후 "
+        "1개월 이내 신청 요건이 있습니다. doc49는 1개월을 30일로 환산한다고 정의하지 않으므로, "
+        "규칙 계산기는 달력 기준 1개월로 판정합니다. 중도인출 원문에는 휴일·영업시간·신청 도달시점 "
+        "처리 기준이 명시되어 있지 않습니다."
+    )
+    date_parts = _parse_first_korean_date_mention(text)
+    if date_parts is None:
+        draft = (
+            "무주택자 주택구입 사유로 중도인출을 신청하는 경우, 제공 문서 기준 신청기한은 "
+            "**주택매매계약 체결일로부터 소유권 이전 등기접수일 이후 달력 기준 1개월 이내**입니다.\n\n"
+            "여기서 날짜 계산의 기준은 단순한 등기완료일이 아니라 **소유권 이전 등기접수일**로 보는 것이 안전합니다. "
+            "다만 실제 가능 여부는 무주택자 요건, 취득 방식, 주택매매계약 및 등기 관련 증빙이 함께 확인되어야 합니다. "
+            "또한 제공 문서에는 휴일·영업시간·신청서 작성일/접수일 기준이 명확히 적혀 있지 않아 그 부분은 금융기관 확인이 필요합니다."
+        )
+        return draft, _context(source, content)
+
+    year, month, day = date_parts
+    basis_date = date(year or 2001, month, day)
+    deadline = add_calendar_months(basis_date, 1)
+    basis_label = _format_date(basis_date) if year else _format_month_day(basis_date)
+    deadline_label = _format_date(deadline) if year else _format_month_day(deadline)
+
+    draft = (
+        f"주택구입 중도인출에서 **{basis_label}이 소유권 이전 등기접수일이라는 전제**라면, "
+        f"달력 기준 1개월 이내의 신청기한은 **{deadline_label}까지**로 봅니다.\n\n"
+        "다만 실제 주택구입 중도인출은 날짜만으로 확정되지 않습니다. 무주택자 요건, 취득 방식, "
+        "주택매매계약 및 등기 관련 증빙이 함께 확인되어야 합니다. 또한 제공 문서에는 휴일·영업시간·"
+        "신청서 작성일/접수일 기준이 명확히 적혀 있지 않아 그 부분은 금융기관 확인이 필요합니다."
+    )
+    return draft, _context(source, content)
+
 
 def _early_withdrawal_general_response(question: str) -> tuple[str, list[RetrievedItem]]:
     source = "doc46~doc50 중도인출 규칙"
@@ -249,7 +388,8 @@ def _early_withdrawal_general_response(question: str) -> tuple[str, list[Retriev
         "무주택자 주택구입, 재난피해입니다. 요양은 DC에서 직전 1년 의료비가 직전년도 연간임금총액의 "
         "12.5%를 초과해야 하며, IRP에는 이 비율 기준이 적용되지 않습니다. 개인회생·파산은 결정일 또는 "
         "선고일로부터 5년 이내 요건이 있습니다. 전월세보증금과 주택구입은 잔금지급일 또는 소유권 이전 "
-        "등기일로부터 1개월 이내 신청 요건이 있습니다. 재난피해는 피해발생일로부터 3개월 이내가 원칙입니다."
+        "등기접수일로부터 달력 기준 1개월 이내 신청 요건이 있습니다. 재난피해는 피해발생일로부터 "
+        "달력 기준 3개월 이내가 원칙입니다."
     )
     draft = (
         "IRP는 중도인출이 가능한 제도이지만, 아무 때나 인출할 수 있는 것은 아니고 법정 사유가 필요합니다.\n\n"
@@ -261,7 +401,8 @@ def _early_withdrawal_general_response(question: str) -> tuple[str, list[Retriev
         "- 재난피해\n\n"
         "참고로 DB형은 중도인출이 허용되지 않고, DC와 IRP가 중도인출 대상 제도입니다. "
         "각 사유별로 신청기한이나 추가 요건이 다릅니다. 예를 들어 개인회생·파산은 5년 이내 요건, "
-        "전월세보증금·주택구입은 1개월 이내 신청 요건, 재난피해는 3개월 이내 신청 요건이 문제될 수 있습니다."
+        "전월세보증금·주택구입은 달력 기준 1개월 이내 신청 요건, 재난피해는 달력 기준 3개월 이내 "
+        "신청 요건이 문제될 수 있습니다."
     )
     return draft, _context(source, content)
 
@@ -515,6 +656,9 @@ _CATEGORY_HANDLERS = {
     "세액공제_계산_입력부족": _tax_credit_calculation_missing_response,
     "세액공제_한도": _tax_credit_limit_response,
     "세금혜택_개요": _tax_benefit_overview_response,
+    "개인세금_입력충분성": personal_tax_response,
+    "중도인출_요양_신청기한판정": _early_withdrawal_date_judgement_response,
+    "중도인출_주택구입_신청기한": _early_withdrawal_home_purchase_deadline_response,
     "중도인출_일반": _early_withdrawal_general_response,
     "디폴트옵션_자동매수": _default_option_auto_purchase_response,
     "실물이전_불가사유": _in_kind_transfer_block_response,

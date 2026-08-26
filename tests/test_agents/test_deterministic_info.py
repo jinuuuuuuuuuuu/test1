@@ -47,6 +47,18 @@ def test_tax_credit_calculation_missing_response_content():
     assert context
 
 
+def test_personal_tax_question_uses_input_sufficiency_gate_before_general_tax_rules():
+    question = "나 74세인데 세금 어떻게 내?"
+    assert "개인세금_입력충분성" in candidate_categories(question)
+
+    draft, context = deterministic_response_for("개인세금_입력충분성", question)
+
+    assert "수령 방식" in draft
+    assert "돈의 출처" in draft
+    assert "4.4%" not in draft
+    assert context
+
+
 def test_early_withdrawal_general_candidate_and_response():
     question = "IRP에서 중도인출은 어떤 경우에 가능한가요?"
     assert "중도인출_일반" in candidate_categories(question)
@@ -65,6 +77,47 @@ def test_default_option_auto_purchase_candidate_and_response():
     draft, context = deterministic_response_for("디폴트옵션_자동매수", question)
     assert "만기일 + 29일" in draft
     assert "통지일 + 15일" in draft
+    assert context
+
+
+def test_early_withdrawal_medical_date_question_gets_specific_judgement():
+    question = (
+        "IRP 가입자입니다. 요양종료일이 2026년 1월 31일이고 신청일이 2026년 2월 28일이면 "
+        "중도인출 신청기한 안인가요? 같은 조건에서 3월 1일이면 기한이 지난 건가요?"
+    )
+    assert "중도인출_요양_신청기한판정" in candidate_categories(question)
+
+    draft, context = deterministic_response_for("중도인출_요양_신청기한판정", question)
+
+    assert "2026년 2월 28일 신청: 신청기한 안" in draft
+    assert "2026년 3월 1일 신청: 신청기한이 지난" in draft
+    assert "달력 기준 1개월" in draft
+    assert "30일" not in draft
+    assert "12.5" not in draft
+    assert context
+
+
+def test_early_withdrawal_home_purchase_deadline_question_gets_calendar_deadline():
+    question = "중도인출 시 주택구입은 달력 기준 1개월 이내 신청 요건을 가지잖아. 만약 3월 1일에 한 경우 언제까지야?"
+    assert "중도인출_주택구입_신청기한" in candidate_categories(question)
+
+    draft, context = deterministic_response_for("중도인출_주택구입_신청기한", question)
+
+    assert "소유권 이전 등기접수일이라는 전제" in draft
+    assert "4월 1일까지" in draft
+    assert "대표적인 중도인출 사유" not in draft
+    assert context
+
+
+def test_early_withdrawal_home_purchase_general_deadline_question_is_specific():
+    question = "주택구입 중도인출은 언제까지 신청해야 해?"
+    assert "중도인출_주택구입_신청기한" in candidate_categories(question)
+
+    draft, context = deterministic_response_for("중도인출_주택구입_신청기한", question)
+
+    assert "소유권 이전 등기접수일 이후 달력 기준 1개월 이내" in draft
+    assert "대표적인 중도인출 사유" not in draft
+    assert "6개월 이상 요양" not in draft
     assert context
 
 

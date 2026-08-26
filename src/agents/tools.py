@@ -159,7 +159,7 @@ def check_early_withdrawal(
     balance_payment_date: Optional[str] = None,
     # 무주택 주택구입 (reason="무주택주택구입")
     ownership_type: Optional[Literal["본인단독", "부부공동", "증여", "상속"]] = None,
-    ownership_registration_date: Optional[str] = None,
+    ownership_registration_date: Optional[str] = None,  # 소유권 이전 등기접수일
     # 재난피해 (reason="재난피해")
     damage_date: Optional[str] = None,
     damage_resolved: bool = True,
