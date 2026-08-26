@@ -46,30 +46,73 @@ def get_embeddings(model_name: str = "clir-emb-dolphin") -> ClovaXEmbeddings:
     return ClovaXEmbeddings(model=model_name)
 
 
-def call_with_retry(fn, *args, max_retries: int = 3, backoff_seconds: float = 1.5, **kwargs):
-    """CLOVA Studio가 간헐적으로 내는 일시적 오류(같은 요청인데 가끔 나는 "Unsupported
-    function" 400, 429 rate limit 등 — openai.APIError 계열)를 재시도로 흡수한다.
-    실측상 코드/설정 문제가 아니라 같은 입력으로 재요청하면 성공하는 경우가 많다.
+# 재시도 정책은 오류의 "성격"에 맞춰야 한다. 두 오류는 회복에 필요한 시간이 다르다:
+#   - 간헐적 400 "Unsupported function"(40009): 같은 요청을 곧바로 다시 보내면 대개 성공
+#   - 429 rate limit: 호출량 윈도우가 열려야 성공한다 — 초 단위 대기로는 못 넘긴다
+# 실측(2026-08-27): 라우터를 연속 30회 호출하자 429가 반복 발생했고, 기존 정책
+# (3회·백오프 1.5초 = 총 4.5초 대기)으로는 전부 소진돼 무응답이 됐다.
+#
+# 평가는 문항당 단발 호출이라 **지연보다 무응답이 압도적으로 비싸다** — 응답이 늦으면
+# 점수가 깎이지만, 무응답이면 그 문항이 통째로 0점이다. 따라서 429는 넉넉히 기다린다.
+_TRANSIENT_MAX_RETRIES = 3        # 간헐적 400 등 — 짧게 여러 번
+_TRANSIENT_BACKOFF = 1.5
+_RATE_LIMIT_MAX_RETRIES = 5       # 429 — 길게, 윈도우가 열릴 때까지
+_RATE_LIMIT_BACKOFF = 8.0         # 8/16/24/32초 = 최대 80초 대기
+
+
+def call_with_retry(
+    fn,
+    *args,
+    max_retries: int = _TRANSIENT_MAX_RETRIES,
+    backoff_seconds: float = _TRANSIENT_BACKOFF,
+    **kwargs,
+):
+    """CLOVA Studio의 일시적 오류(간헐적 400, 429 rate limit 등)를 재시도로 흡수한다.
+
+    429(RateLimitError)는 회복 시간이 다르므로 별도 예산(_RATE_LIMIT_*)으로 재시도한다.
+    두 오류가 섞여 나면 각자의 예산을 따로 쓴다 — 429 때문에 400 재시도 기회가
+    소진되거나 그 반대가 되면, 정작 회복 가능한 실패를 못 넘긴다.
 
     LLM invoke뿐 아니라 검색 시점 임베딩 호출(similarity_search 내부) 같은 일반 함수도
     감쌀 수 있다. APIError가 아닌 예외(코드 버그)는 재시도 없이 그대로 전파한다.
     """
     import time
 
-    from openai import APIError
+    from openai import APIError, RateLimitError
 
     last_error: Optional[Exception] = None
-    for attempt in range(max_retries):
+    transient_left = max_retries
+    rate_limit_left = _RATE_LIMIT_MAX_RETRIES
+    transient_attempt = 0
+    rate_limit_attempt = 0
+
+    while transient_left > 0 or rate_limit_left > 0:
         try:
             return fn(*args, **kwargs)
+        except RateLimitError as e:
+            last_error = e
+            rate_limit_left -= 1
+            if rate_limit_left <= 0:
+                break
+            rate_limit_attempt += 1
+            time.sleep(_RATE_LIMIT_BACKOFF * rate_limit_attempt)
         except APIError as e:
             last_error = e
-            if attempt < max_retries - 1:
-                time.sleep(backoff_seconds * (attempt + 1))
+            transient_left -= 1
+            if transient_left <= 0:
+                break
+            transient_attempt += 1
+            time.sleep(backoff_seconds * transient_attempt)
+
     raise last_error
 
 
-def invoke_with_retry(runnable, input_, max_retries: int = 3, backoff_seconds: float = 1.5):
+def invoke_with_retry(
+    runnable,
+    input_,
+    max_retries: int = _TRANSIENT_MAX_RETRIES,
+    backoff_seconds: float = _TRANSIENT_BACKOFF,
+):
     """runnable.invoke(input_) 형태 호출용 call_with_retry 래퍼 — 파이프라인의 모든 모델
     호출(①~⑤, ReAct 에이전트 포함)은 이걸 거쳐야 한다 (평가 기간 상시 가동 요건)."""
     return call_with_retry(
