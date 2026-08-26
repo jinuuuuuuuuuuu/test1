@@ -172,3 +172,72 @@ def test_narrative_reports_clarification_mode():
     trace = _format_think_trace(state)
     assert "검증 면제" in trace
     assert "첫 답변에 정보한계와 필요한 역질문 전체를 포함" in trace
+
+
+# ── 폴백 경로의 근거 출처 표기 (F-7) ──────────────────────────────────
+#
+# ③이 폴백을 쓰면 근거는 실재하지만 tool_trace에는 안 잡힌다(코드가 DB를 직접 조회하므로).
+# 그대로 두면 같은 trace에 "툴 호출 없이 답변 작성 (근거 미확보)"와 "근거 N건 사용"이
+# 동시에 나와 서로 모순된다 — 심사자가 답변과 trace를 대조하면 바로 드러나는 결함이다.
+
+def _fallback_state(**overrides):
+    state = {
+        "question": "IRP에 넣을 펀드 추천해줘",
+        "intent": ["상품형"],
+        "scope": "범위내",
+        "is_safe": True,
+        "product_draft": "추천 상품은 다음과 같습니다...",
+        "retrieved_context": [{"source": "미래에셋퇴직플랜단기(C)", "content": "위험등급 5"}],
+        "tool_trace": [],
+        "verification": {"grounded": True, "issues": [], "requirements_met": True},
+    }
+    state.update(overrides)
+    return state
+
+
+def test_fallback_trace_states_evidence_origin():
+    """폴백이 근거를 만들었으면 그 사실을 밝힌다 — '근거 미확보'라고 쓰면 안 된다."""
+    from src.agents.generator import _format_think_trace
+
+    trace = _format_think_trace(_fallback_state(product_fallback_used=True))
+
+    assert "근거 미확보" not in trace
+    assert "폴백" in trace
+    assert "투자설명서 DB를 직접 조회" in trace
+
+
+def test_fallback_trace_marks_draft_replacement():
+    """폴백은 LLM 초안을 폐기하고 대체한다 — 그 사실도 trace에 남긴다."""
+    from src.agents.generator import _format_think_trace
+
+    trace = _format_think_trace(_fallback_state(product_fallback_used=True))
+
+    assert "초안을 폐기" in trace
+    assert "③ 폴백 조회 결과" in trace
+
+
+def test_no_tool_no_evidence_still_warns():
+    """폴백이 아닌 진짜 '툴 미호출 + 근거 없음'은 기존 경고를 유지한다."""
+    from src.agents.generator import _format_think_trace
+
+    trace = _format_think_trace(
+        _fallback_state(product_fallback_used=False, retrieved_context=[])
+    )
+
+    assert "툴 호출 없이 답변 작성 (근거 미확보)" in trace
+    assert "폴백" not in trace
+
+
+def test_normal_tool_path_unaffected():
+    """툴을 정상 호출한 경로는 폴백 문구가 붙지 않는다."""
+    from src.agents.generator import _format_think_trace
+
+    trace = _format_think_trace(_fallback_state(
+        product_fallback_used=False,
+        tool_trace=[{"node": "product_agent", "tool": "search_funds",
+                     "args": "risk_grade_max=3", "result": "2건"}],
+    ))
+
+    assert "search_funds" in trace
+    assert "폴백" not in trace
+    assert "근거 미확보" not in trace

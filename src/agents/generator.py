@@ -157,9 +157,21 @@ def _tool_trace_lines(state: PensionAgentState) -> list[str]:
 
     # 툴을 한 번도 호출하지 않고 답을 낸 노드는 기록이 없어 위 구간에 안 나타난다 —
     # 근거 없는 답변의 신호이므로 명시한다 (실측된 실패 유형).
+    #
+    # 단 ③이 폴백을 썼다면 "툴 호출 없음"과 "근거 N건 사용"이 같은 trace에 함께 나와
+    # 서로 모순된다. 폴백은 LLM이 툴을 안 불렀을 때 코드가 투자설명서 DB를 직접 조회해
+    # 초안을 대체하는 경로라, 근거는 실재하지만 tool_trace에는 잡히지 않는다 —
+    # 근거의 출처를 사실대로 밝혀야 심사자가 답변과 trace를 대조했을 때 어긋나지 않는다.
     for node, draft_key in (("info_agent", "info_draft"), ("product_agent", "product_draft")):
-        if state.get(draft_key) and node not in seen_nodes:
-            lines.append(f"[{_NODE_LABELS[node]}]")
+        if not state.get(draft_key) or node in seen_nodes:
+            continue
+        lines.append(f"[{_NODE_LABELS[node]}]")
+        if node == "product_agent" and state.get("product_fallback_used"):
+            lines.append(
+                "  - LLM이 상품 검색 툴을 호출하지 않아, 코드가 투자설명서 DB를 직접 조회해"
+                " 후보를 구성 (폴백 경로 — 아래 근거는 이 조회 결과)"
+            )
+        else:
             lines.append("  - 툴 호출 없이 답변 작성 (근거 미확보)")
     return lines
 
@@ -208,9 +220,12 @@ def _assembly_lines(state: PensionAgentState, context: list) -> list[str]:
     lines = ["[⑤ 최종 답변 조립]"]
     if context:
         sources = "; ".join(dict.fromkeys(c["source"] for c in context))
-        lines.append(f"  - 근거 {len(context)}건 사용: {sources}")
+        origin = " (③ 폴백 조회 결과)" if state.get("product_fallback_used") else ""
+        lines.append(f"  - 근거 {len(context)}건 사용{origin}: {sources}")
     else:
         lines.append("  - 사용한 근거 없음 (근거가 필요한 수치는 답변에서 제외)")
+    if state.get("product_fallback_used"):
+        lines.append("  - ③ LLM 초안을 폐기하고 폴백이 만든 상품 후보 답변으로 대체")
     if state.get("needs_clarification"):
         lines.append("  - 조건 불충분 → 첫 답변에 정보한계와 필요한 역질문 전체를 포함")
     if state.get("response_mode"):

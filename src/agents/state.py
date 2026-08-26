@@ -84,6 +84,11 @@ class PensionAgentState(TypedDict, total=False):
     response_mode: ResponseMode
     # 세액공제·중도인출 등 고위험 정보질의를 결정론 답변 경로로 처리했는지 여부.
     deterministic_info: bool
+    # ③이 LLM 초안을 폐기하고 폴백(투자설명서 DB 직접 조회)으로 대체했는지 여부.
+    # tool_trace는 LLM이 실제로 호출한 툴만 담으므로, 폴백이 근거를 넣으면 "툴 호출 없음"과
+    # "근거 N건 사용"이 같은 think_trace에 함께 나오는 모순이 생긴다 — 근거의 출처를
+    # State에 남겨 ⑤가 사실대로 서술할 수 있게 한다 (요강: think_trace = 사고·도구 사용 과정).
+    product_fallback_used: bool
 
     # ④ 검증/Grounding 출력
     verification: dict | None

@@ -640,6 +640,7 @@ def build_product_agent_node():
                     "needs_clarification": False,
                     "recommendation_stage": "specific_recommendation",
                     "repair_attempted": state.get("verification") is not None,
+                    "product_fallback_used": True,
                 }
             raise
         messages = result["messages"]
@@ -653,11 +654,13 @@ def build_product_agent_node():
         draft, needs_clarification = split_clarification_marker(
             final_ai.content if final_ai else ""
         )
+        fallback_used = False
         if not retrieved_context:
             fallback_draft, fallback_context = _fallback_product_recommendation(state)
             if fallback_context:
                 draft = fallback_draft
                 retrieved_context = fallback_context
+                fallback_used = True
 
         return {
             "product_draft": draft,
@@ -666,6 +669,7 @@ def build_product_agent_node():
             "needs_clarification": needs_clarification,
             "recommendation_stage": "clarification" if needs_clarification else None,
             "repair_attempted": state.get("verification") is not None,
+            "product_fallback_used": fallback_used,
         }
 
     return product_agent_node
