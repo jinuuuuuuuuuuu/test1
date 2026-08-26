@@ -63,8 +63,8 @@ def test_default_option_auto_purchase_candidate_and_response():
     assert "디폴트옵션_자동매수" in candidate_categories(question)
 
     draft, context = deterministic_response_for("디폴트옵션_자동매수", question)
-    assert "4주(28일)" in draft
-    assert "2주(14일)" in draft
+    assert "만기일 + 29일" in draft
+    assert "통지일 + 15일" in draft
     assert context
 
 
@@ -72,7 +72,7 @@ def test_default_option_existing_member_gets_only_that_case():
     draft, _ = deterministic_response_for(
         "디폴트옵션_자동매수", "저는 기존가입자인데 언제 자동매수되나요?"
     )
-    assert "4주(28일)" in draft
+    assert "만기일 + 29일" in draft
     assert "신규가입자" not in draft
 
 

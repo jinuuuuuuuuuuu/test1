@@ -60,20 +60,21 @@ def test_unknown_product_type_raises():
 # ── 자동매수 통지/적용 일정 (FAQ 26~28, 48) ───────────────────────────
 
 def test_existing_participant_schedule_4weeks_2weeks():
-    # FAQ 26: 만기일 + 4주 통지, 통지 + 2주 적용
+    # FAQ 26 수정문: 만기일 + 29일 통지, 통지일 + 15일 적용.
+    # 원문 예시("6월 1일 만기 → 6월 29일 또는 30일 무렵 통지")와 일치하는지 함께 확인한다.
     maturity = date(2026, 6, 1)
     sched = get_auto_purchase_schedule(base_date=maturity, is_new_participant=False)
-    assert sched.notice_date == date(2026, 6, 29)
-    assert sched.apply_date == date(2026, 7, 13)
+    assert sched.notice_date == date(2026, 6, 30)
+    assert sched.apply_date == date(2026, 7, 15)
     assert sched.waited is True
 
 
 def test_new_participant_schedule_next_day_2weeks():
-    # FAQ 48: 신규가입자는 최초 부담금 다음 영업일 통지, 4주 유예 없음
+    # FAQ 48 + FAQ 26 수정문: 신규가입자는 최초 부담금 다음 영업일 통지, 통지일 + 15일 적용
     contribution = date(2026, 6, 1)
     sched = get_auto_purchase_schedule(base_date=contribution, is_new_participant=True)
     assert sched.notice_date == date(2026, 6, 2)
-    assert sched.apply_date == date(2026, 6, 16)
+    assert sched.apply_date == date(2026, 6, 17)
 
 
 def test_repeat_maturity_no_wait():
@@ -88,10 +89,10 @@ def test_holiday_pushes_to_next_business_day():
     maturity = date(2026, 6, 1)
 
     def is_holiday(d):
-        return d == date(2026, 6, 29)
+        return d == date(2026, 6, 30)
 
     sched = get_auto_purchase_schedule(base_date=maturity, is_new_participant=False, is_holiday_fn=is_holiday)
-    assert sched.notice_date == date(2026, 6, 30)
+    assert sched.notice_date == date(2026, 7, 1)
 
 
 # ── 연속성 판단 (FAQ 35 vs 37/38) ─────────────────────────────────────

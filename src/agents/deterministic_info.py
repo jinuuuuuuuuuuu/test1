@@ -278,11 +278,20 @@ def _default_option_auto_purchase_response(question: str) -> tuple[str, list[Ret
     의 더 가벼운 변종.
     """
     source = "doc29 디폴트옵션 자동매수 규칙"
+    # 일수는 반드시 규칙엔진 상수를 참조한다 — 문구에 숫자를 손으로 적으면 상수만 고쳤을 때
+    # 답변이 옛 값을 계속 노출한다(실제로 28/14 오류가 이 경로로 사용자에게 나갔다).
+    notice = f"4주 뒤(만기일 + {NOTICE_DELAY_DAYS_EXISTING}일)"
+    wait = f"2주 뒤(통지일 + {WAIT_DAYS_AFTER_NOTICE}일)"
+    business_day_note = "통지일 또는 매수예정일이 비영업일이면 익영업일로 적용됩니다."
+    continuity_note = (
+        "다만 대기 중 전액을 다른 상품으로 이동해 연속성이 끊기면 다음 만기분부터 "
+        "다시 통지와 대기 절차를 거칠 수 있습니다."
+    )
     content = (
-        f"기존가입자는 상품 만기일로부터 4주({NOTICE_DELAY_DAYS_EXISTING}일) 후 통지하고, "
-        f"통지 후 2주({WAIT_DAYS_AFTER_NOTICE}일) 대기 뒤 자동매수합니다. "
-        f"신규가입자는 최초 부담금 납입 다음 영업일 통지하고, 통지 후 2주({WAIT_DAYS_AFTER_NOTICE}일) "
-        "대기 뒤 자동매수합니다. 동일 상품 반복 만기 등 연속성이 유지되는 경우에는 통지·대기 없이 즉시 적용됩니다."
+        f"기존가입자는 상품 만기일로부터 {notice}에 통지하고, {wait}에 자동매수합니다. "
+        f"신규가입자는 최초 부담금 납입 다음 영업일 통지하고, {wait}에 자동매수합니다. "
+        "동일 상품 반복 만기 등 연속성이 유지되는 경우에는 통지·대기 없이 즉시 적용됩니다. "
+        f"{business_day_note}"
     )
 
     is_existing = any(word in question for word in _EXISTING_MEMBER_WORDS)
@@ -290,23 +299,24 @@ def _default_option_auto_purchase_response(question: str) -> tuple[str, list[Ret
 
     if is_existing and not is_new:
         draft = (
-            "기존가입자 기준으로 안내드리면, 디폴트옵션 자동매수는 상품 만기일로부터 4주(28일) 후 "
-            "통지하고, 그 뒤 2주(14일) 대기한 뒤 이뤄집니다.\n\n"
-            "다만 대기 중 전액을 다른 상품으로 이동해 연속성이 끊기면 다음 만기분부터 다시 통지와 대기 절차를 거칠 수 있습니다."
+            f"기존가입자 기준으로 안내드리면, 디폴트옵션 자동매수는 상품 만기일로부터 {notice}에 "
+            f"통지하고, {wait}에 이뤄집니다.\n\n"
+            f"{business_day_note} {continuity_note}"
         )
     elif is_new and not is_existing:
         draft = (
             "신규가입자 기준으로 안내드리면, 디폴트옵션 자동매수는 최초 부담금 납입 다음 영업일에 "
-            "통지하고, 그 뒤 2주(14일) 대기한 뒤 이뤄집니다."
+            f"통지하고, {wait}에 이뤄집니다.\n\n"
+            f"{business_day_note}"
         )
     else:
         draft = (
             "기존가입자인지 신규가입자인지에 따라 자동매수 시점이 달라 정확히 안내드리려면 "
             "어느 쪽에 해당하시는지 알려주시면 좋습니다. 다만 일반적으로는 다음과 같습니다.\n\n"
-            "- 기존가입자: 상품 만기일로부터 4주(28일) 후 통지, 그 뒤 2주(14일) 대기 후 자동매수\n"
-            "- 신규가입자: 최초 부담금 납입 다음 영업일 통지, 그 뒤 2주(14일) 대기 후 자동매수\n"
+            f"- 기존가입자: 상품 만기일로부터 {notice} 통지, {wait} 자동매수\n"
+            f"- 신규가입자: 최초 부담금 납입 다음 영업일 통지, {wait} 자동매수\n"
             "- 동일 상품 반복 만기처럼 연속성이 유지되는 경우: 통지·대기 없이 즉시 적용\n\n"
-            "다만 대기 중 전액을 다른 상품으로 이동해 연속성이 끊기면 다음 만기분부터 다시 통지와 대기 절차를 거칠 수 있습니다."
+            f"{business_day_note} {continuity_note}"
         )
     return draft, _context(source, content)
 
@@ -339,6 +349,9 @@ def _in_kind_transfer_block_response(question: str) -> tuple[str, list[Retrieved
         "퇴직연금 실물이전이 제한될 수 있는 상품·상황은 다음과 같습니다.\n\n"
         f"[실물이전 불가사유]\n{definite_lines}\n\n"
         f"[상대 금융기관 확인이 필요한 사유]\n{manual_lines}\n\n"
+        # doc34는 25개 코드 외에 "99.기타"를 두어 목록에 없는 사유도 포괄한다. 이 문장을 빼면
+        # 25개가 전부인 것처럼 읽혀 근거를 과대 표현하게 된다(만기지정식 예금, 제도불일치 등이 여기 속한다).
+        "이 밖에도 만기지정식 예금, 제도 불일치 등 개별 사유(99. 기타)로 이전이 제한될 수 있습니다.\n\n"
         "보유하신 상품이 어디에 해당하는지 알려주시면(예: MMF, 사모펀드, 만기 도래 여부, "
         "디폴트옵션 상품 여부) 실제 이전 가능 여부를 더 정확히 확인해 드릴 수 있습니다."
     )
