@@ -32,11 +32,38 @@ _NUMBER_TOKEN_RE = re.compile(
 
 _NUMERIC_CORE_RE = re.compile(r"[\d,\.]+")
 
+# 인라인 마크다운 서식 문자. LLM이 수치를 강조할 때 숫자만 감싸고 단위를 밖에 두는 일이
+# 잦은데(**16.5**%), 그러면 "숫자+단위" 패턴이 서식 문자로 갈라져 L0가 토큰을 아예
+# 추출하지 못한다 — 지어낸 수치도 강조로 감싸기만 하면 검증을 통과하는 구멍이 된다.
+#
+# 실측(2026-08-27, API 응답):
+#   "**16.5**%"      -> 추출 []       (강조 없으면 ['16.5%'])
+#   "**99.9**%"      -> 미지원 판정 [] (근거에 없는 값인데도 통과)
+#   "**74**세", "**10**년", "1,**800**만원" 도 동일
+#   `*`, `__`, `` ` `` 등 다른 서식도 같은 결과
+#
+# 정규식에 서식 문자를 하나씩 끼워 넣는 대신(새 서식마다 땜질이 필요하다) 검사 전에
+# 서식을 제거한다 — L0가 봐야 하는 것은 표기가 아니라 수치 그 자체다.
+_INLINE_MARKUP_RE = re.compile(r"[*_`~]+")
+
+
+def strip_inline_markup(text: str) -> str:
+    """수치 대조를 방해하는 인라인 마크다운 서식 문자를 제거한다.
+
+    서식은 의미가 아니라 표현이므로, 근거 대조 전에 걷어내야 "**16.5**%"와 "16.5%"가
+    같은 사실로 취급된다. 원문을 바꾸지 않고 검사용 사본에만 적용한다.
+    """
+    return _INLINE_MARKUP_RE.sub("", text or "")
+
 
 def extract_number_tokens(text: str) -> list[str]:
-    """텍스트에서 '숫자+단위' 토큰을 등장 순서대로 중복 없이 추출한다. 예: ['900만원', '16.5%']"""
+    """텍스트에서 '숫자+단위' 토큰을 등장 순서대로 중복 없이 추출한다. 예: ['900만원', '16.5%']
+
+    인라인 서식은 먼저 제거한다 — "**16.5**%"처럼 강조가 숫자와 단위를 갈라놓으면
+    수치가 통째로 검사에서 빠져나간다.
+    """
     seen: list[str] = []
-    for m in _NUMBER_TOKEN_RE.finditer(text or ""):
+    for m in _NUMBER_TOKEN_RE.finditer(strip_inline_markup(text)):
         token = m.group(0).strip()
         if token not in seen:
             seen.append(token)
@@ -61,11 +88,13 @@ def find_unsupported_numbers(
     할루시네이션이 아니다. 단 이전 턴의 '답변'은 절대 포함하지 않는다 — 과거 답변에 섞인
     오류 수치가 재인용을 정당화하면 안 된다 (⑤ 프롬프트의 재검증 원칙과 동일).
 
-    콤마 표기 차이(1,200 vs 1200)는 정규화해서 비교한다. 숫자 부분의 부분문자열 일치만
-    보므로 "지원됨" 쪽으로 관대하다 — 여기서 잡히지 않은 표기 차이(9백만 원 등)는 ④ LLM이
-    의심 목록을 근거와 대조할 때 걸러진다.
+    콤마 표기 차이(1,200 vs 1200)와 인라인 마크다운 서식(1,**800**만원)은 정규화해서
+    비교한다. 숫자 부분의 부분문자열 일치만 보므로 "지원됨" 쪽으로 관대하다 — 여기서
+    잡히지 않은 표기 차이(9백만 원 등)는 ④ LLM이 의심 목록을 근거와 대조할 때 걸러진다.
     """
-    normalized_support = " ".join([*evidence_texts, *user_texts]).replace(",", "")
+    normalized_support = strip_inline_markup(
+        " ".join([*evidence_texts, *user_texts])
+    ).replace(",", "")
     return [
         token
         for token in extract_number_tokens(draft)

@@ -3,6 +3,8 @@
 막는지 검증한다.
 """
 
+import pytest
+
 from src.agents.verification import (
     apply_clarification_override,
     apply_l0_overrides,
@@ -275,3 +277,54 @@ def test_evidence_placeholder_out_of_range_is_dropped():
 
     assert "[근거" not in out
     assert "7" not in out
+
+
+# ── 인라인 서식이 L0를 뚫던 구멍 ──────────────────────────────────────
+#
+# LLM이 수치를 강조할 때 숫자만 감싸고 단위를 밖에 두면(**16.5**%) "숫자+단위" 패턴이
+# 서식 문자로 갈라져 L0가 토큰을 아예 추출하지 못했다. 표기 미관 문제가 아니라
+# 할루시네이션 방어선의 구멍이다 — 지어낸 수치도 강조로 감싸면 통과했다.
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("16.5%", "16.5%"),
+    ("**16.5**%", "16.5%"),      # 굵게: 단위가 밖으로 (실측된 형태)
+    ("**16.5%**", "16.5%"),      # 굵게: 전체를 감쌈
+    ("*16.5*%", "16.5%"),        # 기울임
+    ("__16.5__%", "16.5%"),      # 밑줄
+    ("`16.5`%", "16.5%"),        # 코드
+    ("1,**800**만원", "1,800만원"),  # 숫자 내부에 서식
+    ("**74**세", "74세"),
+    ("**10**년", "10년"),
+])
+def test_number_extraction_survives_inline_markup(text, expected):
+    """어떤 인라인 서식이 섞여도 수치를 추출해야 한다."""
+    from src.agents.verification import extract_number_tokens
+
+    assert extract_number_tokens(text) == [expected]
+
+
+def test_fabricated_number_is_caught_even_when_emphasized():
+    """근거에 없는 수치는 강조로 감싸도 잡혀야 한다 — 이게 원래 뚫려 있던 구멍이다."""
+    from src.agents.verification import find_unsupported_numbers
+
+    evidence = ["세액공제율은 16.5% 또는 13.2%"]
+
+    assert find_unsupported_numbers("세액공제율은 **99.9**%입니다", evidence) == ["99.9%"]
+    assert find_unsupported_numbers("세액공제율은 99.9%입니다", evidence) == ["99.9%"]
+
+
+def test_supported_number_still_passes_when_emphasized():
+    """근거에 있는 수치는 강조 여부와 무관하게 통과한다 (과잉 차단 방지)."""
+    from src.agents.verification import find_unsupported_numbers
+
+    evidence = ["세액공제율은 16.5% 또는 13.2%"]
+
+    assert find_unsupported_numbers("세액공제율은 **16.5**%입니다", evidence) == []
+
+
+def test_markup_in_evidence_does_not_break_matching():
+    """근거 쪽에 서식이 있어도 대조가 어긋나면 안 된다."""
+    from src.agents.verification import find_unsupported_numbers
+
+    assert find_unsupported_numbers("한도는 1,800만원입니다", ["한도는 1,**800**만원"]) == []
