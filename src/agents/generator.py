@@ -7,9 +7,18 @@ is_safe=False(①가드레일에서 차단된 경우)는 모델을 호출하지 
 from src.agents.context import dedupe_context, format_conversation_history, merge_drafts
 from src.agents.llm import get_llm, invoke_with_retry
 from src.agents.state import PensionAgentState
+from src.agents.verification import (
+    enforce_missing_requirements,
+    enforce_premise_issues,
+    replace_evidence_placeholders,
+)
 
 GENERATOR_MODEL = "HCX-005"
 
+# ⚠️ 이 프롬프트의 지시 중 premise_issues 반영·missing_requirements 한계고지·출처 표기
+# 세 가지는 _enforce_verification()이 출력에서 다시 검사해 코드로 확정한다. 프롬프트가
+# 제대로 따라주면 코드는 개입하지 않으므로(이미 반영됐는지 먼저 확인한다) 둘은 상충하지
+# 않고, LLM이 지시를 흘렸을 때만 코드가 메운다 — 프롬프트는 품질을, 코드는 하한을 담당한다.
 GENERATOR_SYSTEM_PROMPT = """당신은 연금 상담 AI의 최종 답변 작성자입니다. [질문], [초안],
 [근거], [검증결과]를 참고해 사용자에게 보여줄 자연스러운 한국어 답변을 작성하세요.
 
@@ -45,6 +54,46 @@ def _append_reference_line(answer: str, context: list) -> str:
         return answer
     sources = "; ".join(dict.fromkeys(c["source"] for c in context))
     return f"{answer}\n\n참고 근거: {sources}"
+
+
+def _enforce_verification(answer: str, verification: dict, context: list) -> str:
+    """LLM 답변에 ④ 검증 결과를 코드로 강제 반영한다.
+
+    ④에는 L0 코드 오버라이드를 깔아뒀으면서 ⑤에는 프롬프트 부탁만 있어, 검증이
+    정확히 지적한 사항이 최종 답변에서 그대로 무시되는 경로가 있었다 (실측 4/4 위반:
+    grounded=False인데 수치 잔존, missing_requirements가 있는데 한계 고지 없음).
+    "반드시 지켜야 하는 것은 코드로 강제한다"는 verification.py의 원칙을 ⑤까지 연장한다.
+
+    순서에 의미가 있다 — 전제 교정은 답변 맨 앞에 와야 하므로 마지막에 적용한다.
+    """
+    if not answer:
+        return answer
+
+    # ① 내부 인덱스 "[근거 1]"을 실제 출처명으로 치환 (요강: 모든 답변에 근거 문서 표시)
+    answer = replace_evidence_placeholders(answer, context)
+
+    missing = list(verification.get("missing_requirements") or [])
+    premise_issues = list(verification.get("premise_issues") or [])
+
+    # ④가 같은 항목을 두 필드에 동시에 넣는 경우가 있다 (실측 S1: "2027년 개편안 확정
+    # 내용"이 premise_issues와 missing_requirements 양쪽에 등장). 이때 겹치는 항목은
+    # **한계 고지 쪽으로 넘긴다** — 자료에 없어서 답하지 못한 것을 "사실과 다르거나
+    # 과장된 전제"라고 표현하면 부정확하고, 정보한계 대응이라는 실제 성격도 가려진다.
+    if not verification.get("clarification_mode"):
+        premise_issues = [p for p in premise_issues if p not in missing]
+    else:
+        # 역질문 초안은 요구사항 검증이 면제된 상태다(apply_clarification_override).
+        # 의도적으로 답을 유보하고 되물은 답변에 "확인이 어렵다"를 덧붙이면 중복이 된다.
+        missing = []
+
+    # ② 답하지 못한 요구 항목을 한계로 명시 (요강: 정보한계 대응)
+    answer = enforce_missing_requirements(answer, missing)
+
+    # ③ 잘못된 전제를 바로잡지 않았으면 앞머리에 교정문을 붙인다 (요강: 정확성)
+    answer = enforce_premise_issues(answer, premise_issues)
+
+    # ④ 근거를 썼는데 출처 줄이 없으면 코드가 붙인다 (LLM에게 맡기면 누락된다 — 실측 K1)
+    return _append_reference_line(answer, context)
 
 
 def _classification_lines(state: PensionAgentState) -> list[str]:
@@ -244,19 +293,24 @@ def build_generator_node():
             f"- requirements_met: {verification.get('requirements_met')}, "
             f"missing_requirements: {verification.get('missing_requirements')}"
         )
+        # ⚠️ 아래 조기 반환 경로들도 _enforce_verification을 거쳐야 한다. 실측 S1(2027년
+        # 세제 개편안)은 "세금혜택_개요" 정형 응답으로 분류돼 이 경로로 빠졌는데, 정형
+        # 답변이라 근거는 확실해도 **질문이 요구한 것에 답하지 못했다는 사실**은 그대로였다
+        # (④가 missing_requirements로 정확히 지적함). 근거 신뢰도와 "요구에 답했는가"는
+        # 별개 축이라, LLM 경로에만 강제를 걸면 정형 경로에 구멍이 남는다.
         if state.get("needs_clarification"):
             return {
-                "answer": _append_reference_line(draft, context),
+                "answer": _enforce_verification(draft, verification, context),
                 "think_trace": _format_think_trace(state),
             }
         if state.get("recommendation_stage") == "type_recommendation":
             return {
-                "answer": draft,
+                "answer": _enforce_verification(draft, verification, context),
                 "think_trace": _format_think_trace(state),
             }
         if state.get("deterministic_info"):
             return {
-                "answer": _append_reference_line(draft, context),
+                "answer": _enforce_verification(draft, verification, context),
                 "think_trace": _format_think_trace(state),
             }
 
@@ -266,7 +320,7 @@ def build_generator_node():
         ])
 
         return {
-            "answer": response.content,
+            "answer": _enforce_verification(response.content, verification, context),
             "think_trace": _format_think_trace(state),
         }
 

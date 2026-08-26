@@ -120,3 +120,103 @@ def apply_clarification_override(verification: dict) -> dict:
     result["missing_requirements"] = []
     result["clarification_mode"] = True
     return result
+
+
+# ── ⑤ 생성기 출력 강제 (L0와 같은 사상: 반드시 지켜야 하는 것은 코드로 강제) ──────
+#
+# ④는 L0 오버라이드로 코드 방어선을 깔아뒀지만, ⑤는 검증 결과를 프롬프트 텍스트로
+# 넘기고 "지켜달라"고 부탁만 했다 — verification.py 자신이 경고한 "프롬프트 순종은
+# 확률적으로 실패한다"가 ⑤에서 그대로 재현됐다(실측 4/4 위반).
+#
+# ⚠️ 설계 근거 (실측으로 확정한 것):
+# "⑤ 출력에 L0(find_unsupported_numbers)를 재적용한다"는 처방은 이 실패들을 못 잡는다.
+#   - S1(2027년 개편안): 답변의 수치 13개가 전부 근거(doc38~41)에 실재해 L0 통과.
+#     실패는 "지어낸 숫자"가 아니라 "묻지 않은 걸 답하고 한계를 고지하지 않은 것".
+#   - M2(DC 상품 미선택): 답변에 수치 토큰이 0개라 L0가 검사할 대상 자체가 없다.
+# 따라서 여기서 강제하는 것은 수치 대조가 아니라 **"④가 지적한 사항이 답변에 실제로
+# 반영됐는가"**이다. 반영되지 않았으면 코드가 문장을 덧붙여 확정한다.
+
+_LIMIT_DISCLOSURE_MARKERS = (
+    "확인이 어렵", "확인하기 어렵", "확인되지 않", "확인할 수 없",
+    "제공된 자료", "보유한 자료", "자료에 없", "자료에는 없",
+    "포함되어 있지 않", "안내드리기 어렵", "답변드리기 어렵", "알 수 없",
+)
+
+_PREMISE_CORRECTION_MARKERS = (
+    "말씀하신", "알려진 것과", "정확히는", "사실과 다", "오해", "그렇지 않",
+    "완전히 자유로운 것은 아", "만큼 크지는",
+)
+
+
+def has_limit_disclosure(answer: str) -> bool:
+    """답변이 '이건 확인이 어렵다'는 한계 고지를 실제로 담고 있는지 판정한다."""
+    return any(marker in (answer or "") for marker in _LIMIT_DISCLOSURE_MARKERS)
+
+
+def has_premise_correction(answer: str) -> bool:
+    """답변이 질문의 잘못된 전제를 바로잡는 문장을 담고 있는지 판정한다."""
+    return any(marker in (answer or "") for marker in _PREMISE_CORRECTION_MARKERS)
+
+
+def enforce_missing_requirements(answer: str, missing: list[str]) -> str:
+    """④가 '질문이 요구했는데 빠졌다'고 지적한 항목을 답변이 다루지 않았으면 한계를 명시한다.
+
+    빠진 항목을 지어내 채우는 게 아니라, **답하지 못했다는 사실 자체를 드러내는 것**이
+    목적이다 (대회 평가지표 "정보한계 대응": 무리한 답변 대신 한계 고지 또는 역질문).
+
+    이미 한계를 고지한 답변에는 덧붙이지 않는다 — 중복 고지는 답변 품질을 떨어뜨린다.
+    """
+    if not missing or has_limit_disclosure(answer):
+        return answer
+    items = "".join(f"\n- {m}" for m in missing)
+    return (
+        f"{answer}\n\n"
+        f"다만 다음 항목은 제공된 자료만으로는 확인이 어려워 답변에 포함하지 못했습니다:{items}\n"
+        "해당 부분은 가입하신 금융기관이나 관련 기관에 확인해 주시기 바랍니다."
+    )
+
+
+def enforce_premise_issues(answer: str, premise_issues: list[str]) -> str:
+    """④가 짚은 '질문의 잘못된 전제'를 답변이 바로잡지 않았으면 앞머리에 교정문을 붙인다.
+
+    대회 평가지표 "정확성"이 요구하는 항목이다 — 고객의 잘못된 전제나 유도성 질문을
+    그대로 수용하지 않고 바로잡는가.
+    """
+    if not premise_issues or has_premise_correction(answer):
+        return answer
+    items = "".join(f"\n- {p}" for p in premise_issues)
+    return (
+        "먼저 질문에 담긴 전제를 짚고 넘어가겠습니다. 다음 내용은 사실과 다르거나 "
+        f"과장된 부분이 있어 그대로 전제하기 어렵습니다:{items}\n\n"
+        f"{answer}"
+    )
+
+
+# ⑤ 프롬프트는 "[근거 N] 대괄호 안의 출처를 그대로 쓰라"고 지시하지만, 실측상 LLM이
+# 생성한 답변 7건 중 5건이 출처명 대신 내부 인덱스 "[근거 1]"을 그대로 노출했다
+# (정형 응답 경로는 코드가 문자열을 붙여 100% 정확 — 프롬프트 순종 실패의 또 다른 사례).
+# 대회 요강은 "모든 답변에는 근거 문서 표시할 것"을 명시하므로 코드로 치환한다.
+_EVIDENCE_PLACEHOLDER_RE = re.compile(r"\[\s*근거\s*(\d+)\s*\]")
+
+
+def replace_evidence_placeholders(answer: str, context: list[dict]) -> str:
+    """답변에 남은 '[근거 N]' 표기를 N번 근거의 실제 출처명으로 치환한다.
+
+    context는 ⑤가 프롬프트에 넣은 것과 같은 순서(1-based)여야 한다.
+    범위를 벗어난 번호는 LLM이 지어낸 것이므로 표기를 지운다 — 존재하지 않는 근거를
+    가리키는 인용은 없느니만 못하다.
+
+    출처명만 넣고 "출처:" 접두사는 붙이지 않는다. 실측상 이 표기는 세 문맥에서 쓰이는데
+    (`(출처: [근거 3])`, `참고 근거: [근거 1]; [근거 2]`, `[근거 1]과 [근거 2]`),
+    앞 두 경우는 이미 라벨이 있어 접두사를 붙이면 "출처: 출처: ..."가 된다.
+    """
+    if not answer:
+        return answer
+
+    def _sub(match: re.Match) -> str:
+        index = int(match.group(1))
+        if 1 <= index <= len(context):
+            return context[index - 1]["source"]
+        return ""
+
+    return _EVIDENCE_PLACEHOLDER_RE.sub(_sub, answer)

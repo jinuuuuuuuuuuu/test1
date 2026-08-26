@@ -202,3 +202,76 @@ def test_no_issues_keeps_grounded_true():
     )
 
     assert result["grounded"] is True
+
+
+# ── ⑤ 생성기 출력 강제 (F-3) ──────────────────────────────────────────
+#
+# ④의 판정을 ⑤가 무시하던 경로를 코드로 막는다. 실측 실패 4건(S1/S2/M2/C3)이
+# 전부 "④는 정확히 지적했는데 최종 답변에 반영이 안 됨"이었다.
+
+
+def test_missing_requirements_appends_limit_disclosure():
+    """답하지 못한 요구 항목이 있으면 한계를 명시한다 — 요강 '정보한계 대응'."""
+    from src.agents.verification import enforce_missing_requirements
+
+    out = enforce_missing_requirements("연금계좌 세금혜택은 네 가지입니다.", ["2027년 개편안 확정 내용"])
+
+    assert "확인이 어려워" in out
+    assert "2027년 개편안 확정 내용" in out
+
+
+def test_missing_requirements_skips_when_already_disclosed():
+    """이미 한계를 고지한 답변에 또 붙이면 중복이 된다."""
+    from src.agents.verification import enforce_missing_requirements
+
+    answer = "그 부분은 제공된 자료로는 확인이 어렵습니다."
+    assert enforce_missing_requirements(answer, ["무언가"]) == answer
+
+
+def test_missing_requirements_noop_when_empty():
+    from src.agents.verification import enforce_missing_requirements
+
+    answer = "정상 답변입니다."
+    assert enforce_missing_requirements(answer, []) == answer
+
+
+def test_premise_issues_prepends_correction():
+    """잘못된 전제를 초안이 안 짚었으면 앞머리에 교정문을 붙인다 — 요강 '정확성'."""
+    from src.agents.verification import enforce_premise_issues
+
+    out = enforce_premise_issues("IRP는 사유가 있어야 인출됩니다.", ["IRP는 중도인출이 자유롭다"])
+
+    assert out.startswith("먼저 질문에 담긴 전제")
+    assert "IRP는 중도인출이 자유롭다" in out
+
+
+def test_premise_issues_skips_when_already_corrected():
+    """초안이 이미 전제를 바로잡았으면 덧붙이지 않는다 (실측 S2 패턴)."""
+    from src.agents.verification import enforce_premise_issues
+
+    answer = "말씀하신 것처럼 IRP는 중도인출이 완전히 자유로운 것은 아닙니다."
+    assert enforce_premise_issues(answer, ["IRP는 중도인출이 자유롭다"]) == answer
+
+
+def test_evidence_placeholders_replaced_with_source_names():
+    """'[근거 N]' 내부 표기를 실제 출처명으로 치환한다 — 요강 '근거 문서 표시'."""
+    from src.agents.verification import replace_evidence_placeholders
+
+    context = [{"source": "doc41 세액공제 규칙"}, {"source": "doc38 연금소득세율"}]
+    out = replace_evidence_placeholders("한도는 900만원입니다 (출처: [근거 1]). [근거 2]도 참고.", context)
+
+    assert "doc41 세액공제 규칙" in out
+    assert "doc38 연금소득세율" in out
+    assert "[근거" not in out
+    # 이미 "출처:" 라벨이 있는 자리에 접두사를 또 붙이면 안 된다
+    assert "출처: 출처:" not in out
+
+
+def test_evidence_placeholder_out_of_range_is_dropped():
+    """근거 개수를 넘는 번호는 LLM이 지어낸 것이므로 표기를 지운다."""
+    from src.agents.verification import replace_evidence_placeholders
+
+    out = replace_evidence_placeholders("근거입니다 [근거 7].", [{"source": "doc41"}])
+
+    assert "[근거" not in out
+    assert "7" not in out
