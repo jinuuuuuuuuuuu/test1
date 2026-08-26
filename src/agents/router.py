@@ -143,7 +143,12 @@ class RouterDecision(BaseModel):
 
 
 def build_router_node():
-    llm = get_llm(ROUTER_MODEL, thinking_effort="none").with_structured_output(RouterDecision)
+    # ⚠️ method 미지정 시 langchain_openai(ChatClovaX가 상속)의 기본값 "function_calling"이
+    # 적용되는데, CLOVA Structured Outputs는 method="json_schema"만 지원한다 — 미지정 시
+    # 간헐적으로 400 "Unsupported function"(40009) 오류가 난다(실측 확인).
+    llm = get_llm(ROUTER_MODEL, thinking_effort="none").with_structured_output(
+        RouterDecision, method="json_schema"
+    )
 
     def router_node(state: PensionAgentState) -> dict:
         history_text = format_conversation_history(state.get("conversation_history"))

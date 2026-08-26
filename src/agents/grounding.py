@@ -80,7 +80,11 @@ class GroundingResult(BaseModel):
 
 
 def build_grounding_node():
-    llm = get_llm(GROUNDING_MODEL, thinking_effort="none").with_structured_output(GroundingResult)
+    # ⚠️ router.py와 동일한 이유로 method="json_schema" 명시 필요 (실측: 미지정 시 간헐적
+    # 400 "Unsupported function"/40009).
+    llm = get_llm(GROUNDING_MODEL, thinking_effort="none").with_structured_output(
+        GroundingResult, method="json_schema"
+    )
 
     def grounding_node(state: PensionAgentState) -> dict:
         # 복합형에서는 info_draft/product_draft가 둘 다 있으므로 반드시 병합해서 검증한다.

@@ -260,7 +260,17 @@ def _early_withdrawal_general_response(question: str) -> tuple[str, list[Retriev
     return draft, _context(source, content)
 
 
+_EXISTING_MEMBER_WORDS = ("기존가입자", "기존 가입자", "기존가입", "만기가 된", "만기된", "만기 도래")
+_NEW_MEMBER_WORDS = ("신규가입자", "신규 가입자", "신규가입", "최초 가입", "처음 가입", "신규 납입")
+
+
 def _default_option_auto_purchase_response(question: str) -> tuple[str, list[RetrievedItem]]:
+    """기존/신규가입자가 질문에 이미 특정돼 있으면 그 케이스만, 아니면 역질문+두 케이스를 함께 낸다.
+
+    질문에 이미 없는 정보(정보 손실)는 아니지만, 특정된 사용자에게 무관한 케이스까지 섞어
+    답하면 실제로 필요한 정보를 찾기 어려워진다 — 실물이전 사고와 같은 클래스(개인화 미반영)
+    의 더 가벼운 변종.
+    """
     source = "doc29 디폴트옵션 자동매수 규칙"
     content = (
         f"기존가입자는 상품 만기일로부터 4주({NOTICE_DELAY_DAYS_EXISTING}일) 후 통지하고, "
@@ -268,13 +278,30 @@ def _default_option_auto_purchase_response(question: str) -> tuple[str, list[Ret
         f"신규가입자는 최초 부담금 납입 다음 영업일 통지하고, 통지 후 2주({WAIT_DAYS_AFTER_NOTICE}일) "
         "대기 뒤 자동매수합니다. 동일 상품 반복 만기 등 연속성이 유지되는 경우에는 통지·대기 없이 즉시 적용됩니다."
     )
-    draft = (
-        "디폴트옵션 자동매수 시점은 기존가입자인지, 신규가입자인지에 따라 다릅니다.\n\n"
-        "- 기존가입자: 상품 만기일로부터 4주(28일) 후 통지, 그 뒤 2주(14일) 대기 후 자동매수\n"
-        "- 신규가입자: 최초 부담금 납입 다음 영업일 통지, 그 뒤 2주(14일) 대기 후 자동매수\n"
-        "- 동일 상품 반복 만기처럼 연속성이 유지되는 경우: 통지·대기 없이 즉시 적용\n\n"
-        "다만 대기 중 전액을 다른 상품으로 이동해 연속성이 끊기면 다음 만기분부터 다시 통지와 대기 절차를 거칠 수 있습니다."
-    )
+
+    is_existing = any(word in question for word in _EXISTING_MEMBER_WORDS)
+    is_new = any(word in question for word in _NEW_MEMBER_WORDS)
+
+    if is_existing and not is_new:
+        draft = (
+            "기존가입자 기준으로 안내드리면, 디폴트옵션 자동매수는 상품 만기일로부터 4주(28일) 후 "
+            "통지하고, 그 뒤 2주(14일) 대기한 뒤 이뤄집니다.\n\n"
+            "다만 대기 중 전액을 다른 상품으로 이동해 연속성이 끊기면 다음 만기분부터 다시 통지와 대기 절차를 거칠 수 있습니다."
+        )
+    elif is_new and not is_existing:
+        draft = (
+            "신규가입자 기준으로 안내드리면, 디폴트옵션 자동매수는 최초 부담금 납입 다음 영업일에 "
+            "통지하고, 그 뒤 2주(14일) 대기한 뒤 이뤄집니다."
+        )
+    else:
+        draft = (
+            "기존가입자인지 신규가입자인지에 따라 자동매수 시점이 달라 정확히 안내드리려면 "
+            "어느 쪽에 해당하시는지 알려주시면 좋습니다. 다만 일반적으로는 다음과 같습니다.\n\n"
+            "- 기존가입자: 상품 만기일로부터 4주(28일) 후 통지, 그 뒤 2주(14일) 대기 후 자동매수\n"
+            "- 신규가입자: 최초 부담금 납입 다음 영업일 통지, 그 뒤 2주(14일) 대기 후 자동매수\n"
+            "- 동일 상품 반복 만기처럼 연속성이 유지되는 경우: 통지·대기 없이 즉시 적용\n\n"
+            "다만 대기 중 전액을 다른 상품으로 이동해 연속성이 끊기면 다음 만기분부터 다시 통지와 대기 절차를 거칠 수 있습니다."
+        )
     return draft, _context(source, content)
 
 

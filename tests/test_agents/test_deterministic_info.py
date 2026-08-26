@@ -68,6 +68,30 @@ def test_default_option_auto_purchase_candidate_and_response():
     assert context
 
 
+def test_default_option_existing_member_gets_only_that_case():
+    draft, _ = deterministic_response_for(
+        "디폴트옵션_자동매수", "저는 기존가입자인데 언제 자동매수되나요?"
+    )
+    assert "4주(28일)" in draft
+    assert "신규가입자" not in draft
+
+
+def test_default_option_new_member_gets_only_that_case():
+    draft, _ = deterministic_response_for(
+        "디폴트옵션_자동매수", "저는 신규가입자인데 언제 자동매수되나요?"
+    )
+    assert "최초 부담금 납입 다음 영업일" in draft
+    assert "기존가입자" not in draft
+
+
+def test_default_option_unspecified_asks_back_and_shows_both():
+    draft, _ = deterministic_response_for(
+        "디폴트옵션_자동매수", "디폴트옵션은 언제 자동으로 매수되나요?"
+    )
+    assert "어느 쪽에 해당하시는지" in draft
+    assert "기존가입자" in draft and "신규가입자" in draft
+
+
 def test_in_kind_transfer_block_candidate_and_response():
     question = "퇴직연금 실물이전이 안 되는 상품은 뭐가 있나요?"
     assert "실물이전_불가사유" in candidate_categories(question)
