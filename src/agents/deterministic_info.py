@@ -24,12 +24,14 @@
 
 from __future__ import annotations
 
+import re
 from typing import Literal, Optional
 
 from src.agents.state import RetrievedItem
 from src.rules.comprehensive_tax import (
     ANNUAL_THRESHOLD,
     SEPARATE_TAXATION_RATE_OVER_THRESHOLD,
+    get_pension_income_tax_rate,
 )
 from src.rules.default_option import NOTICE_DELAY_DAYS_EXISTING, WAIT_DAYS_AFTER_NOTICE
 from src.rules.in_kind_transfer import TRANSFER_BLOCK_CODES
@@ -59,6 +61,7 @@ DeterministicCategory = Literal[
     "연금수령한도",
     "퇴직소득세감면",
     "연금소득세_종합과세",
+    "연금소득세율_연령별",
     "해당없음",
 ]
 
@@ -73,6 +76,7 @@ DETERMINISTIC_CATEGORIES: tuple[str, ...] = (
     "연금수령한도",
     "퇴직소득세감면",
     "연금소득세_종합과세",
+    "연금소득세율_연령별",
     "해당없음",
 )
 
@@ -103,6 +107,10 @@ def candidate_categories(question: str) -> list[str]:
         candidates.append("퇴직소득세감면")
     if any(word in text for word in ("연금소득세", "종합과세", "분리과세")):
         candidates.append("연금소득세_종합과세")
+    # 연령별 연금소득세율 — "연금소득세"라는 정확한 단어 없이 "연금 받으면 세율"처럼 묻는
+    # 경우가 많아, 연금 문맥 + 세율 표현을 폭넓게 후보로 잡는다(확정은 router LLM이 한다).
+    if "연금" in text and any(word in text for word in ("세율", "몇%", "몇퍼센트", "몇프로", "세금이얼마", "세금얼마")):
+        candidates.append("연금소득세율_연령별")
 
     return candidates
 
@@ -122,8 +130,6 @@ def deterministic_response_for(
 
 
 def _compact(text: str) -> str:
-    import re
-
     return re.sub(r"\s+", "", text or "")
 
 
@@ -399,6 +405,99 @@ def _pension_income_tax_response(question: str) -> tuple[str, list[RetrievedItem
     return draft, _context(source, content)
 
 
+_AGE_RE = re.compile(r"(?:만\s*)?(\d{1,3})\s*세")
+_LIFETIME_ANNUITY_WORDS = ("종신연금", "종신형", "종신 연금")
+
+
+def _extract_age(question: str) -> Optional[int]:
+    """질문에서 나이를 뽑는다. 연금 수령 가능 범위(55~120) 밖이면 무시한다.
+
+    "70세 이상 80세 미만" 같은 제도 설명 인용이 섞이면 오탐이 나므로, 나이가 여러 개
+    등장하면 특정하지 않는다(None) — 하나로 단정하는 것보다 조건 부족으로 처리하는 편이 안전하다.
+    """
+    ages = [int(m.group(1)) for m in _AGE_RE.finditer(question or "")]
+    valid = [a for a in ages if 55 <= a <= 120]
+    if len(valid) != 1:
+        return None
+    return valid[0]
+
+
+def _age_bracket_label(age: int) -> str:
+    if age < 70:
+        return "만 55세 이상 70세 미만"
+    if age < 80:
+        return "만 70세 이상 80세 미만"
+    return "만 80세 이상"
+
+
+def _pension_income_tax_rate_response(question: str) -> tuple[str, list[RetrievedItem]]:
+    """연령별 연금소득세율 — 조건이 충분하면 확정, 부족하면 구간 확정 + 분기 + 역질문.
+
+    ⚠️ 나이만으로 세율을 단정하면 안 된다(실측 사고: "만 74세 → 3.3%"라고 답했으나 정답은
+    4.4%). 같은 나이라도 ①종신연금 여부 ②연 1,500만원 초과 여부 ③인출 재원(퇴직금 재원은
+    이연퇴직소득세 체계)에 따라 적용 세율이 달라지기 때문이다. 그래서 확정 가능한 부분만
+    규칙엔진으로 확정하고, 나머지는 분기를 그대로 제시한 뒤 부족한 조건을 되묻는다 —
+    답변을 포기하지 않으면서 틀린 단정도 하지 않는 방식.
+    """
+    source = "doc38 연금소득세율 규칙"
+    content = (
+        f"1,500만원 이내 구간의 연금소득세율은 만 55세 이상 70세 미만 "
+        f"{_pct(get_pension_income_tax_rate(55))}, 70세 이상 80세 미만 "
+        f"{_pct(get_pension_income_tax_rate(70))}, 80세 이상 "
+        f"{_pct(get_pension_income_tax_rate(80))}입니다. 종신연금을 수령하면 연령과 무관하게 "
+        f"{_pct(get_pension_income_tax_rate(55, is_lifetime_annuity=True))}가 적용됩니다. "
+        f"사적연금소득이 연 {_won(ANNUAL_THRESHOLD)}을 초과하면 종합과세 또는 "
+        f"{_pct(SEPARATE_TAXATION_RATE_OVER_THRESHOLD)} 분리과세를 선택합니다. "
+        "이 세율은 세액공제 받은 납입금과 운용수익 재원에 적용되며, 퇴직금(이연퇴직소득) "
+        "재원은 이연퇴직소득세 감면 체계가 별도로 적용됩니다."
+    )
+
+    age = _extract_age(question)
+    is_lifetime = any(word in question for word in _LIFETIME_ANNUITY_WORDS)
+
+    if age is None:
+        draft = (
+            "연금소득세율은 연금을 받는 시점의 나이에 따라 달라집니다.\n\n"
+            f"- {_age_bracket_label(55)}: {_pct(get_pension_income_tax_rate(55))}\n"
+            f"- {_age_bracket_label(70)}: {_pct(get_pension_income_tax_rate(70))}\n"
+            f"- {_age_bracket_label(80)}: {_pct(get_pension_income_tax_rate(80))}\n\n"
+            f"다만 종신연금으로 받으시면 나이와 관계없이 "
+            f"{_pct(get_pension_income_tax_rate(55, is_lifetime_annuity=True))}가 적용됩니다.\n\n"
+            f"또한 위 세율은 사적연금소득이 연 {_won(ANNUAL_THRESHOLD)} 이내일 때 적용되며, "
+            f"초과하면 종합과세 또는 {_pct(SEPARATE_TAXATION_RATE_OVER_THRESHOLD)} 분리과세 중 "
+            "선택하게 됩니다.\n\n"
+            "정확한 적용 세율을 확인하시려면 연금 수령 시점의 나이, 종신연금 여부, 연간 "
+            "예상 수령액을 알려주세요."
+        )
+        return draft, _context(source, content)
+
+    bracket = _age_bracket_label(age)
+    base_rate = get_pension_income_tax_rate(age)
+    lifetime_rate = get_pension_income_tax_rate(age, is_lifetime_annuity=True)
+
+    if is_lifetime:
+        draft = (
+            f"만 {age}세에 종신연금으로 수령하시는 경우 연금소득세율은 "
+            f"**{_pct(lifetime_rate)}**입니다. 종신연금은 연령과 무관하게 동일한 세율이 적용됩니다.\n\n"
+            f"다만 이 세율은 사적연금소득이 연 {_won(ANNUAL_THRESHOLD)} 이내일 때 적용되며, "
+            f"초과하면 종합과세 또는 {_pct(SEPARATE_TAXATION_RATE_OVER_THRESHOLD)} 분리과세 중 "
+            "선택하게 됩니다."
+        )
+    else:
+        draft = (
+            f"만 {age}세는 '{bracket}' 구간에 해당하며, 이 구간의 연금소득세율은 "
+            f"**{_pct(base_rate)}**입니다.\n\n"
+            "다만 아래 조건에 해당하면 적용 세율이 달라집니다.\n"
+            f"- 종신연금으로 수령하는 경우: 나이와 무관하게 {_pct(lifetime_rate)}\n"
+            f"- 사적연금소득이 연 {_won(ANNUAL_THRESHOLD)}을 초과하는 경우: 종합과세 또는 "
+            f"{_pct(SEPARATE_TAXATION_RATE_OVER_THRESHOLD)} 분리과세 중 선택\n\n"
+            "또한 이 세율은 세액공제를 받은 납입금과 운용수익 재원에 적용됩니다. 퇴직금을 "
+            "연금으로 받는 경우에는 이연퇴직소득세 감면 체계가 별도로 적용됩니다.\n\n"
+            "종신연금 여부와 연간 예상 수령액을 알려주시면 더 정확히 안내드릴 수 있습니다."
+        )
+    return draft, _context(source, content)
+
+
 _CATEGORY_HANDLERS = {
     "세액공제_계산_입력부족": _tax_credit_calculation_missing_response,
     "세액공제_한도": _tax_credit_limit_response,
@@ -409,4 +508,5 @@ _CATEGORY_HANDLERS = {
     "연금수령한도": _withdrawal_limit_response,
     "퇴직소득세감면": _retirement_tax_reduction_response,
     "연금소득세_종합과세": _pension_income_tax_response,
+    "연금소득세율_연령별": _pension_income_tax_rate_response,
 }

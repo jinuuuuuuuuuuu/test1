@@ -153,3 +153,49 @@ def test_candidate_hint_does_not_force_wrong_category_alone():
     # 실제로는 허용 목록을 묻는 질문이라 router가 기각해야 하는 케이스 — 후보 단계에서는
     # 걸러지지 않는 것이 설계상 정상이다(2단계에서 LLM이 처리).
     assert "실물이전_불가사유" in candidate_categories("실물이전이 되는 상품은 뭐가 있나요?")
+
+
+def test_age_based_tax_rate_uses_correct_bracket():
+    """나이가 주어지면 그 나이의 구간 세율을 규칙엔진에서 확정해야 한다.
+
+    실측 사고: "만 74세 → 3.3%"라고 답했으나 정답은 4.4%(70~80세 구간)였다. 근거 표에는
+    정답이 있었는데 LLM이 구간을 잘못 골랐고, 수치 자체는 근거에 존재하므로 L0/L1 검증도
+    통과해버렸다.
+    """
+    draft, context = deterministic_response_for(
+        "연금소득세율_연령별", "제가 만 74세인데 연금 받으면 세율이 몇 퍼센트인가요?"
+    )
+    assert "4.4%" in draft
+    assert "만 70세 이상 80세 미만" in draft
+    assert context
+
+
+def test_age_based_tax_rate_lifetime_annuity_overrides_age():
+    draft, _ = deterministic_response_for(
+        "연금소득세율_연령별", "만 74세이고 종신연금으로 받는데 세율이 몇 %인가요?"
+    )
+    assert "3.3%" in draft
+    assert "연령과 무관" in draft
+
+
+def test_age_based_tax_rate_without_age_shows_all_brackets_and_asks_back():
+    """나이가 없으면 하나로 단정하지 말고 구간 전체 + 역질문을 낸다(답변 포기 아님)."""
+    draft, _ = deterministic_response_for("연금소득세율_연령별", "연금 받으면 세율이 얼마인가요?")
+    assert "5.5%" in draft and "4.4%" in draft and "3.3%" in draft
+    assert "알려주세요" in draft
+
+
+def test_age_based_tax_rate_always_notes_other_conditions():
+    """나이가 특정돼도 종신연금·1,500만원 초과라는 다른 조건을 반드시 함께 고지해야 한다."""
+    draft, _ = deterministic_response_for(
+        "연금소득세율_연령별", "만 60세인데 연금 세율이 얼마인가요?"
+    )
+    assert "5.5%" in draft
+    assert "종신연금" in draft
+    assert "1,500만원" in draft
+
+
+def test_age_based_tax_rate_candidate_matches_natural_phrasing():
+    """"연금소득세"라는 정확한 단어 없이 물어도 후보로 잡혀야 한다."""
+    assert "연금소득세율_연령별" in candidate_categories("연금 받으면 세율이 몇 퍼센트인가요?")
+    assert "연금소득세율_연령별" in candidate_categories("만 74세인데 연금 세금이 얼마인가요?")
