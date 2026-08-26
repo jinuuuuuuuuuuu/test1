@@ -290,17 +290,24 @@ def _in_kind_transfer_block_response(question: str) -> tuple[str, list[Retrieved
         f"{code}. {TRANSFER_BLOCK_CODES[code]['name']} - {TRANSFER_BLOCK_CODES[code]['desc']}"
         for code in manual_codes
     )
-    highlighted = ["03", "04", "09", "10", "11", "12", "14", "15", "22", "23", "24"]
-    lines = "\n".join(
+    # ⚠️ 답변 목록을 손으로 고른 하드코딩 리스트로 만들면 안 된다 — 실제로 그렇게 돼 있던
+    # 동안 "21. 만기(상환)"이 목록에서 빠져, 만기 때문에 이전이 막힌 사용자에게 근거(content)
+    # 에는 있는 사유가 답변 본문에서는 안 보이는 사고가 났다. 근거와 답변이 같은 원천
+    # (TRANSFER_BLOCK_CODES)에서 나오도록 해서 둘이 어긋날 수 없게 한다.
+    definite_lines = "\n".join(
         f"- {code}. {TRANSFER_BLOCK_CODES[code]['name']}: {TRANSFER_BLOCK_CODES[code]['desc']}"
-        for code in highlighted
+        for code in definite_codes
+    )
+    manual_lines = "\n".join(
+        f"- {code}. {TRANSFER_BLOCK_CODES[code]['name']}: {TRANSFER_BLOCK_CODES[code]['desc']}"
+        for code in manual_codes
     )
     draft = (
-        "퇴직연금 실물이전이 제한될 수 있는 상품·상황은 여러 가지가 있습니다. 대표적으로는 다음과 같습니다.\n\n"
-        f"{lines}\n\n"
-        "그 밖에도 소규모 펀드 임의해지, 언번들계약, 환매수수료 존재, 운용지시 진행 중, 압류·질권, "
-        "저축은행 예금자보호한도 초과, 자사상품 편입, 만기 도래, 상품협약 미체결 등이 불가 또는 추가 확인 사유가 될 수 있습니다.\n\n"
-        "상품제공수수료, 상품라인업, 사용자/가입자부담금 미분리처럼 상대 금융기관 확인이 필요한 항목도 있습니다."
+        "퇴직연금 실물이전이 제한될 수 있는 상품·상황은 다음과 같습니다.\n\n"
+        f"[실물이전 불가사유]\n{definite_lines}\n\n"
+        f"[상대 금융기관 확인이 필요한 사유]\n{manual_lines}\n\n"
+        "보유하신 상품이 어디에 해당하는지 알려주시면(예: MMF, 사모펀드, 만기 도래 여부, "
+        "디폴트옵션 상품 여부) 실제 이전 가능 여부를 더 정확히 확인해 드릴 수 있습니다."
     )
     return draft, _context(source, content)
 

@@ -78,6 +78,26 @@ def test_in_kind_transfer_block_candidate_and_response():
     assert context
 
 
+def test_in_kind_transfer_draft_lists_every_block_code():
+    """답변 본문이 근거(content)와 같은 원천을 써서 어떤 코드도 누락하지 않아야 한다.
+
+    실측 사고: 답변 목록이 손으로 고른 11개 하드코딩 리스트였던 동안 "21. 만기(상환)"이
+    빠져, 만기 때문에 이전이 막힌 사용자에게 근거에는 있는 사유가 답변에서는 안 보였다.
+    """
+    from src.rules.in_kind_transfer import TRANSFER_BLOCK_CODES
+
+    draft, context = deterministic_response_for(
+        "실물이전_불가사유", "퇴직연금 실물이전이 안 되는 상품은?"
+    )
+
+    missing = [code for code in TRANSFER_BLOCK_CODES if f"{code}." not in draft]
+    assert missing == [], f"답변 본문에서 누락된 불가사유 코드: {missing}"
+    assert "21. 만기(상환)" in draft
+    # 근거에 있는 코드는 전부 답변에도 있어야 한다(근거-답변 불일치 방지).
+    for code in TRANSFER_BLOCK_CODES:
+        assert f"{code}." in context[0]["content"]
+
+
 def test_pension_income_tax_candidate_and_response():
     question = "연금소득세 종합과세 기준 1500만원이 뭐야?"
     assert "연금소득세_종합과세" in candidate_categories(question)
