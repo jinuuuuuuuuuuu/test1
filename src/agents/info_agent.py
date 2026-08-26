@@ -20,7 +20,7 @@ from src.agents.context import (
     history_to_messages,
     split_clarification_marker,
 )
-from src.agents.deterministic_info import deterministic_info_response
+from src.agents.deterministic_info import deterministic_response_for
 from src.agents.llm import get_llm, invoke_with_retry
 from src.agents.state import PensionAgentState, RetrievedItem, ToolCallRecord
 from src.agents.tools import INFO_AGENT_TOOLS, search_pension_docs
@@ -149,7 +149,12 @@ def build_info_agent_node():
                 "deterministic_info": False,
             }
 
-        deterministic = deterministic_info_response(state["question"])
+        category = state.get("deterministic_category", "해당없음")
+        deterministic = (
+            deterministic_response_for(category, state["question"])
+            if category != "해당없음"
+            else None
+        )
         if deterministic is not None:
             draft, retrieved_context = deterministic
             deterministic_needs_clarification = "정확한 계산을 위해 다음 정보를 한 번에 알려주세요" in draft

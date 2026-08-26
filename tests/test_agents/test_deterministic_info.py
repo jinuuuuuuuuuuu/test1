@@ -1,8 +1,18 @@
-from src.agents.deterministic_info import deterministic_info_response, should_force_info_agent
+from src.agents.deterministic_info import candidate_categories, deterministic_response_for
 
 
-def test_tax_credit_limit_question_gets_grounded_deterministic_answer():
-    draft, context = deterministic_info_response("연금저축이랑 IRP 다 합쳐서 세액공제 얼마까지 되나요?")
+def test_tax_credit_question_candidates_both_calc_and_limit():
+    # 후보 단계는 주제어("세액공제")만 보고 둘 다 낸다 — 확정은 router의 LLM 몫이다.
+    candidates = candidate_categories("연금저축이랑 IRP 다 합쳐서 세액공제 얼마까지 되나요?")
+
+    assert "세액공제_한도" in candidates
+    assert "세액공제_계산_입력부족" in candidates
+
+
+def test_tax_credit_limit_response_content():
+    draft, context = deterministic_response_for(
+        "세액공제_한도", "연금저축이랑 IRP 다 합쳐서 세액공제 얼마까지 되나요?"
+    )
 
     assert "합산 900만원" in draft
     assert "1,500만원까지 세액공제되는 구조가 아니라" in draft
@@ -10,9 +20,11 @@ def test_tax_credit_limit_question_gets_grounded_deterministic_answer():
     assert "연금저축+IRP 합산 900만원" in context[0]["content"]
 
 
-def test_tax_benefit_overview_question_gets_grounded_deterministic_answer():
-    draft, context = deterministic_info_response("연금계좌의 세금혜택에 대해 알려주세요")
+def test_tax_benefit_overview_candidate_and_response():
+    question = "연금계좌의 세금혜택에 대해 알려주세요"
+    assert "세금혜택_개요" in candidate_categories(question)
 
+    draft, context = deterministic_response_for("세금혜택_개요", question)
     assert "납입할 때 세액공제" in draft
     assert "운용 중 과세이연" in draft
     assert "연금으로 받을 때 낮은 세율" in draft
@@ -22,11 +34,11 @@ def test_tax_benefit_overview_question_gets_grounded_deterministic_answer():
     assert "1,500만원" in context[0]["content"]
 
 
-def test_tax_credit_calculation_missing_inputs_asks_all_required_values():
+def test_tax_credit_calculation_missing_response_content():
     question = "제가 받을 수 있는 세액공제 금액을 계산해 주세요."
-    draft, context = deterministic_info_response(question)
+    assert "세액공제_계산_입력부족" in candidate_categories(question)
 
-    assert should_force_info_agent(question) is True
+    draft, context = deterministic_response_for("세액공제_계산_입력부족", question)
     assert "임의로 산출하지 않겠습니다" in draft
     assert "연금저축에 납입한 금액" in draft
     assert "IRP에 납입한 금액" in draft
@@ -35,36 +47,65 @@ def test_tax_credit_calculation_missing_inputs_asks_all_required_values():
     assert context
 
 
-def test_early_withdrawal_general_question_gets_reasons():
-    draft, context = deterministic_info_response("IRP에서 중도인출은 어떤 경우에 가능한가요?")
+def test_early_withdrawal_general_candidate_and_response():
+    question = "IRP에서 중도인출은 어떤 경우에 가능한가요?"
+    assert "중도인출_일반" in candidate_categories(question)
 
+    draft, context = deterministic_response_for("중도인출_일반", question)
     assert "6개월 이상 요양" in draft
     assert "개인회생" in draft
     assert "무주택자 주택구입" in draft
     assert context
 
 
-def test_default_option_auto_purchase_question_gets_schedule_rules():
-    draft, context = deterministic_info_response("디폴트옵션은 언제 자동으로 매수되나요?")
+def test_default_option_auto_purchase_candidate_and_response():
+    question = "디폴트옵션은 언제 자동으로 매수되나요?"
+    assert "디폴트옵션_자동매수" in candidate_categories(question)
 
+    draft, context = deterministic_response_for("디폴트옵션_자동매수", question)
     assert "4주(28일)" in draft
     assert "2주(14일)" in draft
     assert context
 
 
-def test_in_kind_transfer_block_question_forces_info_agent():
+def test_in_kind_transfer_block_candidate_and_response():
     question = "퇴직연금 실물이전이 안 되는 상품은 뭐가 있나요?"
-    draft, context = deterministic_info_response(question)
+    assert "실물이전_불가사유" in candidate_categories(question)
 
-    assert should_force_info_agent(question) is True
+    draft, context = deterministic_response_for("실물이전_불가사유", question)
     assert "사모펀드" in draft
     assert "디폴트옵션" in draft
     assert context
 
 
-def test_pension_income_tax_question_gets_threshold_rules():
-    draft, context = deterministic_info_response("연금소득세 종합과세 기준 1500만원이 뭐야?")
+def test_pension_income_tax_candidate_and_response():
+    question = "연금소득세 종합과세 기준 1500만원이 뭐야?"
+    assert "연금소득세_종합과세" in candidate_categories(question)
 
+    draft, context = deterministic_response_for("연금소득세_종합과세", question)
     assert "1,500만원" in draft
     assert "16.5%" in draft
     assert context
+
+
+def test_no_candidates_for_unrelated_question():
+    # 주제어 자체가 없으면 후보가 비어야 한다 — router가 LLM 호출 없이도 "해당없음"으로 확정 가능.
+    assert candidate_categories("오늘 점심 메뉴 추천해줘") == []
+
+
+def test_deterministic_response_for_returns_none_when_no_handler():
+    assert deterministic_response_for("해당없음", "아무 질문") is None
+    assert deterministic_response_for("존재하지않는카테고리", "아무 질문") is None
+
+
+def test_candidate_hint_does_not_force_wrong_category_alone():
+    """후보에 여러 카테고리가 있어도 candidate_categories 자체는 확정하지 않는다.
+
+    "실물이전이 안 되는 상품은?"과 "디폴트옵션은 언제 매수되나요?"가 한 질문에 섞이는
+    식의 혼동을 방지하는 최종 확정은 router LLM의 몫이며, 이 테스트는 후보 함수가 실제로
+    "판정"이 아니라 "힌트"만 낸다는 계약을 문서화한다.
+    """
+    # "실물이전이 되는 상품은?"은 실물이전_불가사유 후보가 뜨지만(주제어만 봄),
+    # 실제로는 허용 목록을 묻는 질문이라 router가 기각해야 하는 케이스 — 후보 단계에서는
+    # 걸러지지 않는 것이 설계상 정상이다(2단계에서 LLM이 처리).
+    assert "실물이전_불가사유" in candidate_categories("실물이전이 되는 상품은 뭐가 있나요?")

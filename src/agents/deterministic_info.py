@@ -1,12 +1,30 @@
-"""Deterministic shortcuts for high-risk pension information questions.
+"""Deterministic answer generation for high-risk pension information questions.
 
-These handlers cover rule-heavy questions where relying on the LLM to decide
-whether to call a tool has repeatedly produced ungrounded answers.
+분류(어느 카테고리인지)와 답변 생성(그 카테고리에서 실제 숫자·조건을 인용하는 것)의 역할을
+분리한다 — 근거: "세액공제"+"얼마"만 있으면 무조건 한도질문으로 오분류하던 사고, 그리고
+같은 클래스(주제어+느슨한 동반어)의 트리거가 "언제"/"시점"/"상품"/"세율" 등에서도 반복
+재발할 위험이 있다는 판단(2026-08-25 재점검).
+
+- candidate_category(): 1단계, 순수 키워드 규칙. 주제어(예: "세액공제")만 보고 "이 카테고리일
+  수도 있다"는 느슨한 후보만 낸다. 결정적(같은 입력엔 항상 같은 결과)이고 빠르다.
+- DETERMINISTIC_CATEGORIES: 후보로 나올 수 있는 전체 카테고리 목록 — router.py가
+  RouterDecision.deterministic_category의 허용값을 정의할 때 이 목록을 그대로 쓴다.
+- deterministic_response_for(category, question): 2단계, router의 LLM이 후보를 검증/확정한
+  카테고리를 받아 실제 정형 답변(숫자·조건)을 만든다. 여기서부터는 결정론 그대로 유지한다 —
+  숫자를 LLM에게 맡기면 학습 지식으로 틀린 값을 지어내는 사고가 실측된 바 있다.
+
+왜 분류까지 전부 규칙으로 하지 않는가: 키워드 매칭은 "얼마"/"언제"/"시점"/"상품"/"세율"처럼
+그 자체로 의미가 넓은 동반어를 요구하면 반드시 오탐(다른 의도의 질문을 잘못 걸러냄)을
+만든다 — 이게 원래 사고의 근본 원인이었다. 반대로 분류를 통째로 LLM에게 맡기면(동반어 없이
+전체 판단) 오탐은 줄지만 판단이 확률적이라 같은 입력에도 흔들릴 수 있고 실패 원인을 코드로
+특정하기 어렵다. candidate_category()가 "주제어 존재 여부"라는 가장 안정적인 신호만
+규칙으로 담당하고, 그 후보가 맞는지 최종 확정은 router의 LLM(이미 있는 호출에 필드만
+추가돼 비용 증가 없음)에게 맡기는 하이브리드로 양쪽의 실패 모드를 서로 보완한다.
 """
 
 from __future__ import annotations
 
-import re
+from typing import Literal, Optional
 
 from src.agents.state import RetrievedItem
 from src.rules.comprehensive_tax import (
@@ -31,50 +49,81 @@ from src.rules.withdrawal_limit import (
     UNLIMITED_FROM_YEAR,
 )
 
+DeterministicCategory = Literal[
+    "세액공제_계산_입력부족",
+    "세액공제_한도",
+    "세금혜택_개요",
+    "중도인출_일반",
+    "디폴트옵션_자동매수",
+    "실물이전_불가사유",
+    "연금수령한도",
+    "퇴직소득세감면",
+    "연금소득세_종합과세",
+    "해당없음",
+]
 
-def deterministic_info_response(question: str) -> tuple[str, list[RetrievedItem]] | None:
+# router.py가 프롬프트/RouterDecision의 Literal 정의에 그대로 재사용한다.
+DETERMINISTIC_CATEGORIES: tuple[str, ...] = (
+    "세액공제_계산_입력부족",
+    "세액공제_한도",
+    "세금혜택_개요",
+    "중도인출_일반",
+    "디폴트옵션_자동매수",
+    "실물이전_불가사유",
+    "연금수령한도",
+    "퇴직소득세감면",
+    "연금소득세_종합과세",
+    "해당없음",
+)
+
+
+def candidate_categories(question: str) -> list[str]:
+    """1단계: 주제어만 보고 느슨한 후보 목록을 낸다 (동반어 요구 없음).
+
+    router의 LLM이 이 후보들 중 실제로 맞는 카테고리를 확정한다(또는 전부 기각하고
+    "해당없음"). 여기서 여러 개가 동시에 후보로 나올 수 있다(예: "세액공제" 관련 두 카테고리).
+    """
     text = _compact(question)
+    candidates: list[str] = []
 
-    if _is_tax_credit_calculation_missing_question(question):
-        return _tax_credit_calculation_missing_response()
-    if _is_tax_benefit_overview_question(text):
-        return _tax_benefit_overview_response()
-    if _is_tax_credit_limit_question(text):
-        return _tax_credit_limit_response()
-    if _is_early_withdrawal_general_question(text):
-        return _early_withdrawal_general_response()
-    if _is_default_option_auto_purchase_question(text):
-        return _default_option_auto_purchase_response()
-    if _is_in_kind_transfer_block_question(text):
-        return _in_kind_transfer_block_response()
-    if _is_withdrawal_limit_question(text):
-        return _withdrawal_limit_response()
-    if _is_retirement_tax_reduction_question(text):
-        return _retirement_tax_reduction_response()
-    if _is_pension_income_tax_question(text):
-        return _pension_income_tax_response()
-    return None
+    if "세액공제" in text:
+        candidates.append("세액공제_계산_입력부족")
+        candidates.append("세액공제_한도")
+    if any(word in text for word in ("세금혜택", "세제혜택", "절세혜택", "세금상혜택")):
+        candidates.append("세금혜택_개요")
+    if "중도인출" in text:
+        candidates.append("중도인출_일반")
+    if "디폴트옵션" in text:
+        candidates.append("디폴트옵션_자동매수")
+    if "실물이전" in text:
+        candidates.append("실물이전_불가사유")
+    if "연금수령한도" in text or ("연금" in text and "한도" in text):
+        candidates.append("연금수령한도")
+    if any(word in text for word in ("퇴직소득세", "이연퇴직소득세")):
+        candidates.append("퇴직소득세감면")
+    if any(word in text for word in ("연금소득세", "종합과세", "분리과세")):
+        candidates.append("연금소득세_종합과세")
+
+    return candidates
 
 
-def should_force_info_agent(question: str) -> bool:
-    """Return True for questions that must use information/rule handling."""
-    text = _compact(question)
-    return any(
-        (
-            _is_tax_credit_calculation_missing_question(question),
-            _is_tax_credit_limit_question(text),
-            _is_tax_benefit_overview_question(text),
-            _is_early_withdrawal_general_question(text),
-            _is_default_option_auto_purchase_question(text),
-            _is_in_kind_transfer_block_question(text),
-            _is_withdrawal_limit_question(text),
-            _is_retirement_tax_reduction_question(text),
-            _is_pension_income_tax_question(text),
-        )
-    )
+def deterministic_response_for(
+    category: str, question: str
+) -> Optional[tuple[str, list[RetrievedItem]]]:
+    """2단계: router가 확정한 카테고리로 실제 정형 답변을 만든다.
+
+    category가 "해당없음"이거나 핸들러가 없으면 None — 호출측(info_agent)은 LLM+툴 경로로
+    진행해야 한다.
+    """
+    handler = _CATEGORY_HANDLERS.get(category)
+    if handler is None:
+        return None
+    return handler(question)
 
 
 def _compact(text: str) -> str:
+    import re
+
     return re.sub(r"\s+", "", text or "")
 
 
@@ -92,18 +141,7 @@ def _context(source: str, content: str) -> list[RetrievedItem]:
     return [{"source": source, "content": content, "node": "info_agent"}]
 
 
-def _is_tax_credit_calculation_missing_question(question: str) -> bool:
-    text = _compact(question)
-    if "세액공제" not in text:
-        return False
-    if not any(word in text for word in ("계산", "받을수", "받을수있는", "금액", "얼마받")):
-        return False
-    has_contribution = any(word in text for word in ("연금저축", "IRP")) and bool(re.search(r"\d", text))
-    has_income = any(word in text for word in ("연봉", "총급여", "종합소득", "소득금액")) and bool(re.search(r"\d", text))
-    return not (has_contribution and has_income)
-
-
-def _tax_credit_calculation_missing_response() -> tuple[str, list[RetrievedItem]]:
+def _tax_credit_calculation_missing_response(question: str) -> tuple[str, list[RetrievedItem]]:
     source = "doc41 세액공제 계산 입력값 규칙"
     content = (
         f"세액공제액 계산에는 연금저축 납입액, IRP 납입액, 총급여 또는 종합소득금액이 필요합니다. "
@@ -129,13 +167,7 @@ def _tax_credit_calculation_missing_response() -> tuple[str, list[RetrievedItem]
     return draft, _context(source, content)
 
 
-def _is_tax_benefit_overview_question(text: str) -> bool:
-    return any(word in text for word in ("세금혜택", "세제혜택", "절세혜택", "세금상혜택")) and any(
-        word in text for word in ("연금계좌", "연금저축", "IRP", "연금")
-    )
-
-
-def _tax_benefit_overview_response() -> tuple[str, list[RetrievedItem]]:
+def _tax_benefit_overview_response(question: str) -> tuple[str, list[RetrievedItem]]:
     source = "doc38~doc41 연금계좌 세금혜택 규칙"
     content = (
         f"연금계좌의 세금혜택은 납입 시 세액공제, 운용 중 과세이연, 연금수령 시 저율 과세, "
@@ -173,11 +205,7 @@ def _tax_benefit_overview_response() -> tuple[str, list[RetrievedItem]]:
     return draft, _context(source, content)
 
 
-def _is_tax_credit_limit_question(text: str) -> bool:
-    return "세액공제" in text and any(word in text for word in ("한도", "얼마", "최대", "합쳐", "공제율"))
-
-
-def _tax_credit_limit_response() -> tuple[str, list[RetrievedItem]]:
+def _tax_credit_limit_response(question: str) -> tuple[str, list[RetrievedItem]]:
     source = "doc41 세액공제 규칙"
     content = (
         f"연금저축+IRP 합산 납입한도는 연 {_won(TOTAL_CONTRIBUTION_LIMIT)}입니다. "
@@ -207,11 +235,7 @@ def _tax_credit_limit_response() -> tuple[str, list[RetrievedItem]]:
     return draft, _context(source, content)
 
 
-def _is_early_withdrawal_general_question(text: str) -> bool:
-    return "중도인출" in text and any(word in text for word in ("가능", "경우", "사유", "요건", "언제"))
-
-
-def _early_withdrawal_general_response() -> tuple[str, list[RetrievedItem]]:
+def _early_withdrawal_general_response(question: str) -> tuple[str, list[RetrievedItem]]:
     source = "doc46~doc50 중도인출 규칙"
     content = (
         "DB는 중도인출이 허용되지 않습니다. DC와 IRP는 법정 사유가 있으면 중도인출 대상 제도입니다. "
@@ -236,11 +260,7 @@ def _early_withdrawal_general_response() -> tuple[str, list[RetrievedItem]]:
     return draft, _context(source, content)
 
 
-def _is_default_option_auto_purchase_question(text: str) -> bool:
-    return "디폴트옵션" in text and any(word in text for word in ("자동매수", "사전지정운용", "언제", "시점", "일정"))
-
-
-def _default_option_auto_purchase_response() -> tuple[str, list[RetrievedItem]]:
+def _default_option_auto_purchase_response(question: str) -> tuple[str, list[RetrievedItem]]:
     source = "doc29 디폴트옵션 자동매수 규칙"
     content = (
         f"기존가입자는 상품 만기일로부터 4주({NOTICE_DELAY_DAYS_EXISTING}일) 후 통지하고, "
@@ -258,11 +278,7 @@ def _default_option_auto_purchase_response() -> tuple[str, list[RetrievedItem]]:
     return draft, _context(source, content)
 
 
-def _is_in_kind_transfer_block_question(text: str) -> bool:
-    return "실물이전" in text and any(word in text for word in ("안되는", "안되는", "불가", "못", "제한", "상품", "사유"))
-
-
-def _in_kind_transfer_block_response() -> tuple[str, list[RetrievedItem]]:
+def _in_kind_transfer_block_response(question: str) -> tuple[str, list[RetrievedItem]]:
     source = "doc34 실물이전 불가사유 코드"
     definite_codes = [code for code, info in TRANSFER_BLOCK_CODES.items() if not info.get("directional")]
     manual_codes = [code for code, info in TRANSFER_BLOCK_CODES.items() if info.get("directional")]
@@ -289,11 +305,7 @@ def _in_kind_transfer_block_response() -> tuple[str, list[RetrievedItem]]:
     return draft, _context(source, content)
 
 
-def _is_withdrawal_limit_question(text: str) -> bool:
-    return "연금수령한도" in text or ("연금" in text and "한도" in text and any(word in text for word in ("수령", "인출")))
-
-
-def _withdrawal_limit_response() -> tuple[str, list[RetrievedItem]]:
+def _withdrawal_limit_response(question: str) -> tuple[str, list[RetrievedItem]]:
     source = "doc39 연금수령한도 규칙"
     content = (
         "연금수령한도 = 연금계좌 평가액 ÷ (11 - 연금수령연차) × 120%입니다. "
@@ -311,13 +323,7 @@ def _withdrawal_limit_response() -> tuple[str, list[RetrievedItem]]:
     return draft, _context(source, content)
 
 
-def _is_retirement_tax_reduction_question(text: str) -> bool:
-    return any(word in text for word in ("퇴직소득세", "이연퇴직소득세")) and any(
-        word in text for word in ("감면", "비율", "세율", "납부")
-    )
-
-
-def _retirement_tax_reduction_response() -> tuple[str, list[RetrievedItem]]:
+def _retirement_tax_reduction_response(question: str) -> tuple[str, list[RetrievedItem]]:
     r1 = get_deferred_retirement_tax_rate(1)
     r11 = get_deferred_retirement_tax_rate(11)
     r21 = get_deferred_retirement_tax_rate(21)
@@ -339,13 +345,7 @@ def _retirement_tax_reduction_response() -> tuple[str, list[RetrievedItem]]:
     return draft, _context(source, content)
 
 
-def _is_pension_income_tax_question(text: str) -> bool:
-    return any(word in text for word in ("연금소득세", "종합과세", "분리과세")) and any(
-        word in text for word in ("1500", "1,500", "세율", "기준", "얼마", "초과")
-    )
-
-
-def _pension_income_tax_response() -> tuple[str, list[RetrievedItem]]:
+def _pension_income_tax_response(question: str) -> tuple[str, list[RetrievedItem]]:
     source = "doc38 연금소득 종합과세 규칙"
     content = (
         f"사적연금소득은 연 {_won(ANNUAL_THRESHOLD)} 초과 여부가 종합과세 판단 기준입니다. "
@@ -363,3 +363,16 @@ def _pension_income_tax_response() -> tuple[str, list[RetrievedItem]]:
         "70세 이상 80세 미만 4.4%, 80세 이상 3.3%입니다."
     )
     return draft, _context(source, content)
+
+
+_CATEGORY_HANDLERS = {
+    "세액공제_계산_입력부족": _tax_credit_calculation_missing_response,
+    "세액공제_한도": _tax_credit_limit_response,
+    "세금혜택_개요": _tax_benefit_overview_response,
+    "중도인출_일반": _early_withdrawal_general_response,
+    "디폴트옵션_자동매수": _default_option_auto_purchase_response,
+    "실물이전_불가사유": _in_kind_transfer_block_response,
+    "연금수령한도": _withdrawal_limit_response,
+    "퇴직소득세감면": _retirement_tax_reduction_response,
+    "연금소득세_종합과세": _pension_income_tax_response,
+}

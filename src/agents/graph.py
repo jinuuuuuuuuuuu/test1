@@ -24,7 +24,6 @@ from langgraph.graph.state import CompiledStateGraph
 from src.agents.generator import build_generator_node
 from src.agents.grounding import build_grounding_node
 from src.agents.info_agent import build_info_agent_node
-from src.agents.deterministic_info import should_force_info_agent
 from src.agents.product_agent import build_product_agent_node
 from src.agents.router import build_router_node
 from src.agents.state import PensionAgentState
@@ -38,7 +37,8 @@ def _route_after_router(state: PensionAgentState) -> str:
     if state.get("scope") == "범위외":
         # 연금과 접점이 없는 질문 — ②③④를 건너뛰고 ⑤가 정형 한계 고지 응답을 만든다.
         return "generator"
-    if should_force_info_agent(state.get("question", "")):
+    if state.get("deterministic_category", "해당없음") != "해당없음":
+        # 라우터가 확정한 정형 답변 카테고리 — ②가 이 카테고리로 결정론 답변을 만든다.
         return "info_agent"
     intent = state.get("intent") or []
     if "정보형" in intent:

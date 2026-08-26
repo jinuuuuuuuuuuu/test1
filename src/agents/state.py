@@ -55,6 +55,11 @@ class PensionAgentState(TypedDict, total=False):
     # 부분관련이고, 범위외면 ②③④를 건너뛰고 정형 한계 고지로 응답한다.
     scope: Scope
     scope_note: str | None  # 부분관련: 연금 관점 재조준 방향 / 범위외: 사유
+    # 정형(결정론) 답변 카테고리 — src/agents/deterministic_info.py의 candidate_categories()가
+    # 낸 후보 중 라우터 LLM이 실제 의도를 보고 확정한 값. "해당없음"이면 정형 답변 대상이 아니다.
+    # 분류(카테고리 판정)는 LLM이, 답변 생성(숫자·조건 인용)은 규칙이 맡는 역할 분리 설계
+    # (2026-08-25 재점검 — 세액공제+"얼마" 키워드 오분류 사고 재발 방지).
+    deterministic_category: str
 
     # ②③ 출력 — retrieved_context는 여러 노드가 이어서 채우므로 누적(operator.add) 리듀서 사용.
     # repair 재실행 시 같은 근거가 중복 누적되므로 읽는 쪽은 context.dedupe_context를 거친다.
