@@ -294,6 +294,10 @@ def is_benign_condition_statement(text: str) -> bool:
             "전월세",
             "주택구입",
             "집을",
+            "집",
+            "사려고",
+            "할래",
+            "하려",
             "DB형",
             "IRP",
         )
@@ -362,6 +366,87 @@ def apply_source_limited_override(
     result["requirements_met"] = True
     result["missing_requirements"] = []
     result["source_limited_mode"] = True
+    return result
+
+
+def _compact_for_requirement(text: str) -> str:
+    return re.sub(r"\s+", "", text or "").lower()
+
+
+def _question_explicitly_requests_alternative_withdrawal_plans(question: str) -> bool:
+    text = _compact_for_requirement(question)
+    if "중도인출" not in text:
+        return False
+    return any(
+        marker in text
+        for marker in (
+            "다른제도",
+            "다른퇴직연금",
+            "다른계좌",
+            "가능한제도",
+            "가능한종류",
+            "어떤제도",
+            "어떤종류",
+            "무슨제도",
+            "종류도",
+            "뭐가가능",
+            "무엇이가능",
+        )
+    )
+
+
+def _missing_is_withdrawal_plan_expansion(item: str) -> bool:
+    text = _compact_for_requirement(item)
+    has_withdrawal_context = any(marker in text for marker in ("중도인출", "퇴직연금", "제도", "종류", "계좌"))
+    has_plan_context = any(marker in text for marker in ("dc", "irp", "제도", "종류", "퇴직연금"))
+    has_optional_expansion = any(marker in text for marker in ("다른", "추가", "기타", "종류"))
+    return "가능" in text and has_withdrawal_context and has_plan_context and has_optional_expansion
+
+
+def _missing_is_answered_by_withdrawal_plan_text(item: str, draft: str) -> bool:
+    item_text = _compact_for_requirement(item)
+    draft_text = _compact_for_requirement(draft)
+    if "중도인출" not in item_text or "가능" not in item_text:
+        return False
+    asks_plan = any(marker in item_text for marker in ("제도", "종류", "퇴직연금", "dc", "irp"))
+    answers_plan = "중도인출" in draft_text and "가능" in draft_text and "dc" in draft_text and "irp" in draft_text
+    return asks_plan and answers_plan
+
+
+def apply_requirement_scope_override(verification: dict, question: str, draft: str) -> dict:
+    """④가 선택적 확장정보를 필수 요구사항으로 만든 경우를 정규화한다.
+
+    요구사항 검증은 사용자가 직접 요구한 것(EXPLICIT)과 답변에 필수적인 것(NECESSARY)을
+    봐야 한다. "DB형인데 집 사려고 중도인출할래"의 핵심 요구는 DB형에서 가능한지 여부다.
+    ④가 "다른 퇴직연금 종류"처럼 유용하지만 선택적인 정보를 필수 missing으로 확장하면,
+    답변은 맞는데 repair loop가 돌고 최종 답변에 잘못된 한계고지가 붙는다.
+
+    또한 초안이 이미 DC/IRP를 답했는데도 같은 항목을 누락으로 보는 coverage false
+    negative를 함께 제거한다.
+    """
+    original_missing = list(verification.get("missing_requirements") or [])
+    if not original_missing:
+        return verification
+
+    explicit_alt_plan_request = _question_explicitly_requests_alternative_withdrawal_plans(question)
+    missing: list[str] = []
+    for item in original_missing:
+        if _missing_is_answered_by_withdrawal_plan_text(item, draft):
+            continue
+        if (
+            not explicit_alt_plan_request
+            and _missing_is_withdrawal_plan_expansion(item)
+        ):
+            continue
+        missing.append(item)
+
+    if missing == original_missing:
+        return verification
+
+    result = dict(verification)
+    result["missing_requirements"] = missing
+    if not missing and not result.get("issues") and not result.get("premise_issues"):
+        result["requirements_met"] = True
     return result
 
 

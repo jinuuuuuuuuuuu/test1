@@ -96,6 +96,18 @@ def test_composite_category_beats_single_task_categories():
     )
 
 
+def test_withdrawal_eligibility_beats_general_when_condition_is_given():
+    question = "DB형인데 집 사려고 중도인출할래"
+    candidates = candidate_categories(question)
+
+    assert "중도인출_일반" in candidates
+    assert "중도인출_요건판정" in candidates
+    assert (
+        _prioritize_collision_category("중도인출_일반", candidates, question)
+        == "중도인출_요건판정"
+    )
+
+
 def test_general_age_rate_question_is_not_forced_to_personal_tax():
     question = "연령별 연금소득세율 표 알려줘"
     candidates = candidate_categories(question)

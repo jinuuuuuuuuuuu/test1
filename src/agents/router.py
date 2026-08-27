@@ -285,6 +285,12 @@ def _prioritize_collision_category(category: str, candidates: list[str], questio
     ):
         return "복합정보_태스크플랜"
     if (
+        category in {"중도인출_일반", "중도인출_기한판정"}
+        and "중도인출_요건판정" in candidates
+        and deterministic_response_for("중도인출_요건판정", question) is not None
+    ):
+        return "중도인출_요건판정"
+    if (
         category == "연금소득세율_연령별"
         and "개인세금_입력충분성" in candidates
         and deterministic_response_for("개인세금_입력충분성", question) is not None
