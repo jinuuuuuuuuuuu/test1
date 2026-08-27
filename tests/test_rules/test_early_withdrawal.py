@@ -313,3 +313,108 @@ def test_unknown_reason_raises():
 
     with pytest.raises(ValueError):
         calculate_deadline("없는사유", date(2026, 1, 1))
+
+# ── 달력 기준 마감일 회귀 (dana 브랜치에서 병합, 2026-08-27) ─────────
+#
+# 원문이 "1개월"이라고만 하므로 30일 환산은 실제보다 관대하게 판정한다.
+# calculate_deadline 공통화 이후에도 각 사유의 판정 함수가 같은 결과를 내는지 지킨다.
+
+
+def test_medical_deadline_uses_calendar_month_not_30_days():
+    r = check_medical_treatment_eligibility(
+        plan_type=PlanType.IRP,
+        medical_expense_last_year=100_000,
+        prior_year_annual_wage=50_000_000,
+        treatment_end_date=date(2026, 1, 31),
+        request_date=date(2026, 2, 28),
+    )
+    assert r.eligible is True
+
+    late = check_medical_treatment_eligibility(
+        plan_type=PlanType.IRP,
+        medical_expense_last_year=100_000,
+        prior_year_annual_wage=50_000_000,
+        treatment_end_date=date(2026, 1, 31),
+        request_date=date(2026, 3, 1),
+    )
+    assert late.eligible is False
+    # 메시지 표현은 "1개월(달력 기준 2026-02-28까지)" 형태다 — 달력 기준임과
+    # 실제 마감일이 함께 드러나야 사용자가 언제까지였는지 알 수 있다.
+    assert "달력 기준" in late.reason
+    assert "2026-02-28" in late.reason
+
+
+def test_medical_deadline_handles_leap_year_month_end():
+    r = check_medical_treatment_eligibility(
+        plan_type=PlanType.IRP,
+        medical_expense_last_year=100_000,
+        prior_year_annual_wage=50_000_000,
+        treatment_end_date=date(2024, 1, 31),
+        request_date=date(2024, 2, 29),
+    )
+    assert r.eligible is True
+
+
+def test_rental_deposit_deadline_uses_calendar_month():
+    r = check_rental_deposit_eligibility(
+        plan_type=PlanType.IRP,
+        is_homeless=True,
+        has_deposit=True,
+        is_lease_extension=False,
+        has_deposit_increase=False,
+        dc_already_used=False,
+        balance_payment_date=date(2026, 5, 10),
+        request_date=date(2026, 6, 10),
+    )
+    assert r.eligible is True
+
+    late = check_rental_deposit_eligibility(
+        plan_type=PlanType.IRP,
+        is_homeless=True,
+        has_deposit=True,
+        is_lease_extension=False,
+        has_deposit_increase=False,
+        dc_already_used=False,
+        balance_payment_date=date(2026, 5, 10),
+        request_date=date(2026, 6, 11),
+    )
+    assert late.eligible is False
+
+
+def test_home_purchase_deadline_uses_registration_receipt_calendar_month():
+    r = check_home_purchase_eligibility(
+        plan_type=PlanType.IRP,
+        is_homeless=True,
+        ownership_type="본인단독",
+        ownership_registration_date=date(2026, 8, 31),
+        request_date=date(2026, 9, 30),
+    )
+    assert r.eligible is True
+
+    late = check_home_purchase_eligibility(
+        plan_type=PlanType.IRP,
+        is_homeless=True,
+        ownership_type="본인단독",
+        ownership_registration_date=date(2026, 8, 31),
+        request_date=date(2026, 10, 1),
+    )
+    assert late.eligible is False
+    assert "등기접수일" in late.reason
+
+
+def test_disaster_deadline_uses_calendar_months_not_90_days():
+    r = check_disaster_eligibility(
+        plan_type=PlanType.IRP,
+        damage_date=date(2026, 8, 31),
+        request_date=date(2026, 11, 30),
+        damage_resolved=True,
+    )
+    assert r.eligible is True
+
+    late = check_disaster_eligibility(
+        plan_type=PlanType.IRP,
+        damage_date=date(2026, 8, 31),
+        request_date=date(2026, 12, 1),
+        damage_resolved=True,
+    )
+    assert late.eligible is False

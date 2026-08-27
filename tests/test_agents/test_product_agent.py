@@ -90,6 +90,39 @@ def test_recommendation_flow_infers_retirement_goal_from_irp_request():
     assert "예상 투자기간" in draft
     assert context == []
     assert needs_clarification is True
+    assert "채권형" in draft or "원리금보장형" in draft
+    assert "위 정보가 확인되지 않은 상태에서는 특정 펀드명이나 상품코드를 임의로 추천하지 않겠습니다" in draft
+
+
+def test_incomplete_recommendation_includes_conditional_guidance_without_specific_fund():
+    draft, context, profile, needs_clarification = _recommendation_flow_response({
+        "question": "IRP에 넣을 안전한 상품 추천해주세요."
+    })
+
+    assert profile["account_type"] == "IRP"
+    assert profile["risk_profile"] == "안정형"
+    assert "채권형" in draft
+    assert "원리금보장형" in draft
+    assert "IRP/DC에는 위험자산 투자 제한" in draft
+    assert "펀드명이나 상품코드를 임의로 추천하지 않겠습니다" in draft
+    assert "상품코드=" not in draft
+    assert context == []
+    assert needs_clarification is True
+
+
+def test_overseas_equity_recommendation_includes_what_if_scenarios():
+    draft, context, profile, needs_clarification = _recommendation_flow_response({
+        "question": "IRP에서 미국 주식에 투자하는 상품 추천해줘"
+    })
+
+    assert profile["account_type"] == "IRP"
+    assert profile["preferred_product_type"] == "해외주식형 펀드"
+    assert "미국·해외 증시" in draft
+    assert "원/달러 환율" in draft
+    assert "투자성향" in draft
+    assert "투자기간" in draft
+    assert context == []
+    assert needs_clarification is True
 
 
 def test_recommendation_flow_with_missing_account_asks_for_all_missing_info():

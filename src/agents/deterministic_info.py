@@ -47,6 +47,7 @@
 from __future__ import annotations
 
 import re
+from datetime import date
 from typing import Literal, Optional
 
 from src.agents.state import RetrievedItem
@@ -56,6 +57,11 @@ from src.rules.comprehensive_tax import (
     get_pension_income_tax_rate,
 )
 from src.rules.default_option import NOTICE_DELAY_DAYS_EXISTING, WAIT_DAYS_AFTER_NOTICE
+from src.rules.early_withdrawal import (
+    WITHDRAWAL_DEADLINE_RULES,
+    add_calendar_months,
+    calculate_deadline,
+)
 from src.rules.in_kind_transfer import TRANSFER_BLOCK_CODES
 from src.rules.retirement_tax_reduction import get_deferred_retirement_tax_rate
 from src.rules.tax_credit import (
@@ -72,11 +78,14 @@ from src.rules.withdrawal_limit import (
     SIX_YEAR_EXCEPTION_START,
     UNLIMITED_FROM_YEAR,
 )
+from src.agents.tax_context import personal_tax_response
 
 DeterministicCategory = Literal[
     "세액공제_계산_입력부족",
     "세액공제_한도",
     "세금혜택_개요",
+    "개인세금_입력충분성",
+    "중도인출_기한판정",
     "중도인출_일반",
     "디폴트옵션_자동매수",
     "실물이전_불가사유",
@@ -93,6 +102,8 @@ DETERMINISTIC_CATEGORIES: tuple[str, ...] = (
     "세액공제_계산_입력부족",
     "세액공제_한도",
     "세금혜택_개요",
+    "개인세금_입력충분성",
+    "중도인출_기한판정",
     "중도인출_일반",
     "디폴트옵션_자동매수",
     "실물이전_불가사유",
@@ -103,6 +114,30 @@ DETERMINISTIC_CATEGORIES: tuple[str, ...] = (
     "연금소득세율_연령별",
     "해당없음",
 )
+
+
+# 라우터가 "해당없음"으로 기각했을 때 코드가 되살려도 안전한 카테고리.
+#
+# 실측(2026-08-27): "개인세금_입력충분성"은 후보 힌트로 정확히 주어져도 라우터가 3/3
+# "해당없음"으로 기각했다. 프롬프트 문구를 여러 형태로 조정했으나("★ 모든 카테고리에
+# 우선 적용되는 판정 원칙" 블록을 어떻게 남겨도) 실패가 반복됐고, 그 블록을 완전히
+# 제거한 최소 프롬프트에서만 성공했다 — 프롬프트로는 안정적으로 고칠 수 없는 실패다.
+#
+# ⚠️ 전체 카테고리에 걸면 안 된다. 세액공제_계산_입력부족의 핸들러는 입력이 이미
+# 충분해도 항상 "입력값이 부족합니다"를 반환하므로(자체 충분성 검증이 없다), 라우터가
+# 정확히 기각한 케이스("연금저축 600만원, 총급여 5000만원인데 세액공제 얼마?")를
+# 되살리면 오답을 강제하게 된다(실측 확인). 여기에는 핸들러가 "이 카테고리가 실제로
+# 맞는 상황인지"를 스스로 판단하는(아니면 None을 내는) 카테고리만 담는다.
+# 판정 기준: 그 카테고리와 무관한 질문을 넣었을 때 핸들러가 None을 돌려주는가.
+# 디폴트옵션_자동매수·연금소득세율_연령별은 질문과 무관하게 항상 일반 안내를 반환하므로
+# (나이가 없어도 구간 전체를 안내하는 식) 여기 넣으면 안 된다 — 실측: 넣었더니
+# "연금저축 600만원 납입하고 총급여 5000만원인데 세액공제 얼마?"가 연금소득세율_연령별로
+# 되살아나 세율표를 답했다.
+CODE_OVERRIDABLE_CATEGORIES: frozenset[str] = frozenset({
+    "개인세금_입력충분성",
+    "중도인출_기한판정",
+    "실물이전_개별판정",
+})
 
 
 # 나이 표현 — "74세", "만 74세", "제 나이가 74" 등. 연령별 세율 판정의 신호다.
@@ -135,13 +170,20 @@ def candidate_categories(question: str) -> list[str]:
     text = _compact(question)
     candidates: list[str] = []
 
+    if personal_tax_response(question) is not None:
+        candidates.append("개인세금_입력충분성")
     if "세액공제" in text:
         candidates.append("세액공제_계산_입력부족")
         candidates.append("세액공제_한도")
     if any(word in text for word in ("세금혜택", "세제혜택", "절세혜택", "세금상혜택")):
         candidates.append("세금혜택_개요")
     if "중도인출" in text:
+        # 같은 도메인의 두 작업을 모두 후보로 낸다: 사유 목록 나열(중도인출_일반)과
+        # 기한 계산·판정(중도인출_기한판정). 사유별로 후보 조건을 따로 쓰면
+        # ("요양이고 요양종료일이 있으면...") 사유가 늘 때마다 조건이 늘고, 실제로
+        # 요양·주택구입만 잡히고 전월세·재난·개인회생은 빠지는 비대칭이 생겼다.
         candidates.append("중도인출_일반")
+        candidates.append("중도인출_기한판정")
     if "디폴트옵션" in text:
         candidates.append("디폴트옵션_자동매수")
     if "실물이전" in text:
@@ -293,6 +335,158 @@ def _tax_credit_limit_response(question: str) -> tuple[str, list[RetrievedItem]]
     )
     return draft, _context(source, content)
 
+def _is_early_withdrawal_general_question(text: str) -> bool:
+    return "중도인출" in text and any(word in text for word in ("가능", "경우", "사유", "요건", "언제"))
+
+
+def _parse_korean_dates(text: str) -> list[date]:
+    dates = []
+    current_year = None
+    pattern = re.compile(r"(?:(\d{4})년)?(\d{1,2})월(\d{1,2})일")
+    for year, month, day in pattern.findall(text):
+        if year:
+            current_year = int(year)
+        if current_year is None:
+            continue
+        try:
+            dates.append(date(current_year, int(month), int(day)))
+        except ValueError:
+            continue
+    return dates
+
+
+def _parse_first_korean_date_mention(text: str) -> tuple[int | None, int, int] | None:
+    match = re.search(r"(?:(\d{4})년)?(\d{1,2})월(\d{1,2})일", text)
+    if not match:
+        return None
+    year, month, day = match.groups()
+    parsed_year = int(year) if year else None
+    parsed_month = int(month)
+    parsed_day = int(day)
+    try:
+        date(parsed_year or 2001, parsed_month, parsed_day)
+    except ValueError:
+        return None
+    return parsed_year, parsed_month, parsed_day
+
+
+def _format_date(value: date) -> str:
+    return f"{value.year}년 {value.month}월 {value.day}일"
+
+
+def _format_month_day(value: date) -> str:
+    return f"{value.month}월 {value.day}일"
+
+
+# 사용자 표현 -> 중도인출 사유. WITHDRAWAL_DEADLINE_RULES의 키와 일치시킨다.
+_WITHDRAWAL_REASON_ALIASES: dict[str, tuple[str, ...]] = {
+    "요양": ("요양", "치료", "병원", "의료비"),
+    "개인회생파산": ("개인회생", "파산", "회생절차"),
+    "무주택전월세": ("전월세", "전세", "월세", "임차보증금", "임대차"),
+    "무주택주택구입": ("주택구입", "주택매입", "집구입", "소유권이전", "등기"),
+    "재난피해": ("재난", "피해", "수해", "화재"),
+}
+
+
+def _has_final_consonant(word: str) -> bool:
+    """마지막 글자에 받침이 있는지 — 조사(이/가, 이라는/라는) 선택용."""
+    if not word:
+        return False
+    ch = word[-1]
+    if not ("가" <= ch <= "힣"):
+        return False
+    return (ord(ch) - 0xAC00) % 28 != 0
+
+
+def _with_particle(word: str, with_final: str, without_final: str) -> str:
+    """받침 여부에 맞는 조사를 붙인다. 예: _with_particle("잔금지급일", "이라는", "라는")"""
+    return word + (with_final if _has_final_consonant(word) else without_final)
+
+
+def _detect_withdrawal_reason(text: str) -> str | None:
+    """질문에서 중도인출 사유를 인식한다 (사유별 핸들러 대신 공통 경로가 쓴다)."""
+    for reason, aliases in _WITHDRAWAL_REASON_ALIASES.items():
+        if any(alias in text for alias in aliases):
+            return reason
+    return None
+
+
+def _early_withdrawal_deadline_response(question: str) -> tuple[str, list[RetrievedItem]] | None:
+    """중도인출 신청기한을 계산하고, 신청일 후보가 있으면 기한 안인지까지 판정한다.
+
+    사유별로 핸들러를 만들면(요양_신청기한판정, 주택구입_신청기한 ...) 사유가 늘 때마다
+    같은 코드를 복제하게 되고, 실제로 "요양·주택구입만 있고 전월세·재난·개인회생은 없는"
+    비대칭이 생겼다. 사유 인식(_detect_withdrawal_reason)과 기한 규정
+    (WITHDRAWAL_DEADLINE_RULES)을 분리해 5개 사유가 같은 경로를 쓰게 한다.
+
+    두 작업을 한 함수가 처리한다 — 질문에 날짜가 몇 개 있느냐로 갈린다:
+      기준일만        -> "언제까지 신청하나요" (날짜계산)
+      기준일 + 신청일 -> "이 날짜면 기한 안인가요" (요건판정, 신청일 여러 개 가능)
+    """
+    text = _compact(question)
+    if "중도인출" not in text:
+        return None
+    if not any(word in text for word in ("언제까지", "기한", "이내", "언제", "신청")):
+        return None
+
+    reason = _detect_withdrawal_reason(text)
+    if reason is None:
+        return None
+    rule = WITHDRAWAL_DEADLINE_RULES[reason]
+    period = f"{rule.years}년" if rule.years else f"{rule.months}개월"
+
+    source = f"{rule.source_doc} 중도인출 {reason} 신청기한 규칙"
+    content = (
+        f"{reason} 사유의 중도인출 신청기한은 {rule.basis_event}로부터 {period} 이내입니다. "
+        f"원문은 기간을 일수로 환산하지 않으므로 달력 기준으로 판정합니다. "
+        f"{rule.note} "
+        "중도인출 원문에는 휴일·영업시간·신청 도달시점 처리 기준이 명시되어 있지 않습니다."
+    )
+    caveat = (
+        f"다만 이 판정은 적어주신 날짜가 실제 {rule.basis_event}·신청일이라는 전제에서의 "
+        "**신청기한 판정**입니다. 사유 자체의 요건과 증빙서류는 별도로 확인되어야 합니다. "
+        "또한 제공 문서에는 휴일·영업시간·신청서 작성일/접수일 기준이 명확히 적혀 있지 않아 "
+        "그 부분은 금융기관 확인이 필요합니다."
+    )
+
+    dates = _parse_korean_dates(text)
+    if not dates:
+        # 날짜가 없으면 규정만 안내한다(기준일을 지어내지 않는다).
+        draft = (
+            f"{reason} 사유로 중도인출을 신청하는 경우, 신청기한은 "
+            f"**{rule.basis_event}로부터 달력 기준 {period} 이내**입니다.\n\n"
+            f"{rule.note}\n\n{caveat}"
+        )
+        return draft, _context(source, content)
+
+    basis_date = dates[0]
+    request_dates = dates[1:]
+    deadline = calculate_deadline(reason, basis_date)
+    # 연도 없이 "3월 1일"로만 말한 경우 연도를 붙여 답하면 지어낸 정보가 된다.
+    mention = _parse_first_korean_date_mention(text)
+    has_year = bool(mention and mention[0] is not None)
+    fmt = _format_date if has_year else _format_month_day
+
+    if not request_dates:
+        draft = (
+            f"**{fmt(basis_date)}이 {_with_particle(rule.basis_event, chr(51060)+chr(46972)+chr(45716), chr(46972)+chr(45716))} 전제**라면, "
+            f"달력 기준 {period} 이내의 "
+            f"신청기한은 **{fmt(deadline)}까지**로 봅니다.\n\n{caveat}"
+        )
+        return draft, _context(source, content)
+
+    judgement_lines = [
+        f"- {fmt(d)} 신청: "
+        + ("신청기한 안에 들어갑니다." if d <= deadline else "신청기한이 지난 것으로 봅니다.")
+        for d in request_dates
+    ]
+    draft = (
+        f"{rule.basis_event}이 {fmt(basis_date)}이면 신청기한은 **달력 기준 {period} 이내**, "
+        f"즉 {fmt(deadline)}까지로 판정합니다.\n\n"
+        + "\n".join(judgement_lines)
+        + f"\n\n{caveat}"
+    )
+    return draft, _context(source, content)
 
 def _early_withdrawal_general_response(question: str) -> tuple[str, list[RetrievedItem]]:
     source = "doc46~doc50 중도인출 규칙"
@@ -302,7 +496,8 @@ def _early_withdrawal_general_response(question: str) -> tuple[str, list[Retriev
         "무주택자 주택구입, 재난피해입니다. 요양은 DC에서 직전 1년 의료비가 직전년도 연간임금총액의 "
         "12.5%를 초과해야 하며, IRP에는 이 비율 기준이 적용되지 않습니다. 개인회생·파산은 결정일 또는 "
         "선고일로부터 5년 이내 요건이 있습니다. 전월세보증금과 주택구입은 잔금지급일 또는 소유권 이전 "
-        "등기일로부터 1개월 이내 신청 요건이 있습니다. 재난피해는 피해발생일로부터 3개월 이내가 원칙입니다."
+        "등기접수일로부터 달력 기준 1개월 이내 신청 요건이 있습니다. 재난피해는 피해발생일로부터 "
+        "달력 기준 3개월 이내가 원칙입니다."
     )
     draft = (
         "IRP는 중도인출이 가능한 제도이지만, 아무 때나 인출할 수 있는 것은 아니고 법정 사유가 필요합니다.\n\n"
@@ -314,7 +509,8 @@ def _early_withdrawal_general_response(question: str) -> tuple[str, list[Retriev
         "- 재난피해\n\n"
         "참고로 DB형은 중도인출이 허용되지 않고, DC와 IRP가 중도인출 대상 제도입니다. "
         "각 사유별로 신청기한이나 추가 요건이 다릅니다. 예를 들어 개인회생·파산은 5년 이내 요건, "
-        "전월세보증금·주택구입은 1개월 이내 신청 요건, 재난피해는 3개월 이내 신청 요건이 문제될 수 있습니다."
+        "전월세보증금·주택구입은 달력 기준 1개월 이내 신청 요건, 재난피해는 달력 기준 3개월 이내 "
+        "신청 요건이 문제될 수 있습니다."
     )
     return draft, _context(source, content)
 
@@ -450,7 +646,7 @@ def _detect_transfer_codes(question: str) -> list[str]:
 def _in_kind_transfer_judgement_response(question: str) -> tuple[str, list[RetrievedItem]] | None:
     """보유 상품이 특정된 실물이전 질문에 가능/불가를 판정한다 (목록 나열이 아님).
 
-    "실물이전이 안 되는 경우는?"(목록답변)과 "MMF인데 옮길 수 있나요?"(개별판정)는
+실물이전이 안 되는 경우는?"(목록답변)과 "MMF인데 옮길 수 있나요?"(개별판정)는
     같은 도메인이지만 다른 작업이다. 개별판정용 정형 경로가 없던 동안 라우터가 이런
     질문을 기각했고, LLM이 자유롭게 툴을 고르다 실측에서 실물이전 질문에
     check_product_pension_eligibility(연금계좌 투자 가능 여부)를 호출해 "네, 실물이전
@@ -559,7 +755,7 @@ _LIFETIME_ANNUITY_WORDS = ("종신연금", "종신형", "종신 연금")
 def _extract_age(question: str) -> Optional[int]:
     """질문에서 나이를 뽑는다. 연금 수령 가능 범위(55~120) 밖이면 무시한다.
 
-    "70세 이상 80세 미만" 같은 제도 설명 인용이 섞이면 오탐이 나므로, 나이가 여러 개
+70세 이상 80세 미만" 같은 제도 설명 인용이 섞이면 오탐이 나므로, 나이가 여러 개
     등장하면 특정하지 않는다(None) — 하나로 단정하는 것보다 조건 부족으로 처리하는 편이 안전하다.
     """
     ages = [int(m.group(1)) for m in _AGE_RE.finditer(question or "")]
@@ -649,6 +845,8 @@ _CATEGORY_HANDLERS = {
     "세액공제_계산_입력부족": _tax_credit_calculation_missing_response,
     "세액공제_한도": _tax_credit_limit_response,
     "세금혜택_개요": _tax_benefit_overview_response,
+    "개인세금_입력충분성": personal_tax_response,
+    "중도인출_기한판정": _early_withdrawal_deadline_response,
     "중도인출_일반": _early_withdrawal_general_response,
     "디폴트옵션_자동매수": _default_option_auto_purchase_response,
     "실물이전_불가사유": _in_kind_transfer_block_response,

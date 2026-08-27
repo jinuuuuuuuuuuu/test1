@@ -14,7 +14,11 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field
 
 from src.agents.context import format_conversation_history
-from src.agents.deterministic_info import candidate_categories
+from src.agents.deterministic_info import (
+    CODE_OVERRIDABLE_CATEGORIES,
+    candidate_categories,
+    deterministic_response_for,
+)
 from src.agents.llm import get_llm, invoke_with_retry
 from src.agents.state import PensionAgentState
 from src.storage.queries import find_asset_overlap
@@ -105,6 +109,14 @@ ROUTER_SYSTEM_PROMPT = """당신은 연금 상담 AI의 질문 분류 게이트�
    - 세액공제_한도: 세액공제 대상 납입한도(600만원/900만원)나 공제율이 몇 %인지 등
      제도 자체의 한도·기준을 묻는 질문 (본인 수치를 대입한 계산 요청이 아님).
    - 세금혜택_개요: 연금계좌의 세금 혜택 전반을 개괄적으로 설명해달라는 질문.
+   - 개인세금_입력충분성: 사용자가 본인 나이·수령금액·재원·수령방식 일부를 제시하고
+     "세금은/얼마 내/계산"처럼 개인 세금 판정·계산을 묻는 질문. 이 카테고리는 입력값을
+     임의 가정하지 않고, 충분하면 규칙으로 세율·세액을 계산하며 부족하면 필요한 정보만 묻습니다.
+   - 중도인출_기한판정: 중도인출 **신청기한**을 묻거나("언제까지 신청해야 하나요"),
+     특정 날짜가 기한 안인지 판정을 요구하는 질문("2월 28일에 신청하면 되나요").
+     5개 사유(요양·개인회생파산·전월세보증금·주택구입·재난피해) 모두 이 카테고리입니다.
+     기준일만 있으면 마감일을 계산하고, 신청일 후보가 함께 있으면 각각 기한 안인지
+     판정합니다. ⚠️ 사유별 가능 여부·요건을 묻는 질문(기한과 무관)은 여기가 아닙니다.
    - 중도인출_일반: "중도인출이 어떤 경우에 가능한가요"처럼 중도인출 가능 사유 전체
      목록을 묻는 질문. ⚠️ 질문이 이미 요양/개인회생/파산/전월세보증금/주택구입/재난피해
      같은 특정 사유 하나를 콕 짚어 그 사유로 가능한지 묻고 있다면 이 카테고리가 아니라
@@ -160,6 +172,8 @@ class RouterDecision(BaseModel):
         "세액공제_계산_입력부족",
         "세액공제_한도",
         "세금혜택_개요",
+        "개인세금_입력충분성",
+        "중도인출_기한판정",
         "중도인출_일반",
         "디폴트옵션_자동매수",
         "실물이전_불가사유",
@@ -222,6 +236,27 @@ def _drop_product_intent_for_deterministic_info(
     return remaining or ["정보형"]
 
 
+def _restore_rejected_category(category: str, candidates: list[str], question: str) -> str:
+    """라우터가 잘못 기각한 정형 카테고리를 코드가 되살린다 — 안전이 확인된 것만.
+
+    실측: "개인세금_입력충분성"이 후보로 정확히 주어져도 3/3 "해당없음"으로 기각됐고,
+    프롬프트 문구 조정으로는 안정적으로 고쳐지지 않았다(상위 판정 원칙 블록을 어떤
+    형태로 남겨도 재현). 프롬프트 순종에 의존할 수 없는 유형이라 코드로 강제한다.
+
+    적용 범위는 CODE_OVERRIDABLE_CATEGORIES로 좁힌다. 핸들러가 "이 카테고리가 실제로
+    맞는 상황인지"를 스스로 판단하는 카테고리만 담겨 있어(아니면 None), 되살려도
+    엉뚱한 정형 답변이 나가지 않는다.
+    """
+    if category != "해당없음":
+        return category
+    for candidate in candidates:
+        if candidate not in CODE_OVERRIDABLE_CATEGORIES:
+            continue
+        if deterministic_response_for(candidate, question) is not None:
+            return candidate
+    return category
+
+
 def _enforce_candidate_scope(category: str, candidates: list[str]) -> str:
     """라우터가 후보 밖 카테고리를 고르면 "해당없음"으로 되돌린다.
 
@@ -281,6 +316,9 @@ def build_router_node():
         )
         deterministic_category = _enforce_candidate_scope(
             decision.deterministic_category, candidates
+        )
+        deterministic_category = _restore_rejected_category(
+            deterministic_category, candidates, state["question"]
         )
         intent = _drop_product_intent_for_deterministic_info(
             intent, deterministic_category, matched_funds
