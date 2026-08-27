@@ -188,6 +188,11 @@ def _tool_trace_lines(state: PensionAgentState) -> list[str]:
                 "  - LLM이 상품 검색 툴을 호출하지 않아, 코드가 투자설명서 DB를 직접 조회해"
                 " 후보를 구성 (폴백 경로 — 아래 근거는 이 조회 결과)"
             )
+        elif node == "product_agent" and state.get("retrieved_context"):
+            lines.append(
+                "  - 정형 상품 정책/DB 조회 경로 실행 — 사전 매핑된 근거와 함께 응답 생성"
+                " (툴 호출 없음)"
+            )
         elif node == "info_agent" and state.get("deterministic_info") and state.get("retrieved_context"):
             lines.append(
                 "  - 정형 규칙 핸들러 실행 — 사전 매핑된 근거와 함께 응답 생성"

@@ -474,3 +474,53 @@ def test_explicit_withdrawal_plan_request_is_kept_when_unanswered():
 
     assert out["requirements_met"] is False
     assert out["missing_requirements"] == ["중도인출이 가능한 다른 퇴직연금 종류에 대한 정보"]
+
+
+def test_housing_deposit_withdrawal_tax_does_not_expand_to_lease_loan():
+    from src.agents.verification import apply_requirement_scope_override
+
+    verification = {
+        "grounded": True,
+        "issues": [],
+        "premise_issues": [
+            "질문은 '전세 중도인출'에 관한 것이지만, 초안은 퇴직연금 관련 내용을 다루고 있어 질문에 맞지 않음"
+        ],
+        "requirements_met": False,
+        "missing_requirements": ["전세 대출 및 중도상환 수수료 관련 정보"],
+    }
+    draft = (
+        "**세금**\n"
+        "- 무주택 전월세보증금은 근퇴법상 중도인출 사유입니다.\n"
+        "- 세액공제 받은 납입금·운용수익 재원은 16.5% 기타소득세로 안내되어 있습니다."
+    )
+
+    out = apply_requirement_scope_override(verification, "전세 중도인출하려는데 세금 어떻게 돼?", draft)
+
+    assert out["requirements_met"] is True
+    assert out["premise_issues"] == []
+    assert out["missing_requirements"] == []
+
+
+def test_alternative_withdrawal_plan_question_does_not_create_inferred_db_premise():
+    from src.agents.verification import apply_requirement_scope_override
+
+    verification = {
+        "grounded": True,
+        "issues": [],
+        "premise_issues": [
+            "중도인출 가능한 다른 제도가 있는지 묻는 질문에 대해 'DB형이 아니면 중도인출 가능하다'라는 잘못된 전제가 있음"
+        ],
+        "requirements_met": False,
+        "missing_requirements": [],
+    }
+    draft = "중도인출 가능한 제도는 DC와 IRP입니다. 다만 법정 사유를 충족해야 합니다."
+
+    out = apply_requirement_scope_override(
+        verification,
+        "DB형은 안 되면 중도인출 가능한 다른 제도는 뭐가 있어?",
+        draft,
+    )
+
+    assert out["requirements_met"] is True
+    assert out["premise_issues"] == []
+    assert out["missing_requirements"] == []

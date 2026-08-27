@@ -120,7 +120,7 @@ def test_early_withdrawal_medical_date_question_does_not_invent_exact_judgement(
 
     draft, context = deterministic_response_for("중도인출_기한판정", question)
 
-    assert "요양종료일로부터 1개월 이내" in draft
+    assert "요양종료일 이후 1개월 이내" in draft
     assert "DB 근거만으로 정확히 판정하지 않겠습니다" in draft
     assert "2026년 2월 28일 신청: 신청기한 안" not in draft
     assert "2026년 3월 1일 신청: 신청기한이 지난" not in draft
@@ -137,7 +137,7 @@ def test_early_withdrawal_home_purchase_deadline_question_gets_calendar_deadline
 
     # 연도 없이 "3월 1일"이라고만 하면 기준일을 확정할 수 없으므로 규정을 안내한다 —
     # 연도를 임의로 채워 "2026년 4월 1일까지"라고 답하면 지어낸 정보가 된다.
-    assert "소유권 이전 등기접수일로부터 1개월 이내" in draft
+    assert "소유권 이전 등기접수일 기준 1개월 이내" in draft
     assert "정확한 날짜로 계산하는 방식" in draft
     assert "대표적인 중도인출 사유" not in draft
     assert context
@@ -149,7 +149,7 @@ def test_early_withdrawal_home_purchase_general_deadline_question_is_specific():
 
     draft, context = deterministic_response_for("중도인출_기한판정", question)
 
-    assert "소유권 이전 등기접수일로부터 1개월 이내" in draft
+    assert "소유권 이전 등기접수일 기준 1개월 이내" in draft
     assert "정확한 날짜로 계산하는 방식" in draft
     assert "대표적인 중도인출 사유" not in draft
     assert "6개월 이상 요양" not in draft
@@ -394,9 +394,9 @@ def test_withdrawal_deadline_covers_every_reason_without_exact_dates():
         "개인회생": "개인회생 결정일이 2026년 3월 10일인데 중도인출 언제까지 신청 가능한가요?",
     }
     expected_rules = {
-        "요양": "요양종료일로부터 1개월 이내",
-        "전월세": "잔금지급일로부터 1개월 이내",
-        "주택구입": "소유권 이전 등기접수일로부터 1개월 이내",
+        "요양": "요양종료일 이후 1개월 이내",
+        "전월세": "잔금지급일 이후 1개월 이내",
+        "주택구입": "소유권 이전 등기접수일 기준 1개월 이내",
         "재난": "피해발생일로부터 3개월 이내",
         "개인회생": "개인회생절차개시 결정일 또는 파산선고일로부터 5년 이내",
     }
@@ -416,7 +416,7 @@ def test_withdrawal_deadline_does_not_judge_multiple_request_dates_from_db_only(
     )
     draft, _ = deterministic_response_for("중도인출_기한판정", question)
 
-    assert "요양종료일로부터 1개월 이내" in draft
+    assert "요양종료일 이후 1개월 이내" in draft
     assert "DB 근거만으로 정확히 판정하지 않겠습니다" in draft
     assert "신청기한 안에 들어갑니다" not in draft
     assert "신청기한이 지난" not in draft
@@ -587,3 +587,16 @@ def test_db_house_purchase_action_question_corrects_db_scope():
     assert "DB형 퇴직연금은 중도인출이 허용되지 않습니다" in draft
     assert "무주택 주택구입 같은 법정 사유" in draft
     assert "전월세보증금 같은" not in draft
+
+
+def test_db_alternative_withdrawal_plan_question_answers_plan_types_directly():
+    draft, _ = deterministic_response_for(
+        "중도인출_요건판정",
+        "DB형은 안 되면 중도인출 가능한 다른 제도는 뭐가 있어?",
+    )
+
+    assert draft.startswith("중도인출 가능한 제도는 DC와 IRP입니다")
+    assert "법정 사유를 충족해야 합니다" in draft
+    assert "DB형 퇴직연금은 중도인출이 허용되지 않습니다" in draft
+    assert "법정 사유 같은 법정 사유" not in draft
+    assert not draft.startswith("아니요")

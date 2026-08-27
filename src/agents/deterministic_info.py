@@ -277,6 +277,26 @@ def _compact(text: str) -> str:
     return re.sub(r"\s+", "", text or "")
 
 
+def _asks_alternative_withdrawal_plan_types(compact_text: str) -> bool:
+    if "중도인출" not in compact_text:
+        return False
+    return any(
+        marker in compact_text
+        for marker in (
+            "다른제도",
+            "다른퇴직연금",
+            "다른계좌",
+            "가능한제도",
+            "가능한종류",
+            "어떤제도",
+            "어떤종류",
+            "무슨제도",
+            "뭐가있",
+            "무엇이있",
+        )
+    )
+
+
 def _won(amount: int) -> str:
     if amount % 10_000 == 0:
         return f"{amount // 10_000:,}만원"
@@ -731,6 +751,8 @@ def _withdrawal_deadline_section(reason: str) -> tuple[str, list[RetrievedItem]]
 
 def _withdrawal_deadline_phrase(reason: str, basis_event: str, period: str) -> str:
     """원문 표현에 가까운 신청기한 문구를 만든다."""
+    if reason == "요양":
+        return f"요양종료일 이후 {period} 이내"
     if reason == "무주택전월세":
         return f"잔금지급일 이후 {period} 이내"
     if reason == "무주택주택구입":
@@ -757,10 +779,15 @@ def _withdrawal_eligibility_section(question: str, reason: str | None) -> tuple[
         "무주택자 주택구입, 재난피해입니다."
     )
     if "DB형" in question or re.search(r"\bDB\b", question, flags=re.IGNORECASE):
+        reason_sentence = (
+            f"{reason_label} 같은 법정 사유가 있더라도"
+            if reason
+            else "법정 사유가 있더라도"
+        )
         section = (
             "**가능 여부**\n"
             "- DB형 퇴직연금은 중도인출이 허용되지 않습니다.\n"
-            f"- {reason_label} 같은 법정 사유가 있더라도 중도인출 가능한 제도는 DC와 IRP입니다.\n"
+            f"- {reason_sentence} 중도인출 가능한 제도는 DC와 IRP입니다.\n"
             "- 아래 신청기한과 필요서류는 DC 또는 IRP에서 해당 사유로 중도인출하는 경우의 기준입니다."
         )
     elif reason:
@@ -911,10 +938,11 @@ def _early_withdrawal_deadline_response(question: str) -> tuple[str, list[Retrie
     rule = WITHDRAWAL_DEADLINE_RULES[reason]
     reason_label = _WITHDRAWAL_REASON_LABELS.get(reason, reason)
     period = f"{rule.years}년" if rule.years else f"{rule.months}개월"
+    deadline_phrase = _withdrawal_deadline_phrase(reason, rule.basis_event, period)
 
     source = f"{rule.source_doc} 중도인출 {reason_label} 신청기한 규칙"
     content = (
-        f"{reason_label} 사유의 중도인출 신청기한은 {rule.basis_event}로부터 {period} 이내입니다. "
+        f"{reason_label} 사유의 중도인출 신청기한은 {deadline_phrase}입니다. "
         "제공 DB에는 해당 기간을 정확한 날짜로 환산하는 방식이 명시되어 있지 않습니다. "
         f"{rule.note} "
         "중도인출 원문에는 30일/90일 환산 여부, 초일산입 여부, 말일·휴일 처리, "
@@ -922,7 +950,7 @@ def _early_withdrawal_deadline_response(question: str) -> tuple[str, list[Retrie
         "calculation_basis=not_defined_in_source."
     )
     caveat = (
-        "다만 제공 자료에는 이 기간을 정확한 날짜로 계산하는 방식, 초일산입 여부, 말일·휴일 "
+        "제공 자료에는 이 기간을 정확한 날짜로 계산하는 방식, 초일산입 여부, 말일·휴일 "
         "처리, 신청서 작성일/접수일 기준이 명확히 적혀 있지 않습니다. 따라서 DB 근거만으로는 "
         "특정 날짜가 정확한 마감일인지 또는 신청기한 안인지 단정하지 않겠습니다."
     )
@@ -932,7 +960,7 @@ def _early_withdrawal_deadline_response(question: str) -> tuple[str, list[Retrie
         # 날짜가 없으면 규정만 안내한다(기준일을 지어내지 않는다).
         draft = (
             f"{reason_label} 사유로 중도인출을 신청하는 경우, 신청기한은 "
-            f"**{rule.basis_event}로부터 {period} 이내**입니다.\n\n"
+            f"**{deadline_phrase}**입니다.\n\n"
             f"{rule.note}\n\n{caveat}"
         )
         return draft, _context(source, content)
@@ -947,7 +975,7 @@ def _early_withdrawal_deadline_response(question: str) -> tuple[str, list[Retrie
     if not request_dates:
         draft = (
             f"**{fmt(basis_date)}이 {_with_particle(rule.basis_event, '이라는', '라는')} 조건**이라면, "
-            f"제공 자료에서 확인되는 신청기한 규칙은 **{rule.basis_event}로부터 {period} 이내**입니다.\n\n"
+            f"제공 자료에서 확인되는 신청기한 규칙은 **{deadline_phrase}**입니다.\n\n"
             f"{caveat}"
         )
         return draft, _context(source, content)
@@ -955,8 +983,8 @@ def _early_withdrawal_deadline_response(question: str) -> tuple[str, list[Retrie
     request_date_text = ", ".join(fmt(d) for d in request_dates)
     draft = (
         f"{rule.basis_event}이 {fmt(basis_date)}이면 제공 자료에서 확인되는 신청기한 규칙은 "
-        f"**{rule.basis_event}로부터 {period} 이내**입니다.\n\n"
-        f"다만 {request_date_text} 신청이 각각 기한 안인지 여부는 DB 근거만으로 정확히 판정하지 않겠습니다.\n\n"
+        f"**{deadline_phrase}**입니다.\n\n"
+        f"{request_date_text} 신청이 각각 기한 안인지 여부는 DB 근거만으로 정확히 판정하지 않겠습니다.\n\n"
         f"{caveat}"
     )
     return draft, _context(source, content)
@@ -1003,11 +1031,23 @@ def _early_withdrawal_eligibility_response(question: str) -> tuple[str, list[Ret
     )
 
     if "DB형" in question or re.search(r"\bDB\b", question, flags=re.IGNORECASE):
+        if _asks_alternative_withdrawal_plan_types(text):
+            draft = (
+                "중도인출 가능한 제도는 DC와 IRP입니다.\n\n"
+                "다만 DC와 IRP도 언제든 중도인출할 수 있는 것은 아니며, 법정 사유를 충족해야 합니다. "
+                "DB형 퇴직연금은 중도인출이 허용되지 않습니다."
+            )
+            return draft, _context(source, content)
         reason = _detect_withdrawal_reason(text)
         reason_label = _WITHDRAWAL_REASON_LABELS.get(reason or "", "법정 사유")
+        reason_sentence = (
+            f"{reason_label} 같은 법정 사유가 있더라도"
+            if reason
+            else "법정 사유가 있더라도"
+        )
         draft = (
             "아니요. DB형 퇴직연금은 중도인출이 허용되지 않습니다.\n\n"
-            f"{reason_label} 같은 법정 사유가 있더라도 중도인출 가능한 제도는 DC와 IRP입니다. "
+            f"{reason_sentence} 중도인출 가능한 제도는 DC와 IRP입니다. "
             "따라서 질문 조건이 DB형이라면 중도인출할 수 없다고 보는 것이 맞습니다."
         )
         return draft, _context(source, content)
