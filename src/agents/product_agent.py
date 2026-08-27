@@ -233,7 +233,7 @@ def _extract_horizon(text: str) -> str | None:
 
 
 def _extract_risk_profile(text: str) -> str | None:
-    if any(word in text for word in ("안정형", "보수", "안정적", "크게 잃지", "손실 싫", "낮은 위험", "위험등급 낮")):
+    if any(word in text for word in ("안정형", "보수", "안정적", "안전한", "안전하게", "크게 잃지", "손실 싫", "낮은 위험", "위험등급 낮")):
         return "안정형"
     if any(word in text for word in ("중립형", "중립", "약간의 변동성", "어느 정도", "중간")):
         return "중립형"
@@ -266,9 +266,13 @@ def _extract_age(text: str) -> str | None:
 
 
 def _extract_preferred_product_type(text: str) -> str | None:
-    for product_type in ("TDF", "채권혼합형", "채권형", "주식형", "인덱스", "배당형", "원리금보장형"):
+    if any(word in text for word in ("미국 주식", "미국주식", "해외주식", "해외 주식")):
+        return "해외주식형 펀드"
+    if "국내주식" in text or "국내 주식" in text:
+        return "국내주식형 펀드"
+    for product_type in ("TDF", "채권혼합형", "채권형", "혼합형", "주식형", "인덱스", "배당형", "원리금보장형"):
         if product_type in text:
-            return product_type
+            return "혼합형 펀드" if product_type == "혼합형" else product_type
     return None
 
 
@@ -303,11 +307,15 @@ def _clarification_answer(profile: dict, missing: list[str]) -> str:
     known = _format_profile_summary(profile)
     missing_labels = ", ".join(_PROFILE_FIELD_LABELS.get(field, field) for field in missing)
     known_block = f"\n\n현재 확인된 조건은 다음과 같습니다.\n{known}" if known else ""
+    conditional = _conditional_recommendation_guidance(profile)
+    scenario = _what_if_scenario_block(profile)
     return (
         "현재 질문만으로는 계좌별 투자 제한과 투자성향을 확인할 수 없어 특정 상품을 바로 추천하기 어렵습니다."
         f"{known_block}\n\n"
         "현재 정보만으로는 연금계좌에서 일반적으로 고려할 수 있는 상품 유형을 설명하는 정도는 가능하지만, "
         "개별 펀드명·상품코드·수익률 순위를 확정 추천하는 것은 안전하지 않습니다.\n\n"
+        f"{conditional}"
+        f"{scenario}"
         f"구체적인 추천을 위해 부족한 정보는 {missing_labels}입니다. 다음 정보를 한 번에 알려주세요.\n"
         + "\n".join(f"{i}. {question}" for i, question in enumerate(questions, start=1))
         + "\n\n위 정보가 확인되지 않은 상태에서는 특정 펀드명이나 상품코드를 임의로 추천하지 않겠습니다."
@@ -344,6 +352,7 @@ def _format_profile_summary(profile: dict) -> str:
         "investment_goal": "투자 목적",
         "age_or_retirement_horizon": "연령/은퇴 관련 정보",
         "loss_tolerance": "손실 감내 수준",
+        "preferred_product_type": "관심 상품 유형",
     }
     for key, label in labels.items():
         if profile.get(key):
@@ -362,6 +371,7 @@ def _product_type_recommendation_answer(profile: dict) -> str:
         f"으로 정리됩니다.\n\n"
         f"이 조건에서는 먼저 아래 상품 유형을 고려하는 편이 좋습니다.\n{type_lines}\n\n"
         f"{reasons}\n\n"
+        f"{_what_if_scenario_block(profile)}"
         "위 조건에 맞는 구체적인 상품까지 추천받고 싶다면 `상품추천`을 입력해 주세요."
     )
 
@@ -374,9 +384,111 @@ def _product_type_reasons(types: list[str]) -> str:
         "원리금보장형 상품": "원리금보장형 상품은 수익률 기대는 낮지만 손실 가능성을 낮추고 안정성을 우선할 때 적합합니다.",
         "인덱스 펀드": "인덱스 펀드는 장기적으로 시장 평균 수익을 추구하는 방식이라 투자 기간이 길고 변동성을 감수할 수 있을 때 고려할 수 있습니다.",
         "주식형 펀드": "주식형 펀드는 기대수익이 높은 대신 변동성이 커서 공격형 성향에 더 적합합니다.",
+        "해외주식형 펀드": "해외주식형 펀드는 장기 성장자산에 투자할 수 있지만 주식시장 변동과 환율 영향을 함께 받습니다.",
+        "국내주식형 펀드": "국내주식형 펀드는 국내 증시 상승의 수혜를 기대할 수 있지만 국내 경기와 증시 변동에 민감합니다.",
+        "혼합형 펀드": "혼합형 펀드는 주식과 채권을 함께 담아 한쪽 자산에만 집중하는 위험을 낮추려는 목적에 맞습니다.",
         "배당형 펀드": "배당형 펀드는 배당 성향이 있는 자산에 투자해 장기 현금흐름과 수익을 함께 기대할 때 고려할 수 있습니다.",
     }
     return "\n".join(f"- {reason_map.get(product_type, product_type)}" for product_type in types)
+
+
+def _conditional_recommendation_guidance(profile: dict) -> str:
+    """조건이 부족할 때도 개별 상품 대신 상품 유형 수준의 안전한 방향을 제시한다."""
+    account = profile.get("account_type")
+    risk = profile.get("risk_profile")
+    loss = profile.get("loss_tolerance")
+    horizon = profile.get("investment_horizon") or profile.get("age_or_retirement_horizon")
+    preferred = profile.get("preferred_product_type")
+
+    lines = ["다만 투자성향과 투자기간에 따라 일반적으로 다음 방향을 고려할 수 있습니다."]
+    if preferred:
+        lines.append(
+            f"- 관심 상품 유형이 {preferred}라면, 해당 유형이 계좌 제한과 본인 위험성향에 맞는지 먼저 확인하는 편이 좋습니다."
+        )
+    if risk == "안정형" or loss:
+        lines.append(
+            "- 안정적인 성향이라면 채권형·원리금보장형처럼 변동성이 상대적으로 낮은 상품의 비중을 높이는 방향을 검토할 수 있습니다."
+        )
+    elif risk == "중립형":
+        lines.append(
+            "- 중립형 성향이라면 TDF나 채권혼합형처럼 주식과 채권이 분산된 상품을 우선 검토할 수 있습니다."
+        )
+    elif risk == "공격형":
+        lines.append(
+            "- 공격형 성향이고 투자기간이 충분히 길다면 주식형·인덱스형처럼 성장자산 비중이 높은 상품을 검토할 수 있습니다."
+        )
+    else:
+        lines.extend(
+            [
+                "- 투자기간이 길고 공격적인 성향이라면 주식 등 성장자산 비중이 상대적으로 높은 상품이나 TDF를 검토할 수 있습니다.",
+                "- 투자기간이 길지만 중립적인 성향이라면 주식과 채권이 분산된 TDF·혼합형 상품을 검토할 수 있습니다.",
+                "- 은퇴가 가깝거나 안정적인 성향이라면 채권형·원리금보장형 등 변동성이 상대적으로 낮은 상품의 비중을 높이는 방향을 고려할 수 있습니다.",
+            ]
+        )
+    if horizon and "장기" in horizon:
+        lines.append("- 장기 투자라면 단기 수익률보다 위험자산 비중, 비용, 리밸런싱 방식이 더 중요해질 수 있습니다.")
+    if account in ("IRP", "DC"):
+        lines.append("- IRP/DC에는 위험자산 투자 제한이 있으므로 실제 상품 선정 전 계좌 내 투자 가능 범위를 확인해야 합니다.")
+    return "\n".join(lines) + "\n\n"
+
+
+def _what_if_scenario_block(profile: dict) -> str:
+    scenario = _scenario_kind(profile)
+    if scenario is None:
+        return ""
+    scenario_map = {
+        "overseas_equity": (
+            "**시장 상황이 바뀐다면?**\n"
+            "- 미국·해외 증시가 상승하면 주식가격 상승이 성과에 긍정적으로 작용할 수 있습니다.\n"
+            "- 반대로 해외 증시가 하락하면 주식 비중이 높은 만큼 변동성과 손실 가능성도 커질 수 있습니다.\n"
+            "- 환노출형 상품이라면 원/달러 환율 상승은 원화 환산 성과에 긍정적일 수 있지만, 환율 하락은 수익률을 낮추는 요인이 될 수 있습니다.\n\n"
+        ),
+        "domestic_equity": (
+            "**시장 상황이 바뀐다면?**\n"
+            "- 국내 증시가 상승하면 국내주식형 상품 성과에 긍정적으로 작용할 수 있습니다.\n"
+            "- 국내 증시가 하락하거나 특정 업종이 부진하면 손실 가능성이 커질 수 있어 분산 여부를 함께 봐야 합니다.\n\n"
+        ),
+        "bond": (
+            "**시장 상황이 바뀐다면?**\n"
+            "- 금리가 하락하면 기존 채권 가격이 올라 채권형 상품 성과에 긍정적일 수 있습니다.\n"
+            "- 금리가 상승하면 채권 가격이 하락해 단기 성과가 부진할 수 있으므로 듀레이션과 신용위험을 함께 확인해야 합니다.\n\n"
+        ),
+        "tdf": (
+            "**시장 상황이 바뀐다면?**\n"
+            "- TDF는 은퇴시점에 맞춰 위험자산 비중을 조정하지만, 증시가 급락하면 주식 편입 비중에 따라 손실이 발생할 수 있습니다.\n"
+            "- 은퇴시점이 가까울수록 위험자산 비중이 낮아지는 구조인지 확인하는 것이 중요합니다.\n\n"
+        ),
+        "mixed": (
+            "**시장 상황이 바뀐다면?**\n"
+            "- 혼합형 상품은 주식과 채권을 함께 담지만, 두 자산이 동시에 부진하면 손실을 완전히 피할 수는 없습니다.\n"
+            "- 주식·채권 비중과 리밸런싱 방식에 따라 방어력과 기대수익이 달라집니다.\n\n"
+        ),
+        "return_or_comparison": (
+            "**시장 상황이 바뀐다면?**\n"
+            "- 최근 수익률은 시장환경, 비용, 환율, 자산배분에 따라 달라지며 미래 수익을 보장하지 않습니다.\n"
+            "- 상품 비교 시에는 각 상품에 불리한 시장환경이 무엇인지 함께 보는 편이 안전합니다.\n\n"
+        ),
+    }
+    return scenario_map[scenario]
+
+
+def _scenario_kind(profile: dict) -> str | None:
+    preferred = profile.get("preferred_product_type") or ""
+    text = " ".join(str(value) for value in profile.values())
+    target = f"{preferred} {text}"
+    if any(word in target for word in ("해외주식", "미국 주식", "미국주식", "미국", "해외")):
+        return "overseas_equity"
+    if "국내주식" in target or "국내 주식" in target:
+        return "domestic_equity"
+    if "채권" in target:
+        return "bond"
+    if "TDF" in target:
+        return "tdf"
+    if "혼합" in target:
+        return "mixed"
+    if any(word in target for word in ("수익률", "비교")):
+        return "return_or_comparison"
+    return None
 
 
 def _recommendation_flow_response(state: PensionAgentState) -> tuple[str, list[RetrievedItem], dict, bool] | None:
