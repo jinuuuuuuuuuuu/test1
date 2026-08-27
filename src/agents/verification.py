@@ -284,6 +284,21 @@ def is_benign_condition_statement(text: str) -> bool:
         )
     ):
         return True
+    if "중도인출" in text and any(
+        marker in text
+        for marker in (
+            "때문에",
+            "하려고",
+            "신청",
+            "전세보증금",
+            "전월세",
+            "주택구입",
+            "집을",
+            "DB형",
+            "IRP",
+        )
+    ):
+        return True
     return any(marker in text for marker in _BENIGN_CONDITION_MARKERS)
 
 

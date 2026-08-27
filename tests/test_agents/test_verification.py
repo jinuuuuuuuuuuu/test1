@@ -369,6 +369,8 @@ def test_real_user_premises_are_kept(text):
     "나이가 74세이므로 세금 관련 구체적인 정보를 요청함",
     "74세에 연 1,000만원을 연금으로 받을 때 세금",
     "연금저축 600만원과 IRP 300만원, 총급여 5,000만원 조건에서 세액공제",
+    "전세보증금 때문에 IRP 중도인출",
+    "무주택자인데 집을 사려고 퇴직연금 중도인출하려고 함",
 ])
 def test_benign_user_conditions_are_not_premise_issues(text):
     from src.agents.verification import split_premise_issues

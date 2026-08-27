@@ -84,6 +84,18 @@ def test_personal_tax_beats_age_rate_when_question_asks_actual_case():
     )
 
 
+def test_composite_category_beats_single_task_categories():
+    question = "전세보증금 때문에 IRP 중도인출하려고 하는데, 언제까지 신청해야 하고 필요한 서류랑 세금은 어떻게 되나요?"
+    candidates = candidate_categories(question)
+
+    assert "복합정보_태스크플랜" in candidates
+    assert "개인세금_입력충분성" in candidates
+    assert (
+        _prioritize_collision_category("개인세금_입력충분성", candidates, question)
+        == "복합정보_태스크플랜"
+    )
+
+
 def test_general_age_rate_question_is_not_forced_to_personal_tax():
     question = "연령별 연금소득세율 표 알려줘"
     candidates = candidate_categories(question)
@@ -126,3 +138,11 @@ def test_router_restore_rejected_withdrawal_eligibility():
 
     assert "중도인출_요건판정" in candidates
     assert router_module._restore_rejected_category("해당없음", candidates, question) == "중도인출_요건판정"
+
+
+def test_router_restores_rejected_composite_task_plan():
+    question = "무주택자인데 집을 사려고 퇴직연금 중도인출하려고 해요. 신청기한, 필요한 서류, DB형에서도 가능한지 알려주세요."
+    candidates = candidate_categories(question)
+
+    assert candidates[0] == "복합정보_태스크플랜"
+    assert router_module._restore_rejected_category("해당없음", candidates, question) == "복합정보_태스크플랜"
