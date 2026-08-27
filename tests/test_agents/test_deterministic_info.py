@@ -365,3 +365,65 @@ def test_withdrawal_deadline_judges_multiple_request_dates():
 
     assert "2026년 2월 28일 신청: 신청기한 안" in draft
     assert "3월 1일 신청: 신청기한이 지난" in draft
+
+
+# ── 정형 답변의 적합성 게이트 (2026-08-27 구조 수정) ──────────────────
+#
+# 원래 설계는 "후보 생성 → 라우터 확정 → 핸들러 실행(신뢰)"이라, 핸들러 13개 중 10개는
+# 반환 타입에 None이 없어 물러날 방법 자체가 없었다("오늘 점심 뭐 먹지"에도 세액공제
+# 한도표를 반환). 라우터가 유일한 관문일 때는 성립했지만, 라우터를 우회하는 코드
+# 오버라이드(router._restore_rejected_category)가 생기면서 검증 없이 정형 답변이
+# 나가는 구멍이 열렸다.
+#
+# 핸들러 13개에 각각 가드를 붙이는 대신 dispatch 한 곳에서 후보 목록을 재확인한다 —
+# 핸들러가 몇 개든, 앞으로 몇 개가 더 생기든 같은 보호를 받는다.
+
+
+def test_no_category_answers_unrelated_questions():
+    """어떤 카테고리도 무관한 질문에 정형 답변을 내면 안 된다.
+
+    이 테스트는 카테고리 목록 전체를 훑으므로, 새 카테고리가 추가돼도 자동으로
+    같은 검사를 받는다(사람이 목록을 관리할 필요가 없다).
+    """
+    from src.agents.deterministic_info import DETERMINISTIC_CATEGORIES
+
+    unrelated = ["오늘 점심 뭐 먹지", "삼성전자 주가 얼마야?", "부동산 양도세 계산해주세요"]
+    leaking = [
+        category
+        for category in DETERMINISTIC_CATEGORIES
+        if category != "해당없음"
+        and all(deterministic_response_for(category, q) is not None for q in unrelated)
+    ]
+
+    assert leaking == [], f"무관 질문에 정형 답변을 내는 카테고리: {leaking}"
+
+
+def test_dispatch_rejects_category_outside_candidates():
+    """후보에 없는 카테고리로 호출하면 핸들러를 실행하지 않는다."""
+    # "세액공제 한도"는 중도인출 질문의 후보가 아니다.
+    assert deterministic_response_for("세액공제_한도", "중도인출이 어떤 경우에 가능한가요?") is None
+
+
+def test_dispatch_still_runs_for_valid_category():
+    """정상 경로는 그대로 동작해야 한다 (과잉 차단 방지)."""
+    assert deterministic_response_for("세액공제_한도", "세액공제 한도가 얼마인가요?") is not None
+    assert deterministic_response_for("중도인출_일반", "중도인출이 어떤 경우에 가능한가요?") is not None
+
+
+def test_age_rate_category_requires_age_or_receipt_context():
+    """연령별 세율은 나이나 '연금 수령' 문맥이 있어야 후보가 된다.
+
+    "연금"이라는 단어만으로 후보에 넣으면 "연금저축 600만원 납입하고 총급여
+    5000만원인데 세액공제 얼마?"가 나이도 없이 연령별 세율표를 답하게 된다(실측).
+    """
+    assert "연금소득세율_연령별" not in candidate_categories(
+        "연금저축 600만원 납입하고 총급여 5000만원인데 세액공제 얼마?"
+    )
+    assert "연금소득세율_연령별" in candidate_categories("나 74세인데 세금 어떻게 내?")
+    assert "연금소득세율_연령별" in candidate_categories("연금 수령할 때 세금 얼마나 나가요?")
+
+
+def test_candidates_cover_paraphrases_without_domain_keyword():
+    """제도명을 그대로 쓰지 않는 표현도 후보로 잡아야 한다."""
+    assert "디폴트옵션_자동매수" in candidate_categories("저는 기존가입자인데 언제 자동매수되나요?")
+    assert "실물이전_개별판정" in candidate_categories("디폴트옵션 상품도 옮길 수 있나요?")
