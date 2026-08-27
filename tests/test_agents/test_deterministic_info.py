@@ -34,6 +34,19 @@ def test_tax_benefit_overview_candidate_and_response():
     assert "1,500만원" in context[0]["content"]
 
 
+def test_self_employed_tax_benefit_overview_uses_current_limits():
+    question = "개인사업자인데 절세 방법 알려줘."
+
+    assert "세금혜택_개요" in candidate_categories(question)
+    draft, context = deterministic_response_for("세금혜택_개요", question)
+
+    assert "연금저축·IRP를 활용한 절세" in draft
+    assert "연금저축+IRP 합산 연 900만원" in draft
+    assert "종합소득금액 4,500만원 이하이면 16.5%" in draft
+    assert "700만원" not in draft
+    assert "개인사업 대표는 퇴직연금에는 가입할 수 없지만" in context[0]["content"]
+
+
 def test_tax_credit_calculation_missing_response_content():
     question = "제가 받을 수 있는 세액공제 금액을 계산해 주세요."
     assert "세액공제_계산_입력부족" in candidate_categories(question)
@@ -45,6 +58,24 @@ def test_tax_credit_calculation_missing_response_content():
     assert "총급여" in draft
     assert "종합소득금액" in draft
     assert context
+
+
+def test_tax_credit_calculation_runs_when_inputs_are_sufficient():
+    question = "연금저축 600만원, IRP 300만원 넣었고 총급여 5,000만원이면 세액공제 얼마야?"
+
+    draft, context = deterministic_response_for("세액공제_계산_입력부족", question)
+
+    assert "추가로 필요한 정보" not in draft
+    assert "900만원 x 16.5% = 148만 5천원" in draft
+    assert "입력 조건에서는 세액공제 대상 납입액 900만원 x 16.5% = 148만 5천원" in context[0]["content"]
+
+
+def test_tax_credit_limit_answers_pension_savings_only_excess_directly():
+    draft, _ = deterministic_response_for("세액공제_한도", "연금저축 900만원 넣었는데 전부 세액공제 되나요?")
+
+    assert "아니요" in draft
+    assert "연금저축만으로는 600만원까지만 세액공제 대상" in draft
+    assert "연금저축 단독 한도를 넘는 금액: 300만원" in draft
 
 
 def test_personal_tax_question_uses_input_sufficiency_gate_before_general_tax_rules():
@@ -80,7 +111,7 @@ def test_default_option_auto_purchase_candidate_and_response():
     assert context
 
 
-def test_early_withdrawal_medical_date_question_gets_specific_judgement():
+def test_early_withdrawal_medical_date_question_does_not_invent_exact_judgement():
     question = (
         "IRP 가입자입니다. 요양종료일이 2026년 1월 31일이고 신청일이 2026년 2월 28일이면 "
         "중도인출 신청기한 안인가요? 같은 조건에서 3월 1일이면 기한이 지난 건가요?"
@@ -89,9 +120,10 @@ def test_early_withdrawal_medical_date_question_gets_specific_judgement():
 
     draft, context = deterministic_response_for("중도인출_기한판정", question)
 
-    assert "2026년 2월 28일 신청: 신청기한 안" in draft
-    assert "2026년 3월 1일 신청: 신청기한이 지난" in draft
-    assert "달력 기준 1개월" in draft
+    assert "요양종료일로부터 1개월 이내" in draft
+    assert "DB 근거만으로 정확히 판정하지 않겠습니다" in draft
+    assert "2026년 2월 28일 신청: 신청기한 안" not in draft
+    assert "2026년 3월 1일 신청: 신청기한이 지난" not in draft
     assert "30일" not in draft
     assert "12.5" not in draft
     assert context
@@ -105,7 +137,8 @@ def test_early_withdrawal_home_purchase_deadline_question_gets_calendar_deadline
 
     # 연도 없이 "3월 1일"이라고만 하면 기준일을 확정할 수 없으므로 규정을 안내한다 —
     # 연도를 임의로 채워 "2026년 4월 1일까지"라고 답하면 지어낸 정보가 된다.
-    assert "소유권 이전 등기접수일로부터 달력 기준 1개월 이내" in draft
+    assert "소유권 이전 등기접수일로부터 1개월 이내" in draft
+    assert "정확한 날짜로 계산하는 방식" in draft
     assert "대표적인 중도인출 사유" not in draft
     assert context
 
@@ -116,7 +149,8 @@ def test_early_withdrawal_home_purchase_general_deadline_question_is_specific():
 
     draft, context = deterministic_response_for("중도인출_기한판정", question)
 
-    assert "소유권 이전 등기접수일로부터 달력 기준 1개월 이내" in draft
+    assert "소유권 이전 등기접수일로부터 1개월 이내" in draft
+    assert "정확한 날짜로 계산하는 방식" in draft
     assert "대표적인 중도인출 사유" not in draft
     assert "6개월 이상 요양" not in draft
     assert context
@@ -322,14 +356,32 @@ def test_age_tax_candidates_survive_paraphrase():
         assert "연금소득세율_연령별" in candidate_categories(question), question
 
 
+def test_personal_tax_candidates_positive_negative_collision():
+    positive = [
+        "나 74세인데 세금 어떻게 내?",
+        "내 연금 세금 계산해줘",
+        "74세 세율이 궁금한데 제 경우 실제 얼마 내나요?",
+    ]
+    for question in positive:
+        assert "개인세금_입력충분성" in candidate_categories(question), question
+
+    negative = [
+        "연령별 연금소득세율 표 알려줘",
+        "연금소득세 제도를 설명해줘",
+        "70세 이상 세율 기준이 어떻게 돼?",
+    ]
+    for question in negative:
+        assert "개인세금_입력충분성" not in candidate_categories(question), question
+
+
 def test_broadened_candidates_do_not_overtrigger():
     """넓혔다고 무관한 질문까지 후보가 생기면 안 된다."""
     for question in ("IRP가 뭔가요?", "솔로몬 국공채 위험등급 알려줘", "DC와 DB 차이가 뭔가요?"):
         assert candidate_categories(question) == [], question
 
 
-def test_withdrawal_deadline_covers_every_reason():
-    """5개 사유 전부 같은 경로로 기한을 답해야 한다 — 사유별 핸들러 시절의 비대칭 방지.
+def test_withdrawal_deadline_covers_every_reason_without_exact_dates():
+    """5개 사유 전부 같은 경로로 기한 규칙을 답해야 한다 — 사유별 핸들러 시절의 비대칭 방지.
 
     요양·주택구입만 전용 핸들러가 있던 동안 전월세·재난·개인회생 날짜 질문은
     사유 목록 답변으로 빠졌다.
@@ -341,30 +393,47 @@ def test_withdrawal_deadline_covers_every_reason():
         "재난": "재난피해가 2026년 5월 10일에 발생했는데 중도인출 언제까지 신청할 수 있나요?",
         "개인회생": "개인회생 결정일이 2026년 3월 10일인데 중도인출 언제까지 신청 가능한가요?",
     }
-    expected = {
-        "요양": "2026년 2월 28일",
-        "전월세": "2026년 2월 28일",
-        "주택구입": "2026년 4월 20일",
-        "재난": "2026년 8월 10일",
-        "개인회생": "2031년 3월 10일",
+    expected_rules = {
+        "요양": "요양종료일로부터 1개월 이내",
+        "전월세": "잔금지급일로부터 1개월 이내",
+        "주택구입": "소유권 이전 등기접수일로부터 1개월 이내",
+        "재난": "피해발생일로부터 3개월 이내",
+        "개인회생": "개인회생절차개시 결정일 또는 파산선고일로부터 5년 이내",
     }
     for label, question in cases.items():
         assert "중도인출_기한판정" in candidate_categories(question), label
         result = deterministic_response_for("중도인출_기한판정", question)
         assert result is not None, label
-        assert expected[label] in result[0], f"{label}: {result[0][:120]}"
+        assert expected_rules[label] in result[0], f"{label}: {result[0][:160]}"
+        assert "정확한 날짜로 계산하는 방식" in result[0], label
 
 
-def test_withdrawal_deadline_judges_multiple_request_dates():
-    """신청일 후보가 여럿이면 각각 기한 안인지 판정한다(dana 핸들러의 기능을 보존)."""
+def test_withdrawal_deadline_does_not_judge_multiple_request_dates_from_db_only():
+    """신청일 후보가 여럿이어도 DB에 없는 exact-date 계산으로 판정하지 않는다."""
     question = (
         "요양종료일이 2026년 1월 31일이고 신청일이 2026년 2월 28일이면 중도인출 신청기한 "
         "안인가요? 같은 조건에서 3월 1일이면 기한이 지난 건가요?"
     )
     draft, _ = deterministic_response_for("중도인출_기한판정", question)
 
-    assert "2026년 2월 28일 신청: 신청기한 안" in draft
-    assert "3월 1일 신청: 신청기한이 지난" in draft
+    assert "요양종료일로부터 1개월 이내" in draft
+    assert "DB 근거만으로 정확히 판정하지 않겠습니다" in draft
+    assert "신청기한 안에 들어갑니다" not in draft
+    assert "신청기한이 지난" not in draft
+
+
+def test_withdrawal_eligibility_answers_db_plan_directly():
+    draft, _ = deterministic_response_for("중도인출_요건판정", "DB형 퇴직연금인데 전월세보증금 때문에 중도인출 가능해?")
+
+    assert "DB형 퇴직연금은 중도인출이 허용되지 않습니다" in draft
+    assert "대표적인 중도인출 사유" not in draft
+
+
+def test_withdrawal_eligibility_rejects_personal_workout():
+    draft, _ = deterministic_response_for("중도인출_요건판정", "개인워크아웃 중인데 퇴직연금 중도인출 가능한가요?")
+
+    assert "개인워크아웃이나 신용회복은 퇴직연금 중도인출 사유에 해당하지 않습니다" in draft
+    assert "대표적인 중도인출 사유" not in draft
 
 
 # ── 정형 답변의 적합성 게이트 (2026-08-27 구조 수정) ──────────────────
@@ -387,12 +456,19 @@ def test_no_category_answers_unrelated_questions():
     """
     from src.agents.deterministic_info import DETERMINISTIC_CATEGORIES
 
-    unrelated = ["오늘 점심 뭐 먹지", "삼성전자 주가 얼마야?", "부동산 양도세 계산해주세요"]
+    unrelated = [
+        "오늘 점심 뭐 먹지",
+        "삼성전자 주가 얼마야?",
+        "부동산 양도세 계산해주세요",
+        "여행지 추천해줘",
+        "파이썬 리스트 정렬 방법 알려줘",
+    ]
     leaking = [
-        category
+        (category, question)
         for category in DETERMINISTIC_CATEGORIES
         if category != "해당없음"
-        and all(deterministic_response_for(category, q) is not None for q in unrelated)
+        for question in unrelated
+        if deterministic_response_for(category, question) is not None
     ]
 
     assert leaking == [], f"무관 질문에 정형 답변을 내는 카테고리: {leaking}"

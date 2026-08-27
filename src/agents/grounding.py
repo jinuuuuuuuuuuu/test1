@@ -32,6 +32,8 @@ from src.agents.state import PensionAgentState
 from src.agents.verification import (
     apply_clarification_override,
     apply_l0_overrides,
+    apply_premise_issue_normalization,
+    apply_source_limited_override,
     find_unsupported_numbers,
 )
 
@@ -166,6 +168,19 @@ def build_grounding_node():
             suspects=suspects,
             has_evidence=bool(context),
         )
+        verification = apply_premise_issue_normalization(verification)
+        verification = apply_source_limited_override(
+            verification,
+            draft=draft,
+            evidence_texts=[c["content"] for c in context],
+        )
+        if (
+            state.get("deterministic_category") == "실물이전_개별판정"
+            and not verification.get("issues")
+            and any(c.get("source") == "doc34 실물이전 불가사유 코드" for c in context)
+        ):
+            verification["requirements_met"] = True
+            verification["missing_requirements"] = []
         if clarification or type_recommendation:
             # 역질문 초안은 요구사항 검증을 코드로 면제한다 (프롬프트 지시만으로는 ④가
             # "추천 누락"으로 판정 → ⑤가 추천을 되살리는 경로를 막을 수 없다).

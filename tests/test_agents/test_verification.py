@@ -363,6 +363,22 @@ def test_real_user_premises_are_kept(text):
     assert not is_answer_defect_statement(text)
 
 
+@pytest.mark.parametrize("text", [
+    "잔금지급일이 2026년 1월 31일이라고 가정",
+    "2026년 5월 10일이 피해발생일이라는 전제",
+    "나이가 74세이므로 세금 관련 구체적인 정보를 요청함",
+    "74세에 연 1,000만원을 연금으로 받을 때 세금",
+    "연금저축 600만원과 IRP 300만원, 총급여 5,000만원 조건에서 세액공제",
+])
+def test_benign_user_conditions_are_not_premise_issues(text):
+    from src.agents.verification import split_premise_issues
+
+    real, misfiled = split_premise_issues([text])
+
+    assert real == []
+    assert misfiled == []
+
+
 def test_split_premise_issues_separates_by_nature():
     from src.agents.verification import split_premise_issues
 
@@ -373,3 +389,25 @@ def test_split_premise_issues_separates_by_nature():
 
     assert real == ["IRP는 중도인출이 자유롭다던데"]
     assert misfiled == ["초안이 날짜에 직접 답하지 않음"]
+
+
+def test_source_limited_exact_date_response_is_not_grounding_failure():
+    from src.agents.verification import apply_source_limited_override
+
+    verification = {
+        "grounded": False,
+        "issues": ["제공 자료에서는 직접 판정하지 않는다고 했지만 회피한 것이므로 문제가 될 수 있습니다."],
+        "unsupported_numbers_confirmed": [],
+        "requirements_met": False,
+        "missing_requirements": ["신청기한 안인지 여부"],
+    }
+    draft = "다만 2026년 2월 28일 신청이 기한 안인지 여부는 DB 근거만으로 정확히 판정하지 않겠습니다."
+    evidence = ["중도인출 원문에는 기간계산 기준이 명시되어 있지 않습니다. calculation_basis=not_defined_in_source."]
+
+    out = apply_source_limited_override(verification, draft, evidence)
+
+    assert out["grounded"] is True
+    assert out["requirements_met"] is True
+    assert out["issues"] == []
+    assert out["missing_requirements"] == []
+    assert out["source_limited_mode"] is True

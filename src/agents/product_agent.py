@@ -111,8 +111,43 @@ def _is_product_flow_turn(text: str) -> bool:
     is_short_answer = len(text.strip()) <= 20 and "?" not in text
     return is_short_answer and (
         _has_account_type(text)
-        or any(word in text for word in ("안정", "중립", "공격", "위험", "만원", "년", "개월"))
+        or any(word in text for word in ("안정", "중립", "공격", "위험", "만원", "년", "개월", "노후", "은퇴", "절세", "목돈"))
     )
+
+
+def _should_carry_product_history(state: PensionAgentState) -> bool:
+    """현재 발화가 이전 추천 흐름의 후속 답변인지 판단한다.
+
+    새 추천 요청("IRP에서 S&P500 ETF 같은 상품 추천해줘")은 그 자체로 완결된 새 질의일 수
+    있다. 이때 직전 질문의 "안전한/안정형" 같은 조건을 재사용하면 history contamination이
+    생긴다. 반면 "상품추천", "20년이야", "월 30만원"처럼 이전 역질문에 답하는 짧은 발화는
+    기존 profile을 이어받아야 한다.
+    """
+    current = state["question"].strip()
+    compact = re.sub(r"\s+", "", current)
+    if any(word in current for word in _REFERENCE_WORDS):
+        return True
+    if compact in ("상품추천", "구체적인상품추천", "구체상품추천"):
+        return True
+    history = state.get("conversation_history") or []
+    has_previous_product_flow = any(_is_product_flow_turn(turn.get("question", "")) for turn in history)
+    if (
+        has_previous_product_flow
+        and "?" not in current
+        and not _is_recommendation_intent(current)
+        and (
+            _has_account_type(current)
+            or _extract_amount(current, allow_standalone=True)
+            or _extract_horizon(current)
+            or _extract_risk_profile(current)
+            or _extract_goal(current)
+        )
+    ):
+        return True
+    is_short_answer = len(current) <= 30 and "?" not in current
+    if is_short_answer and not _is_recommendation_intent(current):
+        return _is_product_flow_turn(current)
+    return False
 
 
 def _combined_user_text(state: PensionAgentState) -> str:
@@ -127,6 +162,9 @@ def _combined_user_text(state: PensionAgentState) -> str:
     나이·날짜만 골라 빼는 방식은 쓰지 않는다 — 그 다음엔 금액이, 그 다음엔 계좌유형이
     새는 식으로 반복된다. 애초에 "같은 흐름의 턴인가"로 걸러야 한다.
     """
+    if not _should_carry_product_history(state):
+        return state["question"]
+
     history = state.get("conversation_history") or []
     relevant = [
         turn.get("question", "")
@@ -191,7 +229,7 @@ def _context_reference_response(state: PensionAgentState) -> tuple[str, list[Ret
 
 
 def _extract_recommendation_profile(state: PensionAgentState) -> dict:
-    profile = dict(state.get("recommendation_profile") or {})
+    profile = dict(state.get("recommendation_profile") or {}) if _should_carry_product_history(state) else {}
     text = _combined_user_text(state)
     current = state["question"]
 
@@ -302,7 +340,7 @@ def _extract_age(text: str) -> str | None:
 
 
 def _extract_preferred_product_type(text: str) -> str | None:
-    if any(word in text for word in ("미국 주식", "미국주식", "해외주식", "해외 주식")):
+    if any(word in text for word in ("미국 주식", "미국주식", "해외주식", "해외 주식", "S&P", "s&p", "S&P500", "에스앤피")):
         return "해외주식형 펀드"
     if "국내주식" in text or "국내 주식" in text:
         return "국내주식형 펀드"

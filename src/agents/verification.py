@@ -231,6 +231,21 @@ _USER_PREMISE_MARKERS = (
 # ④가 "초안/질문이 ~하다"처럼 답변 과정을 서술하는 주어. 이게 등장하면 사용자 발화가
 # 아니라 시스템 내부 상태를 말하는 것이다.
 _META_SUBJECT_MARKERS = ("초안", "답변이", "답변은", "질문은", "질문이")
+_BENIGN_CONDITION_MARKERS = (
+    "이라는 전제",
+    "라는 전제",
+    "이라고 가정",
+    "라고 가정",
+    "나이가",
+    "연금으로 받을",
+    "연금으로 받을 때",
+    "잔금지급일이",
+    "피해발생일이라는",
+    "결정일이",
+    "DB형",
+    "개인워크아웃",
+)
+_FALSE_PREMISE_MARKERS = ("사실과 다", "과장", "잘못", "오해", "자유롭", "무조건", "반드시")
 
 
 def is_answer_defect_statement(text: str) -> bool:
@@ -245,13 +260,94 @@ def is_answer_defect_statement(text: str) -> bool:
     return not any(marker in text for marker in _USER_PREMISE_MARKERS)
 
 
+def is_benign_condition_statement(text: str) -> bool:
+    """사용자가 제공한 조건을 단순히 '전제/가정'이라고 반복한 항목인지 판정한다.
+
+    ④가 "잔금지급일이 2026년 1월 31일이라고 가정"처럼 사용자가 준 조건을
+    premise_issues에 넣는 경우가 있다. 이는 잘못된 전제가 아니므로 최종 답변 앞머리에
+    교정문으로 붙이면 안 된다. 단 "중도인출이 자유롭다"처럼 실제로 틀릴 수 있는
+    제도 전제는 유지한다.
+    """
+    if any(marker in text for marker in _FALSE_PREMISE_MARKERS):
+        return False
+    if re.search(r"\d", text) and any(
+        marker in text
+        for marker in (
+            "조건",
+            "전제",
+            "가정",
+            "세금",
+            "세액공제",
+            "연금",
+            "중도인출",
+            "실물이전",
+        )
+    ):
+        return True
+    return any(marker in text for marker in _BENIGN_CONDITION_MARKERS)
+
+
 def split_premise_issues(premise_issues: list[str]) -> tuple[list[str], list[str]]:
     """premise_issues를 (진짜 전제, 실제로는 요구사항 미충족인 항목)으로 나눈다."""
     real_premises: list[str] = []
     misfiled_defects: list[str] = []
     for issue in premise_issues:
+        if is_benign_condition_statement(issue):
+            continue
         (misfiled_defects if is_answer_defect_statement(issue) else real_premises).append(issue)
     return real_premises, misfiled_defects
+
+
+def apply_premise_issue_normalization(verification: dict) -> dict:
+    """premise_issues 오분류를 verification 단계에서 정리한다.
+
+    generator에서만 정리하면 최종 답변은 괜찮아도 think_trace에는 여전히
+    "전제 교정: 잔금지급일이 ...라고 가정"처럼 남는다. 검증 dict 자체를 정규화해
+    이후 모든 계층이 같은 해석을 보게 한다.
+    """
+    result = dict(verification)
+    real, misfiled = split_premise_issues(list(result.get("premise_issues") or []))
+    missing = list(result.get("missing_requirements") or [])
+    missing.extend(item for item in misfiled if item not in missing)
+    result["premise_issues"] = real
+    result["missing_requirements"] = missing
+    if misfiled and result.get("requirements_met") is not False:
+        result["requirements_met"] = False
+    return result
+
+
+def apply_source_limited_override(
+    verification: dict,
+    draft: str,
+    evidence_texts: list[str],
+) -> dict:
+    """DB가 exact-date 계산 방식을 정의하지 않는다고 밝힌 응답을 검증 실패로 보지 않는다.
+
+    중도인출 문서에는 "1개월/3개월 이내"는 있지만 exact date 환산 방식이 없다.
+    초안이 이를 근거로 "DB 근거만으로 특정 날짜를 단정하지 않겠다"고 답한 경우,
+    ④ LLM이 "회피"라고 판단해 grounded=False를 낼 수 있다. 이 케이스는 hallucination이
+    아니라 근거 한계 대응이므로, 해당 이슈를 제거하고 요구사항을 충족한 것으로 본다.
+    """
+    evidence = "\n".join(evidence_texts)
+    if "calculation_basis=not_defined_in_source" not in evidence:
+        return verification
+    if "DB 근거만으로" not in draft and "정확한 날짜로 계산하는 방식" not in draft:
+        return verification
+
+    result = dict(verification)
+    source_limit_markers = ("회피", "직접적인 답변", "직접 답변", "정확히 판정하지")
+    issues = [
+        issue
+        for issue in (result.get("issues") or [])
+        if not any(marker in issue for marker in source_limit_markers)
+    ]
+    result["issues"] = issues
+    if not issues and not result.get("unsupported_numbers_confirmed"):
+        result["grounded"] = True
+    result["requirements_met"] = True
+    result["missing_requirements"] = []
+    result["source_limited_mode"] = True
+    return result
 
 
 def enforce_premise_issues(answer: str, premise_issues: list[str]) -> str:

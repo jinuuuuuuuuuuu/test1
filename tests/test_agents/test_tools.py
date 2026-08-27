@@ -84,6 +84,7 @@ def test_check_early_withdrawal_tool_medical():
         "medical_expense_last_year": 5_000_000,
         "prior_year_annual_wage": 30_000_000,
         "treatment_end_date": "2026-05-15",
+        "deadline_calculation_mode": "calendar_reference",
     })
     assert out["eligible"] is True
 
@@ -192,12 +193,12 @@ def test_search_pension_docs_tool_returns_relevant_chunks():
 
 # ── 툴 근거 강화 (task_type 공통화, 2026-08-27) ────────────────────────
 
-def test_early_withdrawal_returns_deadline_without_request_date():
-    """"언제까지 신청하나요"만 물었을 때 신청일을 요구하지 않고 마감일을 계산해 준다.
+def test_early_withdrawal_source_only_returns_rule_without_exact_deadline():
+    """"언제까지 신청하나요"만 물었을 때 DB에 없는 exact date를 만들지 않는다.
 
     request_date가 필수였던 시절, LLM이 기준일을 신청일로 그대로 넣어 묻지도 않은
-    "그날 신청하면 가능한가" 판정을 해버렸고, 마감일은 근거에 없어 "3개월 이내"라는
-    원문 표현만 되뇌었다.
+    "그날 신청하면 가능한가" 판정을 해버렸다. 지금은 기본 source_only 모드에서
+    기준일·기간 규칙만 반환한다.
     """
     from src.agents.tools import check_early_withdrawal
 
@@ -205,24 +206,28 @@ def test_early_withdrawal_returns_deadline_without_request_date():
         {"reason": "재난피해", "plan_type": "IRP", "damage_date": "2026-05-10"}
     )
 
-    assert result["deadline"] == "2026-08-10"
+    assert result["deadline"] is None
     assert result["deadline_basis_event"] == "피해발생일"
+    assert result["deadline_rule"] == "피해발생일로부터 3개월 이내"
+    assert result["calculation_basis"] == "not_defined_in_source"
+    assert result["exact_date_available"] is False
     assert result["eligibility_checked"] is False
 
 
 def test_early_withdrawal_covers_reasons_without_dedicated_handler():
-    """전월세처럼 전용 날짜 핸들러가 없던 사유도 같은 경로로 마감일이 나와야 한다."""
+    """전월세처럼 전용 날짜 핸들러가 없던 사유도 같은 경로로 기한 규칙이 나와야 한다."""
     from src.agents.tools import check_early_withdrawal
 
     result = check_early_withdrawal.invoke(
         {"reason": "무주택전월세", "plan_type": "IRP", "balance_payment_date": "2026-01-31"}
     )
 
-    assert result["deadline"] == "2026-02-28"
+    assert result["deadline"] is None
+    assert result["deadline_rule"] == "잔금지급일로부터 1개월 이내"
 
 
-def test_early_withdrawal_still_judges_when_request_date_given():
-    """신청일이 주어지면 요건 판정도 함께 한다 (기한 정보와 공존)."""
+def test_early_withdrawal_source_only_does_not_judge_when_request_date_given():
+    """기본 모드에서는 신청일이 주어져도 DB에 없는 exact-date 방식으로 판정하지 않는다."""
     from src.agents.tools import check_early_withdrawal
 
     result = check_early_withdrawal.invoke({
@@ -230,9 +235,25 @@ def test_early_withdrawal_still_judges_when_request_date_given():
         "damage_date": "2026-05-10", "request_date": "2026-06-01",
     })
 
+    assert result["eligibility_checked"] is False
+    assert result["deadline"] is None
+    assert result["calculation_basis"] == "not_defined_in_source"
+
+
+def test_early_withdrawal_calendar_reference_mode_can_judge_for_developer_checks():
+    """개발자 참고 모드에서는 기존 달력식 계산기를 명시적으로 사용할 수 있다."""
+    from src.agents.tools import check_early_withdrawal
+
+    result = check_early_withdrawal.invoke({
+        "reason": "재난피해", "plan_type": "IRP",
+        "damage_date": "2026-05-10", "request_date": "2026-06-01",
+        "deadline_calculation_mode": "calendar_reference",
+    })
+
     assert result["eligibility_checked"] is True
     assert result["eligible"] is True
     assert result["deadline"] == "2026-08-10"
+    assert result["calculation_basis"] == "calendar_reference_not_source_defined"
 
 
 def test_in_kind_transfer_returns_code_descriptions():

@@ -117,6 +117,9 @@ ROUTER_SYSTEM_PROMPT = """당신은 연금 상담 AI의 질문 분류 게이트�
      5개 사유(요양·개인회생파산·전월세보증금·주택구입·재난피해) 모두 이 카테고리입니다.
      기준일만 있으면 마감일을 계산하고, 신청일 후보가 함께 있으면 각각 기한 안인지
      판정합니다. ⚠️ 사유별 가능 여부·요건을 묻는 질문(기한과 무관)은 여기가 아닙니다.
+   - 중도인출_요건판정: "DB형인데 중도인출 가능한가요", "개인워크아웃 중인데 가능한가요",
+     "전월세보증금 때문에 가능한가요"처럼 사용자의 제도유형·사유 조건이 주어지고 가능/불가
+     판정을 묻는 질문. 목록을 나열하지 말고 그 조건에 대해 판정합니다.
    - 중도인출_일반: "중도인출이 어떤 경우에 가능한가요"처럼 중도인출 가능 사유 전체
      목록을 묻는 질문. ⚠️ 질문이 이미 요양/개인회생/파산/전월세보증금/주택구입/재난피해
      같은 특정 사유 하나를 콕 짚어 그 사유로 가능한지 묻고 있다면 이 카테고리가 아니라
@@ -174,6 +177,7 @@ class RouterDecision(BaseModel):
         "세금혜택_개요",
         "개인세금_입력충분성",
         "중도인출_기한판정",
+        "중도인출_요건판정",
         "중도인출_일반",
         "디폴트옵션_자동매수",
         "실물이전_불가사유",
@@ -257,6 +261,23 @@ def _restore_rejected_category(category: str, candidates: list[str], question: s
     return category
 
 
+def _prioritize_collision_category(category: str, candidates: list[str], question: str) -> str:
+    """둘 이상의 정형 카테고리가 맞아 보일 때 더 보수적인 작업을 선택한다.
+
+    대표 충돌: "나 74세인데 세금 어떻게 내?"는 개인세금_입력충분성과
+    연금소득세율_연령별 후보가 함께 뜬다. 라우터가 후자를 고르면 나이 구간 세율(4.4%)만
+    보고 실제 세금 질문에 답하는 경로가 열린다. 금융 상담에서는 애매하면 개인 계산
+    Gate로 보내 부족정보를 확인하는 쪽이 더 안전하다.
+    """
+    if (
+        category == "연금소득세율_연령별"
+        and "개인세금_입력충분성" in candidates
+        and deterministic_response_for("개인세금_입력충분성", question) is not None
+    ):
+        return "개인세금_입력충분성"
+    return category
+
+
 def _enforce_candidate_scope(category: str, candidates: list[str]) -> str:
     """라우터가 후보 밖 카테고리를 고르면 "해당없음"으로 되돌린다.
 
@@ -318,6 +339,9 @@ def build_router_node():
             decision.deterministic_category, candidates
         )
         deterministic_category = _restore_rejected_category(
+            deterministic_category, candidates, state["question"]
+        )
+        deterministic_category = _prioritize_collision_category(
             deterministic_category, candidates, state["question"]
         )
         intent = _drop_product_intent_for_deterministic_info(

@@ -125,6 +125,31 @@ def test_overseas_equity_recommendation_includes_what_if_scenarios():
     assert needs_clarification is True
 
 
+def test_sp500_recommendation_does_not_reuse_previous_safe_profile():
+    state = {
+        "question": "IRP에서 S&P500 ETF 같은 상품 추천해줘.",
+        "recommendation_profile": {
+            "account_type": "IRP",
+            "risk_profile": "안정형",
+            "investment_goal": "노후/은퇴 준비",
+        },
+        "conversation_history": [
+            {"question": "IRP에 넣을 안전한 상품 추천해주세요.", "answer": "투자기간과 금액을 알려주세요."},
+        ],
+    }
+
+    draft, context, profile, needs_clarification = _recommendation_flow_response(state)
+
+    assert profile["account_type"] == "IRP"
+    assert profile["preferred_product_type"] == "해외주식형 펀드"
+    assert "risk_profile" not in profile
+    assert "- 투자성향: 안정형" not in draft
+    assert "미국·해외 증시" in draft
+    assert "원/달러 환율" in draft
+    assert context == []
+    assert needs_clarification is True
+
+
 def test_recommendation_flow_with_missing_account_asks_for_all_missing_info():
     state = {
         "question": "노후 준비 목적이야",
@@ -314,6 +339,24 @@ def test_product_flow_history_is_kept():
 
     assert "IRP에 넣을 펀드 추천해줘" in combined
     assert "안정형이야" in combined
+
+
+def test_product_flow_profile_is_kept_for_short_follow_up():
+    state = {
+        "question": "30만원 이상",
+        "recommendation_profile": {
+            "account_type": "IRP",
+            "risk_profile": "안정형",
+            "investment_goal": "노후/은퇴 준비",
+        },
+        "conversation_history": [{"question": "IRP에 넣을 안전한 상품 추천해주세요."}],
+    }
+
+    _, _, profile, _ = _recommendation_flow_response(state)
+
+    assert profile["account_type"] == "IRP"
+    assert profile["risk_profile"] == "안정형"
+    assert profile["monthly_investment"] == "월 30만원 이상"
 
 
 def test_long_question_with_condition_words_is_not_flow():

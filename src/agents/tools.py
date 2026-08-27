@@ -147,12 +147,16 @@ def _transfer_code_detail(code: str) -> dict:
     }
 
 
-def _deadline_info(reason: str, basis_date: Optional[date]) -> dict:
-    """사유·기준일로부터 신청기한 정보를 만든다 (기준일이 없으면 규정만 안내).
+def _deadline_info(
+    reason: str,
+    basis_date: Optional[date],
+    calculation_mode: Literal["source_only", "calendar_reference"] = "source_only",
+) -> dict:
+    """사유·기준일로부터 신청기한 정보를 만든다.
 
-    eligible 하나만 돌려주던 시절에는 "언제까지 신청하나요"라는 질문에 LLM이 마감일을
-    직접 계산하지 못해 "3개월 이내"라는 원문 표현만 되뇌었다. 계산은 규칙엔진이 하고
-    결과를 근거로 넘긴다.
+    기본값(source_only)은 제공 DB에 적힌 기준일·기간만 반환하고 exact date를 생성하지
+    않는다. DB에는 1개월/3개월/5년을 정확히 어떤 기간계산 방식으로 환산하는지 명시되어
+    있지 않기 때문이다. calendar_reference는 개발자 검토/외부 기준 비교용으로만 사용한다.
     """
     rule = WITHDRAWAL_DEADLINE_RULES.get(reason)
     if rule is None:
@@ -162,14 +166,20 @@ def _deadline_info(reason: str, basis_date: Optional[date]) -> dict:
     info = {
         "deadline_basis_event": rule.basis_event,
         "deadline_period": period,
-        "deadline_rule": f"{rule.basis_event}로부터 달력 기준 {period} 이내",
+        "deadline_rule": f"{rule.basis_event}로부터 {period} 이내",
+        "deadline": None,
+        "calculation_basis": "not_defined_in_source",
+        "exact_date_available": False,
         "source_doc": rule.source_doc,
     }
     if rule.note:
         info["deadline_note"] = rule.note
     if basis_date is not None:
         info["basis_date"] = basis_date.isoformat()
-        info["deadline"] = calculate_deadline(reason, basis_date).isoformat()
+        if calculation_mode == "calendar_reference":
+            info["deadline"] = calculate_deadline(reason, basis_date).isoformat()
+            info["calculation_basis"] = "calendar_reference_not_source_defined"
+            info["exact_date_available"] = True
     return info
 
 
@@ -201,14 +211,17 @@ def check_early_withdrawal(
     # 재난피해 (reason="재난피해")
     damage_date: Optional[str] = None,
     damage_resolved: bool = True,
+    deadline_calculation_mode: Literal["source_only", "calendar_reference"] = "source_only",
 ) -> dict:
     """5가지 중도인출 사유(요양/개인회생파산/무주택전월세/무주택주택구입/재난피해)에 대해
-    **신청기한을 계산**하고, 신청일이 주어지면 **요건 충족 여부까지 판정**한다.
+    **신청기한 규칙**을 반환하고, 개발자 참고 모드에서는 신청일 판정까지 수행한다.
     DB는 어떤 사유든 중도인출이 원천 불가하다.
 
     두 가지 질문 유형을 모두 처리한다:
-      - "언제까지 신청해야 하나요?" -> request_date 없이 기준일만 넘긴다. deadline이 나온다.
-      - "이 날짜에 신청하면 되나요?" -> request_date까지 넘긴다. eligible 판정이 함께 나온다.
+      - 일반 DB-grounded 답변(source_only, 기본값): 기준일·기간 규칙만 반환한다. exact date와
+        신청일 판정은 반환하지 않는다.
+      - 개발자 참고(calendar_reference): 일반 법정 기간계산식 검토용으로 exact date와 신청일
+        판정을 반환한다. 이 값은 제공 DB에 직접 정의된 기준이 아니다.
 
     ⚠️ request_date를 임의로 채우지 마세요. 사용자가 신청일을 말하지 않았는데 기준일을
     신청일로 넣으면, 묻지도 않은 "그날 신청하면 가능한가" 판정을 하게 됩니다. 기한만
@@ -223,8 +236,8 @@ def check_early_withdrawal(
     plan = PlanType(plan_type)
     req_date = _parse_date(request_date)
 
-    # 신청기한은 신청일과 무관하게 기준일만으로 확정된다 — 기한 질문에 요건 판정을 강요하지
-    # 않도록 항상 먼저 계산해 근거로 넘긴다.
+    # 신청기한 규칙은 신청일과 무관하게 확인할 수 있다. 기본 모드에서는 DB에 직접 정의되지
+    # 않은 exact date를 생성하지 않는다.
     basis_dates = {
         "요양": treatment_end_date,
         "개인회생파산": decision_date,
@@ -232,15 +245,30 @@ def check_early_withdrawal(
         "무주택주택구입": ownership_registration_date,
         "재난피해": damage_date,
     }
-    deadline_info = _deadline_info(reason, _parse_date(basis_dates.get(reason)))
+    deadline_info = _deadline_info(
+        reason,
+        _parse_date(basis_dates.get(reason)),
+        calculation_mode=deadline_calculation_mode,
+    )
 
-    if req_date is None:
-        # 신청일이 없으면 요건 판정을 하지 않는다. 기한 정보만 돌려주고, 판정이 필요하면
-        # LLM이 사용자에게 신청일을 되묻도록 한다.
+    if plan == PlanType.DB:
+        from src.rules.early_withdrawal import check_plan_type_eligible
+
+        plan_check = check_plan_type_eligible(plan)
+        return {**deadline_info, **_to_jsonable(plan_check), "eligibility_checked": True}
+
+    if req_date is None or deadline_calculation_mode != "calendar_reference":
+        # source_only에서는 신청일이 있더라도 exact-date 방식이 DB에 정의되지 않았으므로
+        # 기한 통과 여부를 판정하지 않는다.
         return {
             **deadline_info,
             "eligibility_checked": False,
-            "note": "신청일(request_date)이 없어 요건 충족 여부는 판정하지 않았습니다.",
+            "note": (
+                "제공 DB에는 기간을 exact date로 환산하는 방식이 명시되어 있지 않아 "
+                "요건 충족 여부를 판정하지 않았습니다."
+                if req_date is not None
+                else "신청일(request_date)이 없어 요건 충족 여부는 판정하지 않았습니다."
+            ),
         }
 
     if reason == "요양":

@@ -165,23 +165,36 @@ def build_info_agent_node():
         )
         if deterministic is not None:
             draft, retrieved_context = deterministic
-            deterministic_needs_clarification = "정확한 계산을 위해 다음 정보를 한 번에 알려주세요" in draft
+            deterministic_source_limited = "calculation_basis=not_defined_in_source" in "\n".join(
+                item.get("content", "") for item in retrieved_context
+            )
+            deterministic_needs_clarification = any(
+                marker in draft
+                for marker in (
+                    "정확한 계산을 위해 다음 정보를 한 번에 알려주세요",
+                    "추가로 필요한 정보는 다음과 같습니다",
+                    "현재 질문만으로는 적용할 세금 계산 방식을 확정할 수 없습니다",
+                )
+            )
+            response_mode = (
+                "conditional"
+                if deterministic_source_limited
+                else "clarification_included" if deterministic_needs_clarification else "complete"
+            )
             return {
                 "info_draft": draft,
                 "retrieved_context": retrieved_context,
                 "tool_trace": [],
-                "needs_clarification": deterministic_needs_clarification,
-                "missing_information": ["연금저축 납입액", "IRP 납입액", "총급여 또는 종합소득금액"]
-                if deterministic_needs_clarification
+                "needs_clarification": deterministic_needs_clarification and not deterministic_source_limited,
+                "missing_information": ["추가 확인 필요 입력값 또는 DB에 정의되지 않은 계산 기준"]
+                if deterministic_needs_clarification and not deterministic_source_limited
                 else [],
                 "clarification_questions": [
-                    "올해 연금저축에 납입한 금액은 얼마인가요?",
-                    "올해 IRP에 납입한 금액은 얼마인가요?",
-                    "직장인 총급여 또는 개인사업자 종합소득금액은 얼마인가요?",
+                    "답변에 적힌 추가 확인 항목을 한 번에 알려주세요.",
                 ]
-                if deterministic_needs_clarification
+                if deterministic_needs_clarification and not deterministic_source_limited
                 else [],
-                "response_mode": "clarification_included" if deterministic_needs_clarification else "complete",
+                "response_mode": response_mode,
                 "repair_attempted": state.get("verification") is not None,
                 "deterministic_info": True,
             }

@@ -4,7 +4,9 @@ import os
 
 os.environ.setdefault("CLOVASTUDIO_API_KEY", "dummy-key-for-wiring-test-only")
 
-from src.agents.router import _apply_asset_scope_override
+from src.agents.deterministic_info import candidate_categories
+import src.agents.router as router_module
+from src.agents.router import _apply_asset_scope_override, _prioritize_collision_category
 
 
 # ── scope 오버라이드 (F-2) ────────────────────────────────────────────
@@ -65,3 +67,62 @@ def test_override_preserves_partial_scope():
 
     assert scope == "부분관련"
     assert note == "개인사업자 연금계좌 세액공제 관점으로 답변"
+
+
+# ── deterministic category collision ───────────────────────────────────
+
+
+def test_personal_tax_beats_age_rate_when_question_asks_actual_case():
+    question = "74세 세율이 궁금한데 제 경우 실제 얼마 내나요?"
+    candidates = candidate_categories(question)
+
+    assert "개인세금_입력충분성" in candidates
+    assert "연금소득세율_연령별" in candidates
+    assert (
+        _prioritize_collision_category("연금소득세율_연령별", candidates, question)
+        == "개인세금_입력충분성"
+    )
+
+
+def test_general_age_rate_question_is_not_forced_to_personal_tax():
+    question = "연령별 연금소득세율 표 알려줘"
+    candidates = candidate_categories(question)
+
+    assert "개인세금_입력충분성" not in candidates
+    assert (
+        _prioritize_collision_category("연금소득세율_연령별", candidates, question)
+        == "연금소득세율_연령별"
+    )
+
+
+def test_router_node_prioritizes_personal_tax_collision(monkeypatch):
+    """실제 라우터 노드 후처리에서도 개인 실제 세금 질문은 부족정보 Gate가 이긴다."""
+
+    class FakeLLM:
+        def with_structured_output(self, *args, **kwargs):
+            return self
+
+    def fake_invoke(_llm, _messages):
+        return router_module.RouterDecision(
+            intent=["정보형"],
+            scope="범위내",
+            is_safe=True,
+            deterministic_category="연금소득세율_연령별",
+        )
+
+    monkeypatch.setattr(router_module, "get_llm", lambda *args, **kwargs: FakeLLM())
+    monkeypatch.setattr(router_module, "invoke_with_retry", fake_invoke)
+    monkeypatch.setattr(router_module, "find_asset_overlap", lambda _question: [])
+
+    node = router_module.build_router_node()
+    result = node({"question": "74세 세율이 궁금한데 제 경우 실제 얼마 내나요?"})
+
+    assert result["deterministic_category"] == "개인세금_입력충분성"
+
+
+def test_router_restore_rejected_withdrawal_eligibility():
+    question = "개인워크아웃 중인데 퇴직연금 중도인출 가능한가요?"
+    candidates = candidate_categories(question)
+
+    assert "중도인출_요건판정" in candidates
+    assert router_module._restore_rejected_category("해당없음", candidates, question) == "중도인출_요건판정"

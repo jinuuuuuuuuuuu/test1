@@ -35,7 +35,7 @@
 있는가"를 먼저 확인한다:
   일반설명   — 제도 자체를 설명 (예: 세액공제_한도)
   목록답변   — 해당 사유·항목을 나열 (예: 중도인출_일반, 실물이전_불가사유)
-  날짜계산   — 기준일로부터 기한을 계산 (rules.early_withdrawal.calculate_deadline)
+  기한규칙   — 기준일·기간 규칙을 안내 (exact date는 DB-grounded 답변에서 단정하지 않음)
   요건판정   — 주어진 조건이 요건을 충족하는지 (예: 실물이전_개별판정)
   개인계산   — 사용자 수치를 대입해 산출 (예: 세액공제_계산_입력부족)
 
@@ -59,8 +59,6 @@ from src.rules.comprehensive_tax import (
 from src.rules.default_option import NOTICE_DELAY_DAYS_EXISTING, WAIT_DAYS_AFTER_NOTICE
 from src.rules.early_withdrawal import (
     WITHDRAWAL_DEADLINE_RULES,
-    add_calendar_months,
-    calculate_deadline,
 )
 from src.rules.in_kind_transfer import TRANSFER_BLOCK_CODES
 from src.rules.retirement_tax_reduction import get_deferred_retirement_tax_rate
@@ -72,6 +70,7 @@ from src.rules.tax_credit import (
     INCOME_THRESHOLD_SALARY,
     PENSION_SAVINGS_ONLY_LIMIT,
     TOTAL_CONTRIBUTION_LIMIT,
+    calculate_tax_credit,
 )
 from src.rules.withdrawal_limit import (
     SIX_YEAR_EXCEPTION_CUTOFF,
@@ -86,6 +85,7 @@ DeterministicCategory = Literal[
     "세금혜택_개요",
     "개인세금_입력충분성",
     "중도인출_기한판정",
+    "중도인출_요건판정",
     "중도인출_일반",
     "디폴트옵션_자동매수",
     "실물이전_불가사유",
@@ -104,6 +104,7 @@ DETERMINISTIC_CATEGORIES: tuple[str, ...] = (
     "세금혜택_개요",
     "개인세금_입력충분성",
     "중도인출_기한판정",
+    "중도인출_요건판정",
     "중도인출_일반",
     "디폴트옵션_자동매수",
     "실물이전_불가사유",
@@ -139,6 +140,7 @@ DETERMINISTIC_CATEGORIES: tuple[str, ...] = (
 CODE_OVERRIDABLE_CATEGORIES: frozenset[str] = frozenset({
     "개인세금_입력충분성",
     "중도인출_기한판정",
+    "중도인출_요건판정",
     "실물이전_개별판정",
 })
 
@@ -185,7 +187,9 @@ def candidate_categories(question: str) -> list[str]:
     if "세액공제" in text:
         candidates.append("세액공제_계산_입력부족")
         candidates.append("세액공제_한도")
-    if any(word in text for word in ("세금혜택", "세제혜택", "절세혜택", "세금상혜택")):
+    if any(word in text for word in ("세금혜택", "세제혜택", "절세혜택", "세금상혜택")) or (
+        "절세" in text and any(word in text for word in ("연금", "irp", "IRP", "개인사업자", "자영업"))
+    ):
         candidates.append("세금혜택_개요")
     if "중도인출" in text:
         # 같은 도메인의 두 작업을 모두 후보로 낸다: 사유 목록 나열(중도인출_일반)과
@@ -194,6 +198,7 @@ def candidate_categories(question: str) -> list[str]:
         # 요양·주택구입만 잡히고 전월세·재난·개인회생은 빠지는 비대칭이 생겼다.
         candidates.append("중도인출_일반")
         candidates.append("중도인출_기한판정")
+        candidates.append("중도인출_요건판정")
     # 제도명을 그대로 쓰지 않는 표현도 잡는다 — "디폴트옵션"이라는 단어 없이
     # "기존가입자인데 언제 자동매수되나요?"처럼 묻는 경우가 많다.
     if any(word in text for word in ("디폴트옵션", "사전지정운용", "자동매수")):
@@ -273,6 +278,16 @@ def _won(amount: int) -> str:
     return f"{amount:,}원"
 
 
+def _won_readable(amount: int) -> str:
+    if amount % 10_000 == 0:
+        return _won(amount)
+    if amount >= 10_000:
+        man, rest = divmod(amount, 10_000)
+        if rest and rest % 1_000 == 0:
+            return f"{man:,}만 {rest // 1_000}천원"
+    return f"{amount:,}원"
+
+
 def _pct(rate: float) -> str:
     return f"{rate * 100:g}%"
 
@@ -281,8 +296,100 @@ def _context(source: str, content: str) -> list[RetrievedItem]:
     return [{"source": source, "content": content, "node": "info_agent"}]
 
 
+_AMOUNT_AFTER_LABEL_RE_TEMPLATE = r"{label}[^\d]{{0,12}}([0-9,]+)\s*(만원|만\s*원|원)"
+_AMOUNT_BEFORE_LABEL_RE_TEMPLATE = r"([0-9,]+)\s*(만원|만\s*원|원)[^\n,.;]{{0,12}}{label}"
+
+
+def _amount_to_won(raw: str, unit: str) -> int:
+    value = int(raw.replace(",", ""))
+    return value * 10_000 if "만" in unit else value
+
+
+def _extract_labeled_amount(question: str, labels: tuple[str, ...]) -> int | None:
+    compact = _compact(question)
+    for label in labels:
+        escaped = re.escape(label)
+        patterns = (
+            _AMOUNT_AFTER_LABEL_RE_TEMPLATE.format(label=escaped),
+            _AMOUNT_BEFORE_LABEL_RE_TEMPLATE.format(label=escaped),
+        )
+        for pattern in patterns:
+            match = re.search(pattern, compact, flags=re.IGNORECASE)
+            if match:
+                return _amount_to_won(match.group(1), match.group(2))
+    return None
+
+
+def _extract_tax_credit_inputs(question: str) -> dict[str, int | None]:
+    return {
+        "pension_savings_paid": _extract_labeled_amount(question, ("연금저축", "연저")),
+        "irp_paid": _extract_labeled_amount(question, ("IRP", "irp", "개인형IRP", "개인형퇴직연금")),
+        "total_salary": _extract_labeled_amount(question, ("총급여", "급여", "연봉")),
+        "comprehensive_income": _extract_labeled_amount(question, ("종합소득금액", "종합소득", "사업소득")),
+    }
+
+
+def _has_sufficient_tax_credit_inputs(values: dict[str, int | None]) -> bool:
+    has_contribution = values["pension_savings_paid"] is not None or values["irp_paid"] is not None
+    has_income = values["total_salary"] is not None or values["comprehensive_income"] is not None
+    return has_contribution and has_income
+
+
 def _tax_credit_calculation_missing_response(question: str) -> tuple[str, list[RetrievedItem]]:
     source = "doc41 세액공제 계산 입력값 규칙"
+    values = _extract_tax_credit_inputs(question)
+    if _has_sufficient_tax_credit_inputs(values):
+        pension_savings_paid = values["pension_savings_paid"] or 0
+        irp_paid = values["irp_paid"] or 0
+        result = calculate_tax_credit(
+            pension_savings_paid=pension_savings_paid,
+            irp_paid=irp_paid,
+            total_salary=values["total_salary"],
+            comprehensive_income=values["comprehensive_income"],
+        )
+        income_label = (
+            f"총급여 {_won(values['total_salary'])}"
+            if values["total_salary"] is not None
+            else f"종합소득금액 {_won(values['comprehensive_income'])}"
+        )
+        income_basis = (
+            f"총급여 {_won(INCOME_THRESHOLD_SALARY)} 이하"
+            if values["total_salary"] is not None and values["total_salary"] <= INCOME_THRESHOLD_SALARY
+            else f"총급여 {_won(INCOME_THRESHOLD_SALARY)} 초과"
+            if values["total_salary"] is not None
+            else f"종합소득금액 {_won(INCOME_THRESHOLD_COMPREHENSIVE)} 이하"
+            if values["comprehensive_income"] <= INCOME_THRESHOLD_COMPREHENSIVE
+            else f"종합소득금액 {_won(INCOME_THRESHOLD_COMPREHENSIVE)} 초과"
+        )
+        content = (
+            f"세액공제액 계산에는 연금저축 납입액, IRP 납입액, 총급여 또는 종합소득금액이 필요합니다. "
+            f"연금저축 단독 세액공제 대상 한도는 {_won(PENSION_SAVINGS_ONLY_LIMIT)}, "
+            f"연금저축+IRP 합산 세액공제 대상 한도는 {_won(COMBINED_CREDIT_LIMIT)}입니다. "
+            f"세액공제율은 총급여 {_won(INCOME_THRESHOLD_SALARY)} 이하 또는 종합소득금액 "
+            f"{_won(INCOME_THRESHOLD_COMPREHENSIVE)} 이하이면 {_pct(CREDIT_RATE_LOW)}, "
+            f"초과이면 {_pct(CREDIT_RATE_HIGH)}입니다. 입력 조건에서는 세액공제 대상 납입액 "
+            f"{_won(result.credited_total)} x {_pct(result.credit_rate)} = {_won_readable(result.tax_credit_amount)}입니다."
+        )
+        lines = [
+            "입력해주신 조건으로 세액공제액을 계산하면 다음과 같습니다.",
+            "",
+            f"- 연금저축 납입액: {_won(pension_savings_paid)}",
+            f"- IRP 납입액: {_won(irp_paid)}",
+            f"- 소득 기준: {income_label}",
+            f"- 적용 공제율: {_pct(result.credit_rate)} ({income_basis})",
+            f"- 세액공제 대상 납입액: {_won(result.credited_total)}",
+            "",
+            f"예상 세액공제액은 {_won(result.credited_total)} x {_pct(result.credit_rate)} = {_won_readable(result.tax_credit_amount)}입니다.",
+        ]
+        if result.excess_beyond_credit_limit:
+            lines.append(
+                f"\n세액공제 대상 한도를 초과한 납입액 {_won(result.excess_beyond_credit_limit)}은 "
+                "세액공제액 계산에는 포함되지 않습니다."
+            )
+        if result.over_contribution_limit:
+            lines.append(f"\n연금저축+IRP 합산 납입한도 {_won(TOTAL_CONTRIBUTION_LIMIT)}도 초과합니다.")
+        return "\n".join(lines), _context(source, content)
+
     content = (
         f"세액공제액 계산에는 연금저축 납입액, IRP 납입액, 총급여 또는 종합소득금액이 필요합니다. "
         f"세액공제 대상 납입한도는 연금저축 단독 {_won(PENSION_SAVINGS_ONLY_LIMIT)}, "
@@ -308,6 +415,28 @@ def _tax_credit_calculation_missing_response(question: str) -> tuple[str, list[R
 
 
 def _tax_benefit_overview_response(question: str) -> tuple[str, list[RetrievedItem]]:
+    compact = _compact(question)
+    if "개인사업자" in compact or "자영업" in compact:
+        source = "doc41 세액공제 규칙 및 개인사업자 IRP 가입대상"
+        content = (
+            "개인사업 대표는 퇴직연금에는 가입할 수 없지만 일반 IRP를 통해 자영업자로 가입할 수 있습니다. "
+            f"연금저축+IRP 합산 납입한도는 연 {_won(TOTAL_CONTRIBUTION_LIMIT)}이고, 세액공제 대상 한도는 "
+            f"연금저축 단독 {_won(PENSION_SAVINGS_ONLY_LIMIT)}, 연금저축+IRP 합산 {_won(COMBINED_CREDIT_LIMIT)}입니다. "
+            f"개인사업자 등 종합소득자는 종합소득금액 {_won(INCOME_THRESHOLD_COMPREHENSIVE)} 이하이면 "
+            f"{_pct(CREDIT_RATE_LOW)}, 초과이면 {_pct(CREDIT_RATE_HIGH)} 세액공제율을 적용합니다. "
+            "연금계좌 운용수익은 인출 전 과세이연되고, 세액공제 받은 금액과 운용수익을 연금으로 수령할 때는 "
+            "연령별 연금소득세율과 사적연금소득 1,500만원 기준을 함께 확인합니다."
+        )
+        draft = (
+            "개인사업자라면 연금 상담 범위에서는 주로 **연금저축·IRP를 활용한 절세**를 확인할 수 있습니다.\n\n"
+            "- 개인사업 대표는 퇴직연금에는 가입할 수 없지만, 일반 IRP를 통해 자영업자로 가입할 수 있습니다.\n"
+            "- 세액공제 대상 한도는 연금저축 단독 연 600만원, 연금저축+IRP 합산 연 900만원입니다.\n"
+            "- 개인사업자처럼 종합소득 기준으로 보는 경우, 종합소득금액 4,500만원 이하이면 16.5%, 초과이면 13.2% 세액공제율이 적용됩니다.\n"
+            "- 연금계좌 안의 운용수익은 인출 전까지 과세이연되며, 나중에 연금으로 받을 때는 재원·수령방식·연간 수령액에 따라 과세가 달라집니다.\n\n"
+            "따라서 구체적인 세액공제액을 계산하려면 올해 연금저축 납입액, IRP 납입액, 종합소득금액을 알려주시면 됩니다."
+        )
+        return draft, _context(source, content)
+
     source = "doc38~doc41 연금계좌 세금혜택 규칙"
     content = (
         f"연금계좌의 세금혜택은 납입 시 세액공제, 운용 중 과세이연, 연금수령 시 저율 과세, "
@@ -359,6 +488,24 @@ def _tax_credit_limit_response(question: str) -> tuple[str, list[RetrievedItem]]
         f"최대 세액공제액은 {_won(COMBINED_CREDIT_LIMIT)} x {_pct(CREDIT_RATE_LOW)} = 148만 5천원, "
         f"{_won(COMBINED_CREDIT_LIMIT)} x {_pct(CREDIT_RATE_HIGH)} = 118만 8천원입니다."
     )
+    values = _extract_tax_credit_inputs(question)
+    pension_savings_paid = values["pension_savings_paid"]
+    asks_all_credited = any(word in _compact(question) for word in ("전부", "모두", "다세액공제", "전체"))
+    if pension_savings_paid and values["irp_paid"] is None and asks_all_credited:
+        credited = min(pension_savings_paid, PENSION_SAVINGS_ONLY_LIMIT)
+        excess = max(0, pension_savings_paid - PENSION_SAVINGS_ONLY_LIMIT)
+        if excess:
+            draft = (
+                f"아니요. 연금저축에 {_won(pension_savings_paid)}을 납입했더라도, **연금저축만으로는 "
+                f"{_won(PENSION_SAVINGS_ONLY_LIMIT)}까지만 세액공제 대상**입니다.\n\n"
+                f"- 세액공제 대상 연금저축 납입액: {_won(credited)}\n"
+                f"- 연금저축 단독 한도를 넘는 금액: {_won(excess)}\n\n"
+                f"연금저축과 IRP를 함께 활용하면 두 계좌 합산으로 {_won(COMBINED_CREDIT_LIMIT)}까지 "
+                "세액공제 대상이 될 수 있지만, 연금저축 단독 한도 자체가 900만원으로 늘어나는 구조는 아닙니다.\n\n"
+                "세액공제율은 소득 기준에 따라 16.5% 또는 13.2%가 적용됩니다."
+            )
+            return draft, _context(source, content)
+
     draft = (
         "연금저축과 IRP를 합쳐서 볼 때 핵심은 **세액공제 대상 한도는 합산 900만원**이라는 점입니다.\n\n"
         "- 연금저축만 납입하는 경우: 세액공제 대상은 연 600만원까지\n"
@@ -425,6 +572,13 @@ _WITHDRAWAL_REASON_ALIASES: dict[str, tuple[str, ...]] = {
     "무주택주택구입": ("주택구입", "주택매입", "집구입", "소유권이전", "등기"),
     "재난피해": ("재난", "피해", "수해", "화재"),
 }
+_WITHDRAWAL_REASON_LABELS = {
+    "요양": "요양",
+    "개인회생파산": "개인회생·파산",
+    "무주택전월세": "무주택 전월세보증금",
+    "무주택주택구입": "무주택 주택구입",
+    "재난피해": "재난피해",
+}
 
 
 def _has_final_consonant(word: str) -> bool:
@@ -451,16 +605,17 @@ def _detect_withdrawal_reason(text: str) -> str | None:
 
 
 def _early_withdrawal_deadline_response(question: str) -> tuple[str, list[RetrievedItem]] | None:
-    """중도인출 신청기한을 계산하고, 신청일 후보가 있으면 기한 안인지까지 판정한다.
+    """중도인출 신청기한 규칙을 안내한다. DB-grounded 경로에서는 exact date를 만들지 않는다.
 
     사유별로 핸들러를 만들면(요양_신청기한판정, 주택구입_신청기한 ...) 사유가 늘 때마다
     같은 코드를 복제하게 되고, 실제로 "요양·주택구입만 있고 전월세·재난·개인회생은 없는"
     비대칭이 생겼다. 사유 인식(_detect_withdrawal_reason)과 기한 규정
     (WITHDRAWAL_DEADLINE_RULES)을 분리해 5개 사유가 같은 경로를 쓰게 한다.
 
-    두 작업을 한 함수가 처리한다 — 질문에 날짜가 몇 개 있느냐로 갈린다:
-      기준일만        -> "언제까지 신청하나요" (날짜계산)
-      기준일 + 신청일 -> "이 날짜면 기한 안인가요" (요건판정, 신청일 여러 개 가능)
+    제공 DB에는 "1개월/3개월/5년 이내"라는 규칙은 있지만, 1개월을 30일로 볼지,
+    달력 기준으로 볼지, 초일·말일·휴일을 어떻게 처리할지까지는 명시되어 있지 않다.
+    따라서 일반 Agent 답변에서는 마감일이나 신청일 통과 여부를 계산하지 않고, 확인된
+    기준일·기간 규칙과 계산 불가 사유만 안내한다.
     """
     text = _compact(question)
     if "중도인출" not in text:
@@ -472,35 +627,36 @@ def _early_withdrawal_deadline_response(question: str) -> tuple[str, list[Retrie
     if reason is None:
         return None
     rule = WITHDRAWAL_DEADLINE_RULES[reason]
+    reason_label = _WITHDRAWAL_REASON_LABELS.get(reason, reason)
     period = f"{rule.years}년" if rule.years else f"{rule.months}개월"
 
-    source = f"{rule.source_doc} 중도인출 {reason} 신청기한 규칙"
+    source = f"{rule.source_doc} 중도인출 {reason_label} 신청기한 규칙"
     content = (
-        f"{reason} 사유의 중도인출 신청기한은 {rule.basis_event}로부터 {period} 이내입니다. "
-        f"원문은 기간을 일수로 환산하지 않으므로 달력 기준으로 판정합니다. "
+        f"{reason_label} 사유의 중도인출 신청기한은 {rule.basis_event}로부터 {period} 이내입니다. "
+        "제공 DB에는 해당 기간을 정확한 날짜로 환산하는 방식이 명시되어 있지 않습니다. "
         f"{rule.note} "
-        "중도인출 원문에는 휴일·영업시간·신청 도달시점 처리 기준이 명시되어 있지 않습니다."
+        "중도인출 원문에는 30일/90일 환산 여부, 초일산입 여부, 말일·휴일 처리, "
+        "영업시간·신청 도달시점 처리 기준이 명시되어 있지 않습니다. "
+        "calculation_basis=not_defined_in_source."
     )
     caveat = (
-        f"다만 이 판정은 적어주신 날짜가 실제 {rule.basis_event}·신청일이라는 전제에서의 "
-        "**신청기한 판정**입니다. 사유 자체의 요건과 증빙서류는 별도로 확인되어야 합니다. "
-        "또한 제공 문서에는 휴일·영업시간·신청서 작성일/접수일 기준이 명확히 적혀 있지 않아 "
-        "그 부분은 금융기관 확인이 필요합니다."
+        "다만 제공 자료에는 이 기간을 정확한 날짜로 계산하는 방식, 초일산입 여부, 말일·휴일 "
+        "처리, 신청서 작성일/접수일 기준이 명확히 적혀 있지 않습니다. 따라서 DB 근거만으로는 "
+        "특정 날짜가 정확한 마감일인지 또는 신청기한 안인지 단정하지 않겠습니다."
     )
 
     dates = _parse_korean_dates(text)
     if not dates:
         # 날짜가 없으면 규정만 안내한다(기준일을 지어내지 않는다).
         draft = (
-            f"{reason} 사유로 중도인출을 신청하는 경우, 신청기한은 "
-            f"**{rule.basis_event}로부터 달력 기준 {period} 이내**입니다.\n\n"
+            f"{reason_label} 사유로 중도인출을 신청하는 경우, 신청기한은 "
+            f"**{rule.basis_event}로부터 {period} 이내**입니다.\n\n"
             f"{rule.note}\n\n{caveat}"
         )
         return draft, _context(source, content)
 
     basis_date = dates[0]
     request_dates = dates[1:]
-    deadline = calculate_deadline(reason, basis_date)
     # 연도 없이 "3월 1일"로만 말한 경우 연도를 붙여 답하면 지어낸 정보가 된다.
     mention = _parse_first_korean_date_mention(text)
     has_year = bool(mention and mention[0] is not None)
@@ -508,22 +664,18 @@ def _early_withdrawal_deadline_response(question: str) -> tuple[str, list[Retrie
 
     if not request_dates:
         draft = (
-            f"**{fmt(basis_date)}이 {_with_particle(rule.basis_event, chr(51060)+chr(46972)+chr(45716), chr(46972)+chr(45716))} 전제**라면, "
-            f"달력 기준 {period} 이내의 "
-            f"신청기한은 **{fmt(deadline)}까지**로 봅니다.\n\n{caveat}"
+            f"**{fmt(basis_date)}이 {_with_particle(rule.basis_event, '이라는', '라는')} 조건**이라면, "
+            f"제공 자료에서 확인되는 신청기한 규칙은 **{rule.basis_event}로부터 {period} 이내**입니다.\n\n"
+            f"{caveat}"
         )
         return draft, _context(source, content)
 
-    judgement_lines = [
-        f"- {fmt(d)} 신청: "
-        + ("신청기한 안에 들어갑니다." if d <= deadline else "신청기한이 지난 것으로 봅니다.")
-        for d in request_dates
-    ]
+    request_date_text = ", ".join(fmt(d) for d in request_dates)
     draft = (
-        f"{rule.basis_event}이 {fmt(basis_date)}이면 신청기한은 **달력 기준 {period} 이내**, "
-        f"즉 {fmt(deadline)}까지로 판정합니다.\n\n"
-        + "\n".join(judgement_lines)
-        + f"\n\n{caveat}"
+        f"{rule.basis_event}이 {fmt(basis_date)}이면 제공 자료에서 확인되는 신청기한 규칙은 "
+        f"**{rule.basis_event}로부터 {period} 이내**입니다.\n\n"
+        f"다만 {request_date_text} 신청이 각각 기한 안인지 여부는 DB 근거만으로 정확히 판정하지 않겠습니다.\n\n"
+        f"{caveat}"
     )
     return draft, _context(source, content)
 
@@ -552,6 +704,38 @@ def _early_withdrawal_general_response(question: str) -> tuple[str, list[Retriev
         "신청 요건이 문제될 수 있습니다."
     )
     return draft, _context(source, content)
+
+
+def _early_withdrawal_eligibility_response(question: str) -> tuple[str, list[RetrievedItem]] | None:
+    text = _compact(question)
+    if "중도인출" not in text:
+        return None
+    if not any(word in text for word in ("가능", "되나요", "할수", "되냐", "되는지", "가능한가")):
+        return None
+
+    source = "doc46~doc50 중도인출 요건판정 규칙"
+    content = (
+        "DB형은 중도인출이 허용되지 않습니다. DC와 IRP는 법정 사유가 있으면 중도인출 대상 제도입니다. "
+        "가능 사유는 6개월 이상 요양, 개인회생 또는 파산선고, 무주택자 전월세보증금, "
+        "무주택자 주택구입, 재난피해입니다. 개인워크아웃제도와 신용회복은 중도인출 사유에 해당하지 않습니다."
+    )
+
+    if "DB형" in question or re.search(r"\bDB\b", question, flags=re.IGNORECASE):
+        draft = (
+            "아니요. DB형 퇴직연금은 중도인출이 허용되지 않습니다.\n\n"
+            "전월세보증금 같은 법정 사유가 있더라도 중도인출 대상 제도는 DC와 IRP입니다. "
+            "따라서 질문 조건이 DB형이라면 전월세보증금 사유로도 중도인출할 수 없다고 보는 것이 맞습니다."
+        )
+        return draft, _context(source, content)
+
+    if any(word in text for word in ("개인워크아웃", "워크아웃", "신용회복")):
+        draft = (
+            "아니요. 제공 자료 기준으로 개인워크아웃이나 신용회복은 퇴직연금 중도인출 사유에 해당하지 않습니다.\n\n"
+            "개인회생절차개시 결정 또는 파산선고는 중도인출 사유가 될 수 있지만, 개인워크아웃·신용회복은 그 사유와 구분됩니다."
+        )
+        return draft, _context(source, content)
+
+    return None
 
 
 _EXISTING_MEMBER_WORDS = ("기존가입자", "기존 가입자", "기존가입", "만기가 된", "만기된", "만기 도래")
@@ -886,6 +1070,7 @@ _CATEGORY_HANDLERS = {
     "세금혜택_개요": _tax_benefit_overview_response,
     "개인세금_입력충분성": personal_tax_response,
     "중도인출_기한판정": _early_withdrawal_deadline_response,
+    "중도인출_요건판정": _early_withdrawal_eligibility_response,
     "중도인출_일반": _early_withdrawal_general_response,
     "디폴트옵션_자동매수": _default_option_auto_purchase_response,
     "실물이전_불가사유": _in_kind_transfer_block_response,

@@ -125,6 +125,25 @@ def _is_personal_tax_question(compact: str) -> bool:
     if not has_tax_word:
         return False
 
+    has_actual_calculation_signal = any(
+        word in compact
+        for word in (
+            "제경우",
+            "내경우",
+            "실제",
+            "계산",
+            "얼마내",
+            "얼마를내",
+            "세금얼마",
+            "어떻게내",
+            "얼마나떼",
+            "얼마떼",
+        )
+    )
+    asks_general_rate_rule = any(word in compact for word in ("세율표", "연령별", "기준", "설명"))
+    if asks_general_rate_rule and not has_actual_calculation_signal:
+        return False
+
     has_personal_signal = bool(_extract_age(compact)) or any(
         word in compact
         for word in (
@@ -432,8 +451,9 @@ def _content_for_branch(branch: TaxBranch, context: TaxContext | None = None) ->
         return content
     if branch.startswith("retirement_benefit"):
         return (
-            "퇴직금을 연금으로 수령하면 연금실제수령연차 1~10년차는 이연퇴직소득세의 70% 납부, "
-            "11~20년차는 60% 납부, 21년차 이상은 50% 납부입니다. 연금외수령은 감면 없이 전액 납부합니다."
+            "퇴직금을 연금으로 수령하면 연금실제수령연차 1~10년차는 이연퇴직소득세의 70%를 납부하고 "
+            "30%를 감면합니다. 11~20년차는 60%를 납부하고 40%를 감면합니다. "
+            "21년차 이상은 50%를 납부하고 50%를 감면합니다. 연금외수령은 감면 없이 전액 납부합니다."
         )
     return (
         "세액공제 받지 않은 원금과 퇴직금 재원은 사적연금소득 1,500만원 초과 여부 판단에서 제외합니다."
