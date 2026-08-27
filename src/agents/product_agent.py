@@ -30,7 +30,7 @@ from src.agents.llm import get_llm, invoke_with_retry
 from src.agents.state import PensionAgentState, RetrievedItem
 from src.agents.tools import PRODUCT_AGENT_TOOLS, search_funds
 
-PRODUCT_AGENT_MODEL = "HCX-005"
+PRODUCT_AGENT_MODEL = "HCX-007"
 
 PRODUCT_AGENT_SYSTEM_PROMPT = """당신은 연금 상품(펀드) 추천 에이전트입니다.
 
