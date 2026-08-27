@@ -328,3 +328,48 @@ def test_markup_in_evidence_does_not_break_matching():
     from src.agents.verification import find_unsupported_numbers
 
     assert find_unsupported_numbers("한도는 1,800만원입니다", ["한도는 1,**800**만원"]) == []
+
+
+# ── premise_issues 오분류 재분류 (2026-08-27) ──────────────────────────
+#
+# ④가 premise_issues에 "답변의 결함"을 적어 넣으면 최종 답변이 "먼저 질문에 담긴
+# 전제를 짚고 넘어가겠습니다: 초안이 날짜에 직접 답하지 않음"처럼, 사용자가 하지도
+# 않은 말을 전제라고 지적하는 문장으로 시작한다.
+
+
+@pytest.mark.parametrize("text", [
+    "초안이 날짜에 직접 답하지 않음",
+    "초안이 구체적인 마감일을 제시하지 않음",
+    "전월세 중도인출 기한이 누락됨",
+    # 인용 어미("라고 하여")가 결함 서술에 섞인 실측 사례 — 인용 표현만으로 진짜
+    # 전제라고 단정하면 이 문장을 놓쳐 답변이 이상한 도입부로 시작한다.
+    "질문은 '나 74세인데 세금 어떻게 내?'라고 하여 구체적인 상황 정보를 제공하지 않고 있음",
+])
+def test_answer_defect_statements_are_detected(text):
+    from src.agents.verification import is_answer_defect_statement
+
+    assert is_answer_defect_statement(text)
+
+
+@pytest.mark.parametrize("text", [
+    "IRP는 중도인출이 자유롭다던데",
+    "명퇴수당을 연금계좌에 넣으면 세금 감면이 '어마어마하다던데'",
+    "연금저축은 아무 때나 인출할 수 있다고 들었는데",
+])
+def test_real_user_premises_are_kept(text):
+    """사용자 발화를 인용한 진짜 전제는 재분류하지 않는다."""
+    from src.agents.verification import is_answer_defect_statement
+
+    assert not is_answer_defect_statement(text)
+
+
+def test_split_premise_issues_separates_by_nature():
+    from src.agents.verification import split_premise_issues
+
+    real, misfiled = split_premise_issues([
+        "IRP는 중도인출이 자유롭다던데",
+        "초안이 날짜에 직접 답하지 않음",
+    ])
+
+    assert real == ["IRP는 중도인출이 자유롭다던데"]
+    assert misfiled == ["초안이 날짜에 직접 답하지 않음"]

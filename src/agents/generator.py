@@ -11,6 +11,7 @@ from src.agents.verification import (
     enforce_missing_requirements,
     enforce_premise_issues,
     replace_evidence_placeholders,
+    split_premise_issues,
 )
 
 GENERATOR_MODEL = "HCX-005"
@@ -33,6 +34,11 @@ GENERATOR_SYSTEM_PROMPT = """당신은 연금 상담 AI의 최종 답변 작성�
 - 검증결과의 missing_requirements(질문에서 요구했는데 초안이 빠뜨린 항목)가 있으면, 근거에
   그 내용이 있는 경우 답변에 추가하세요. 근거로 확인이 안 되는 항목이면 "~는 제공된 자료로
   확인이 어렵습니다"처럼 한계를 명시하세요 — 답을 지어내지 마세요.
+- 가능 여부를 묻는 질문("~할 수 있나요", "~되나요")에는 **사용자 질문의 방향에 맞춰**
+  첫머리에서 예/아니오를 분명히 하세요. 불가하면 "아니요, ~는 불가합니다"로 시작합니다.
+  "네, 불가능합니다"처럼 쓰면 논리적으로는 "맞습니다"라는 뜻이어도 사용자는 반대로 읽습니다.
+  가능하면 "네, ~할 수 있습니다"로 시작하고, 조건부라면 "조건에 따라 다릅니다"로 시작한 뒤
+  조건을 설명하세요.
 - [이전 대화]가 함께 주어지면 자연스러운 대화 흐름을 유지하되(중복 설명 반복 지양), 숫자·사실은
   이번 턴의 [근거]에 있는 것만 쓰세요 — 이전 답변에 등장했던 숫자라도 이번 [근거]에 없으면
   다시 쓰지 마세요.
@@ -78,6 +84,13 @@ def _enforce_verification(answer: str, verification: dict, context: list) -> str
 
     missing = list(verification.get("missing_requirements") or [])
     premise_issues = list(verification.get("premise_issues") or [])
+
+    # ④가 premise_issues에 "답변의 결함"을 적어 넣는 경우를 성격으로 재분류한다.
+    # 문자열이 두 필드에 똑같이 중복될 때만 걸러내면(아래 로직) 표현이 다른 오분류는
+    # 그대로 통과해, "먼저 질문에 담긴 전제를 짚고 넘어가겠습니다: 초안이 날짜에 직접
+    # 답하지 않음"처럼 사용자가 하지도 않은 말을 전제로 지적하는 답변이 나간다.
+    premise_issues, misfiled = split_premise_issues(premise_issues)
+    missing.extend(item for item in misfiled if item not in missing)
 
     # ④가 같은 항목을 두 필드에 동시에 넣는 경우가 있다 (실측 S1: "2027년 개편안 확정
     # 내용"이 premise_issues와 missing_requirements 양쪽에 등장). 이때 겹치는 항목은

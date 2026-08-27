@@ -95,9 +95,45 @@ _PROFILE_FIELD_LABELS = {
 }
 
 
+def _is_product_flow_turn(text: str) -> bool:
+    """이 발화가 상품 추천 흐름에 속하는지 — 이력을 이어받을지 판단하는 기준.
+
+    상품 추천은 여러 턴에 걸쳐 조건(계좌유형·위험성향·기간·금액)을 채우는 흐름이라
+    이력이 필요하다. 하지만 주제가 다른 턴까지 합치면 그 턴의 수치가 추천 조건으로
+    새어 들어간다.
+    """
+    if _is_product_recommendation(text) or _is_recommendation_intent(text):
+        return True
+    # 조건만 답하는 후속 턴("안정형이야", "IRP에서요", "월 30만원")도 흐름의 일부다.
+    # ⚠️ 어휘 목록("년", "만원" 등)만으로 판정하면 "2026년에 인출하면 어떻게 되나요?"
+    # 같은 제도 질문까지 흐름으로 오인한다(실측). 조건 답변은 질문이 아니라 짧은 값
+    # 응답이라는 성질을 함께 본다 — 물음표가 없고 짧을 때만 흐름으로 인정한다.
+    is_short_answer = len(text.strip()) <= 20 and "?" not in text
+    return is_short_answer and (
+        _has_account_type(text)
+        or any(word in text for word in ("안정", "중립", "공격", "위험", "만원", "년", "개월"))
+    )
+
+
 def _combined_user_text(state: PensionAgentState) -> str:
+    """현재 질문 + **상품 흐름에 속한** 이전 턴만 합친다.
+
+    ⚠️ 예전에는 conversation_history 전체를 무차별로 합쳤다. 그러면 직전에 물어본
+    제도·세제 질문의 수치가 상품 추천 프로필로 새어 들어간다 — 실측: "만 74세 연금
+    세율" 질문 다음에 "IRP에서 S&P500 ETF 살 수 있나요"를 물었더니 추천 조건에
+    "투자기간 2026년, 나이 74세"가 섞여 나왔다. 평가는 문항당 단발 호출이라 특히
+    위험하다(다른 문항의 조건이 넘어오면 안 된다).
+
+    나이·날짜만 골라 빼는 방식은 쓰지 않는다 — 그 다음엔 금액이, 그 다음엔 계좌유형이
+    새는 식으로 반복된다. 애초에 "같은 흐름의 턴인가"로 걸러야 한다.
+    """
     history = state.get("conversation_history") or []
-    previous_user_text = "\n".join(turn.get("question", "") for turn in history)
+    relevant = [
+        turn.get("question", "")
+        for turn in history
+        if _is_product_flow_turn(turn.get("question", ""))
+    ]
+    previous_user_text = "\n".join(relevant)
     return f"{previous_user_text}\n{state['question']}"
 
 

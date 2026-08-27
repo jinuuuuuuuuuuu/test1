@@ -20,6 +20,28 @@
 특정하기 어렵다. candidate_category()가 "주제어 존재 여부"라는 가장 안정적인 신호만
 규칙으로 담당하고, 그 후보가 맞는지 최종 확정은 router의 LLM(이미 있는 호출에 필드만
 추가돼 비용 증가 없음)에게 맡기는 하이브리드로 양쪽의 실패 모드를 서로 보완한다.
+
+## 카테고리는 (도메인 × 작업종류)로 설계한다 — 2026-08-27 재설계
+
+카테고리를 도메인(중도인출·실물이전·세제)으로만 나누면, 같은 도메인 안의 서로 다른
+작업이 갈 곳을 잃는다. 실측된 증상:
+  - 중도인출 날짜계산 4건(요양/전월세/재난/주택구입)이 전부 후보 ['중도인출_일반']을
+    받았다. 목록답변용 카테고리라 라우터가 기각했고, 답변은 사유 목록만 나열했다.
+  - "MMF인데 실물이전 되나요"(개별판정)가 ['실물이전_불가사유'](목록답변)만 후보로
+    받아 기각됐고, LLM이 자유롭게 툴을 고르다 투자 가능 여부 툴을 불러
+    "네, 실물이전 문제없습니다"라는 정반대 답을 냈다.
+
+작업종류는 최소 다음 다섯이며, 새 카테고리를 만들 때 "이 도메인의 이 작업이 이미
+있는가"를 먼저 확인한다:
+  일반설명   — 제도 자체를 설명 (예: 세액공제_한도)
+  목록답변   — 해당 사유·항목을 나열 (예: 중도인출_일반, 실물이전_불가사유)
+  날짜계산   — 기준일로부터 기한을 계산 (rules.early_withdrawal.calculate_deadline)
+  요건판정   — 주어진 조건이 요건을 충족하는지 (예: 실물이전_개별판정)
+  개인계산   — 사용자 수치를 대입해 산출 (예: 세액공제_계산_입력부족)
+
+⚠️ 사유가 늘 때마다 "요양_신청기한", "주택구입_신청기한"처럼 (도메인×사유×작업)으로
+카테고리를 늘리지 말 것. 같은 작업은 하나의 공통 경로가 처리하고, 사유별 차이는
+데이터(WITHDRAWAL_DEADLINE_RULES, TRANSFER_BLOCK_CODES)로 표현한다.
 """
 
 from __future__ import annotations
@@ -58,6 +80,7 @@ DeterministicCategory = Literal[
     "중도인출_일반",
     "디폴트옵션_자동매수",
     "실물이전_불가사유",
+    "실물이전_개별판정",
     "연금수령한도",
     "퇴직소득세감면",
     "연금소득세_종합과세",
@@ -73,6 +96,7 @@ DETERMINISTIC_CATEGORIES: tuple[str, ...] = (
     "중도인출_일반",
     "디폴트옵션_자동매수",
     "실물이전_불가사유",
+    "실물이전_개별판정",
     "연금수령한도",
     "퇴직소득세감면",
     "연금소득세_종합과세",
@@ -81,11 +105,32 @@ DETERMINISTIC_CATEGORIES: tuple[str, ...] = (
 )
 
 
+# 나이 표현 — "74세", "만 74세", "제 나이가 74" 등. 연령별 세율 판정의 신호다.
+_AGE_MENTION_RE = re.compile(r"(?:만)?\d{1,3}세|나이가?\d{1,3}")
+
+# 세금 관련 표현 — "세율/세금/얼마 떼나" 류를 폭넓게 잡는다. 정확한 제도명("연금소득세")을
+# 쓰는 사용자는 소수라, 어휘 목록을 좁게 잡으면 같은 의도의 질문을 놓친다.
+_TAX_AMOUNT_WORDS = (
+    "세율", "세금", "몇%", "몇퍼센트", "몇프로", "얼마", "떼나", "떼가", "부과", "과세",
+)
+
+
 def candidate_categories(question: str) -> list[str]:
-    """1단계: 주제어만 보고 느슨한 후보 목록을 낸다 (동반어 요구 없음).
+    """1단계: 주제어만 보고 **느슨한** 후보 목록을 낸다 (동반어 요구 없음).
 
     router의 LLM이 이 후보들 중 실제로 맞는 카테고리를 확정한다(또는 전부 기각하고
-    "해당없음"). 여기서 여러 개가 동시에 후보로 나올 수 있다(예: "세액공제" 관련 두 카테고리).
+    "해당없음"). 여러 개가 동시에 후보로 나올 수 있다(예: "세액공제" 관련 두 카테고리).
+
+    ⚠️ 이 함수는 **넓게 잡아야 한다**. 정확한 판정은 라우터의 역할이고, 여기서 후보를
+    놓치면 라우터는 그 카테고리를 아예 고려조차 못 한다. 실측(2026-08-27): "연금 + 세율"
+    AND 조건과 정확한 어휘 목록을 요구하던 시절, 같은 의도의 7개 표현 중 3개가 후보를
+    만들지 못했다 —
+        "나 74세인데 세금 어떻게 내?"      -> [] (연금이라는 단어가 없음)
+        "74세인데 얼마나 떼나요?"           -> [] (세율/세금 어휘가 목록에 없음)
+        "제 나이가 74인데 세율 알려주세요"    -> [] (연금이라는 단어가 없음)
+    이는 "세액공제+얼마=한도질문"으로 단정하던 사고(7cddb1f)와 같은 클래스다: 표면
+    어휘 조합으로 판정하려다 표현이 조금만 달라지면 무너진다. 후보는 넓히고, 대신
+    라우터가 후보 밖 카테고리를 고르지 못하도록 코드로 막는다(router._enforce_candidate_scope).
     """
     text = _compact(question)
     candidates: list[str] = []
@@ -100,16 +145,24 @@ def candidate_categories(question: str) -> list[str]:
     if "디폴트옵션" in text:
         candidates.append("디폴트옵션_자동매수")
     if "실물이전" in text:
+        # 같은 도메인이라도 "목록 나열"과 "내 상품 판정"은 다른 작업이다. 둘 다 후보로
+        # 넣고 라우터가 고르게 한다 — 개별판정 경로가 없던 동안 라우터가 이런 질문을
+        # 기각했고, LLM이 자유롭게 툴을 고르다 엉뚱한 툴(투자 가능 여부)을 불러
+        # "네, 실물이전 문제없습니다"라는 정반대 답을 낸 실측이 있다.
         candidates.append("실물이전_불가사유")
+        candidates.append("실물이전_개별판정")
     if "연금수령한도" in text or ("연금" in text and "한도" in text):
         candidates.append("연금수령한도")
     if any(word in text for word in ("퇴직소득세", "이연퇴직소득세")):
         candidates.append("퇴직소득세감면")
     if any(word in text for word in ("연금소득세", "종합과세", "분리과세")):
         candidates.append("연금소득세_종합과세")
-    # 연령별 연금소득세율 — "연금소득세"라는 정확한 단어 없이 "연금 받으면 세율"처럼 묻는
-    # 경우가 많아, 연금 문맥 + 세율 표현을 폭넓게 후보로 잡는다(확정은 router LLM이 한다).
-    if "연금" in text and any(word in text for word in ("세율", "몇%", "몇퍼센트", "몇프로", "세금이얼마", "세금얼마")):
+
+    # 연령별 연금소득세율 — 나이가 언급되고 세금 얘기가 나오면 후보에 넣는다.
+    # "연금"이라는 단어를 요구하지 않는다: 연금 상담 서비스에 들어온 질문이므로 문맥은
+    # 이미 연금이고, 사용자는 "나 74세인데 세금 어떻게 내?"처럼 제도명을 생략한다.
+    has_tax_context = any(word in text for word in _TAX_AMOUNT_WORDS)
+    if has_tax_context and (_AGE_MENTION_RE.search(text) or "연금" in text):
         candidates.append("연금소득세율_연령별")
 
     return candidates
@@ -358,6 +411,87 @@ def _in_kind_transfer_block_response(question: str) -> tuple[str, list[Retrieved
     return draft, _context(source, content)
 
 
+# 사용자가 쓰는 표현 -> doc34 불가사유 코드. 코드표(TRANSFER_BLOCK_CODES)의 name을 그대로
+# 쓰되, 실제 질문에서 나오는 축약·구어 표현만 추가로 매핑한다.
+_TRANSFER_CODE_ALIASES: dict[str, tuple[str, ...]] = {
+    "01": ("소규모펀드", "소규모"),
+    "03": ("사모펀드", "사모"),
+    "04": ("mmf", "머니마켓", "단기금융"),
+    "05": ("환매수수료",),
+    "08": ("압류", "질권"),
+    "09": ("만기매칭형",),
+    "10": ("지분증권", "리츠"),
+    "11": ("rp", "환매조건부"),
+    "12": ("발행어음",),
+    "13": ("금리연동형보험", "금리연동"),
+    "14": ("실적배당형보험", "변액보험"),
+    "16": ("규약미체결", "규약"),
+    "18": ("한도초과", "예금자보호한도"),
+    "19": ("자사상품",),
+    "21": ("만기", "만기도래", "만기상환", "상환"),
+    "22": ("환매불가",),
+    "23": ("디폴트옵션",),
+    "24": ("상장투자회사", "맥쿼리인프라"),
+}
+
+
+def _detect_transfer_codes(question: str) -> list[str]:
+    """질문에서 실물이전 불가사유 코드를 인식한다 (코드표 name + 구어 표현)."""
+    text = _compact(question).lower()
+    detected: list[str] = []
+    for code, info in TRANSFER_BLOCK_CODES.items():
+        name_key = _compact(info["name"]).lower()
+        aliases = _TRANSFER_CODE_ALIASES.get(code, ())
+        if name_key in text or any(alias in text for alias in aliases):
+            detected.append(code)
+    return detected
+
+
+def _in_kind_transfer_judgement_response(question: str) -> tuple[str, list[RetrievedItem]] | None:
+    """보유 상품이 특정된 실물이전 질문에 가능/불가를 판정한다 (목록 나열이 아님).
+
+    "실물이전이 안 되는 경우는?"(목록답변)과 "MMF인데 옮길 수 있나요?"(개별판정)는
+    같은 도메인이지만 다른 작업이다. 개별판정용 정형 경로가 없던 동안 라우터가 이런
+    질문을 기각했고, LLM이 자유롭게 툴을 고르다 실측에서 실물이전 질문에
+    check_product_pension_eligibility(연금계좌 투자 가능 여부)를 호출해 "네, 실물이전
+    문제없이 진행 가능합니다"라는 정반대 답을 냈다.
+
+    상품 유형이 인식되지 않으면 None을 돌려 목록답변이나 일반 경로로 넘긴다.
+    """
+    codes = _detect_transfer_codes(question)
+    if not codes:
+        return None
+
+    source = "doc34 실물이전 불가사유 코드"
+    blocking = [c for c in codes if not TRANSFER_BLOCK_CODES[c].get("directional")]
+    manual = [c for c in codes if TRANSFER_BLOCK_CODES[c].get("directional")]
+
+    def _describe(code: str) -> str:
+        info = TRANSFER_BLOCK_CODES[code]
+        return f"{code}. {info['name']}: {info['desc']}"
+
+    content = "; ".join(_describe(c) for c in codes)
+
+    if blocking:
+        reasons = "\n".join(f"- {_describe(c)}" for c in blocking)
+        draft = (
+            "아니요, 말씀하신 상품은 실물이전이 제한됩니다.\n\n"
+            f"해당하는 불가사유는 다음과 같습니다.\n{reasons}\n\n"
+            "실물이전이 불가한 상품은 매도(환매) 후 현금으로 이전하는 방법을 검토하실 수 "
+            "있습니다. 다만 매도 시점의 손익과 환매 조건은 상품마다 다르므로 가입 금융기관에 "
+            "확인하시기 바랍니다."
+        )
+    else:
+        reasons = "\n".join(f"- {_describe(c)}" for c in manual)
+        draft = (
+            "조건에 따라 다릅니다. 말씀하신 상품은 상대 금융기관 확인이 필요한 사유에 "
+            f"해당합니다.\n\n{reasons}\n\n"
+            "이관은 가능하더라도 수관 기관의 협약·상품라인업 여부에 따라 최종 가능 여부가 "
+            "달라지므로, 옮기려는 금융기관에 확인이 필요합니다."
+        )
+    return draft, _context(source, content)
+
+
 def _withdrawal_limit_response(question: str) -> tuple[str, list[RetrievedItem]]:
     source = "doc39 연금수령한도 규칙"
     content = (
@@ -518,6 +652,7 @@ _CATEGORY_HANDLERS = {
     "중도인출_일반": _early_withdrawal_general_response,
     "디폴트옵션_자동매수": _default_option_auto_purchase_response,
     "실물이전_불가사유": _in_kind_transfer_block_response,
+    "실물이전_개별판정": _in_kind_transfer_judgement_response,
     "연금수령한도": _withdrawal_limit_response,
     "퇴직소득세감면": _retirement_tax_reduction_response,
     "연금소득세_종합과세": _pension_income_tax_response,

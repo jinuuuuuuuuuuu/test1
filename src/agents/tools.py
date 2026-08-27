@@ -19,7 +19,9 @@ from langchain_core.tools import tool
 from src.rules.comprehensive_tax import determine_comprehensive_tax
 from src.rules.default_option import check_optin_eligibility, get_auto_purchase_schedule
 from src.rules.early_withdrawal import (
+    WITHDRAWAL_DEADLINE_RULES,
     PlanType,
+    calculate_deadline,
     check_disaster_eligibility,
     check_home_purchase_eligibility,
     check_medical_treatment_eligibility,
@@ -135,12 +137,48 @@ def calculate_pension_withdrawal(
 EarlyWithdrawalReason = Literal["요양", "개인회생파산", "무주택전월세", "무주택주택구입", "재난피해"]
 
 
+def _transfer_code_detail(code: str) -> dict:
+    """실물이전 불가사유 코드를 doc34 원문 설명과 함께 돌려준다."""
+    entry = TRANSFER_BLOCK_CODES.get(code, {})
+    return {
+        "code": code,
+        "name": entry.get("name", ""),
+        "description": entry.get("desc", ""),
+    }
+
+
+def _deadline_info(reason: str, basis_date: Optional[date]) -> dict:
+    """사유·기준일로부터 신청기한 정보를 만든다 (기준일이 없으면 규정만 안내).
+
+    eligible 하나만 돌려주던 시절에는 "언제까지 신청하나요"라는 질문에 LLM이 마감일을
+    직접 계산하지 못해 "3개월 이내"라는 원문 표현만 되뇌었다. 계산은 규칙엔진이 하고
+    결과를 근거로 넘긴다.
+    """
+    rule = WITHDRAWAL_DEADLINE_RULES.get(reason)
+    if rule is None:
+        return {}
+
+    period = f"{rule.years}년" if rule.years else f"{rule.months}개월"
+    info = {
+        "deadline_basis_event": rule.basis_event,
+        "deadline_period": period,
+        "deadline_rule": f"{rule.basis_event}로부터 달력 기준 {period} 이내",
+        "source_doc": rule.source_doc,
+    }
+    if rule.note:
+        info["deadline_note"] = rule.note
+    if basis_date is not None:
+        info["basis_date"] = basis_date.isoformat()
+        info["deadline"] = calculate_deadline(reason, basis_date).isoformat()
+    return info
+
+
 @tool
 @_safe_tool
 def check_early_withdrawal(
     reason: EarlyWithdrawalReason,
     plan_type: Literal["DB", "DC", "IRP"],
-    request_date: str,
+    request_date: Optional[str] = None,
     # 요양 (reason="요양")
     medical_expense_last_year: Optional[int] = None,
     prior_year_annual_wage: Optional[int] = None,
@@ -164,14 +202,46 @@ def check_early_withdrawal(
     damage_date: Optional[str] = None,
     damage_resolved: bool = True,
 ) -> dict:
-    """5가지 중도인출 사유(요양/개인회생파산/무주택전월세/무주택주택구입/재난피해) 중 하나에 대해
-    중도인출 요건 충족 여부를 판정한다. DB는 어떤 사유든 중도인출이 원천 불가하다.
+    """5가지 중도인출 사유(요양/개인회생파산/무주택전월세/무주택주택구입/재난피해)에 대해
+    **신청기한을 계산**하고, 신청일이 주어지면 **요건 충족 여부까지 판정**한다.
+    DB는 어떤 사유든 중도인출이 원천 불가하다.
 
-    reason에 따라 필요한 파라미터만 채우면 된다 (다른 사유의 파라미터는 무시된다).
+    두 가지 질문 유형을 모두 처리한다:
+      - "언제까지 신청해야 하나요?" -> request_date 없이 기준일만 넘긴다. deadline이 나온다.
+      - "이 날짜에 신청하면 되나요?" -> request_date까지 넘긴다. eligible 판정이 함께 나온다.
+
+    ⚠️ request_date를 임의로 채우지 마세요. 사용자가 신청일을 말하지 않았는데 기준일을
+    신청일로 넣으면, 묻지도 않은 "그날 신청하면 가능한가" 판정을 하게 됩니다. 기한만
+    물었으면 request_date는 비워 두세요.
+
+    사유별 기준일 파라미터:
+      요양 -> treatment_end_date / 개인회생파산 -> decision_date /
+      무주택전월세 -> balance_payment_date / 무주택주택구입 -> ownership_registration_date /
+      재난피해 -> damage_date
     날짜는 모두 "YYYY-MM-DD" 형식 문자열로 전달한다.
     """
     plan = PlanType(plan_type)
     req_date = _parse_date(request_date)
+
+    # 신청기한은 신청일과 무관하게 기준일만으로 확정된다 — 기한 질문에 요건 판정을 강요하지
+    # 않도록 항상 먼저 계산해 근거로 넘긴다.
+    basis_dates = {
+        "요양": treatment_end_date,
+        "개인회생파산": decision_date,
+        "무주택전월세": balance_payment_date,
+        "무주택주택구입": ownership_registration_date,
+        "재난피해": damage_date,
+    }
+    deadline_info = _deadline_info(reason, _parse_date(basis_dates.get(reason)))
+
+    if req_date is None:
+        # 신청일이 없으면 요건 판정을 하지 않는다. 기한 정보만 돌려주고, 판정이 필요하면
+        # LLM이 사용자에게 신청일을 되묻도록 한다.
+        return {
+            **deadline_info,
+            "eligibility_checked": False,
+            "note": "신청일(request_date)이 없어 요건 충족 여부는 판정하지 않았습니다.",
+        }
 
     if reason == "요양":
         result = check_medical_treatment_eligibility(
@@ -219,7 +289,9 @@ def check_early_withdrawal(
     else:
         raise ValueError(f"알 수 없는 중도인출 사유입니다: {reason}")
 
-    return _to_jsonable(result)
+    # 판정 결과와 기한 정보를 함께 낸다 — "기한이 지나서 불가"라는 판정을 받았을 때
+    # 사용자에게 "그럼 언제까지였나"를 답하려면 마감일이 근거에 있어야 한다.
+    return {**deadline_info, **_to_jsonable(result), "eligibility_checked": True}
 
 
 # ── 4. check_default_option ──────────────────────────────────────────────
@@ -325,7 +397,16 @@ def check_in_kind_transfer(
         "no_product_agreement_at_receiver": no_product_agreement_at_receiver,
     }
     result = check_transfer_eligibility(**flags)
-    return _to_jsonable(result)
+    payload = _to_jsonable(result)
+
+    # 코드 번호만 넘기면 LLM이 그 코드가 무슨 뜻인지 몰라 답변에서 지어낸다 — 실측:
+    # blocking_codes=["04"]만 근거로 받은 모델이 "계약 종료", "원금과 수익금 회수",
+    # "신규 가입 절차" 같은 근거 없는 설명을 덧붙였다. 코드표(doc34)를 함께 넘긴다.
+    payload["blocking_reasons"] = [_transfer_code_detail(c) for c in result.blocking_codes]
+    payload["needs_manual_review_reasons"] = [
+        _transfer_code_detail(c) for c in result.needs_manual_review_codes
+    ]
+    return payload
 
 
 # ── 6. check_product_pension_eligibility (③상품 Agent 전용) ─────────────

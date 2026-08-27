@@ -244,3 +244,48 @@ def test_fallback_still_triggers_on_real_recommendation_request():
     text = "IRP에 넣을 펀드 추천해줘"
     assert _is_recommendation_intent(text) is True
     assert _has_account_type(text) is True
+
+
+# ── 대화 이력 오염 차단 (2026-08-27) ───────────────────────────────────
+#
+# conversation_history 전체를 무차별로 합치면 직전 제도·세제 질문의 수치가 상품 추천
+# 프로필로 새어 들어간다 (실측: "만 74세 연금 세율" 다음에 "IRP에서 S&P500 ETF 살 수
+# 있나요"를 물었더니 추천 조건에 "투자기간 2026년, 나이 74세"가 섞였다).
+# 나이·날짜만 빼는 방식은 그 다음에 금액이 새는 식으로 반복되므로 "같은 흐름의 턴인가"로 거른다.
+
+
+def test_history_from_other_topics_is_excluded():
+    from src.agents.product_agent import _combined_user_text
+
+    combined = _combined_user_text({
+        "question": "IRP에서 S&P500 ETF 살 수 있나요?",
+        "conversation_history": [
+            {"question": "만 74세인데 연금 세율이 몇 %인가요?"},
+            {"question": "2026년에 인출하면 어떻게 되나요?"},
+        ],
+    })
+
+    assert "74세" not in combined
+    assert "2026년" not in combined
+    assert "S&P500" in combined
+
+
+def test_product_flow_history_is_kept():
+    """상품 추천 흐름의 이전 턴은 이어받아야 슬롯 채우기가 동작한다."""
+    from src.agents.product_agent import _combined_user_text
+
+    combined = _combined_user_text({
+        "question": "안정형이야",
+        "conversation_history": [{"question": "IRP에 넣을 펀드 추천해줘"}],
+    })
+
+    assert "IRP에 넣을 펀드 추천해줘" in combined
+    assert "안정형이야" in combined
+
+
+def test_long_question_with_condition_words_is_not_flow():
+    """조건 어휘가 섞였다고 긴 질문까지 흐름으로 오인하면 안 된다."""
+    from src.agents.product_agent import _is_product_flow_turn
+
+    assert not _is_product_flow_turn("2026년에 인출하면 어떻게 되나요?")
+    assert _is_product_flow_turn("월 30만원")

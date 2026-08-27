@@ -1,3 +1,4 @@
+import pytest
 from datetime import date
 from src.rules.early_withdrawal import (
     PlanType,
@@ -259,3 +260,56 @@ def test_disaster_over_3_months_resolved_blocked():
         damage_resolved=True,
     )
     assert r.eligible is False
+
+
+# ── 신청기한 공통 계산 (task_type 공통화, 2026-08-27) ──────────────────
+#
+# 사유별로 마감일 계산을 따로 구현하던 시절, "요양·주택구입만 날짜 핸들러가 있고
+# 전월세·재난은 없는" 비대칭이 생겨 전월세 날짜 질문이 사유 목록 답변으로 빠졌다.
+# 기한 규정을 테이블로 선언하고 계산은 calculate_deadline 한 곳에서만 한다.
+
+
+def test_all_five_reasons_have_deadline_rules():
+    """5개 사유 전부 기한 규정이 선언돼 있어야 한다 — 하나라도 빠지면 그 사유는 날짜를 못 답한다."""
+    from src.rules.early_withdrawal import WITHDRAWAL_DEADLINE_RULES
+
+    assert set(WITHDRAWAL_DEADLINE_RULES) == {
+        "요양", "개인회생파산", "무주택전월세", "무주택주택구입", "재난피해",
+    }
+    for reason, rule in WITHDRAWAL_DEADLINE_RULES.items():
+        assert rule.basis_event, f"{reason}: 기준일 표현이 없다"
+        assert rule.months or rule.years, f"{reason}: 기간이 없다"
+        assert rule.source_doc, f"{reason}: 근거 문서가 없다"
+
+
+@pytest.mark.parametrize("reason,basis,expected", [
+    ("요양", date(2026, 1, 15), date(2026, 2, 15)),
+    ("무주택전월세", date(2026, 1, 31), date(2026, 2, 28)),      # 말일 보정
+    ("무주택주택구입", date(2026, 3, 20), date(2026, 4, 20)),
+    ("재난피해", date(2026, 5, 10), date(2026, 8, 10)),          # 3개월
+    ("개인회생파산", date(2026, 6, 1), date(2031, 6, 1)),        # 5년
+])
+def test_calculate_deadline_per_reason(reason, basis, expected):
+    from src.rules.early_withdrawal import calculate_deadline
+
+    assert calculate_deadline(reason, basis) == expected
+
+
+def test_calendar_months_handles_month_end_and_leap_year():
+    """원문이 "1개월"이라고만 하므로 30일 환산이 아니라 달력 기준으로 계산해야 한다.
+
+    timedelta(days=30)을 쓰던 시절 1월 31일 기준 마감일이 3월 2일로 나와 이틀 관대했다.
+    """
+    from src.rules.early_withdrawal import add_calendar_months
+
+    assert add_calendar_months(date(2026, 1, 31), 1) == date(2026, 2, 28)
+    assert add_calendar_months(date(2024, 1, 31), 1) == date(2024, 2, 29)  # 윤년
+    assert add_calendar_months(date(2026, 3, 31), 1) == date(2026, 4, 30)
+    assert add_calendar_months(date(2026, 5, 15), 1) == date(2026, 6, 15)
+
+
+def test_unknown_reason_raises():
+    from src.rules.early_withdrawal import calculate_deadline
+
+    with pytest.raises(ValueError):
+        calculate_deadline("없는사유", date(2026, 1, 1))

@@ -188,3 +188,61 @@ def test_search_pension_docs_tool_returns_relevant_chunks():
     assert isinstance(out, list)
     assert len(out) <= 3
     assert all("chunk_id" in item and "content" in item for item in out)
+
+
+# ── 툴 근거 강화 (task_type 공통화, 2026-08-27) ────────────────────────
+
+def test_early_withdrawal_returns_deadline_without_request_date():
+    """"언제까지 신청하나요"만 물었을 때 신청일을 요구하지 않고 마감일을 계산해 준다.
+
+    request_date가 필수였던 시절, LLM이 기준일을 신청일로 그대로 넣어 묻지도 않은
+    "그날 신청하면 가능한가" 판정을 해버렸고, 마감일은 근거에 없어 "3개월 이내"라는
+    원문 표현만 되뇌었다.
+    """
+    from src.agents.tools import check_early_withdrawal
+
+    result = check_early_withdrawal.invoke(
+        {"reason": "재난피해", "plan_type": "IRP", "damage_date": "2026-05-10"}
+    )
+
+    assert result["deadline"] == "2026-08-10"
+    assert result["deadline_basis_event"] == "피해발생일"
+    assert result["eligibility_checked"] is False
+
+
+def test_early_withdrawal_covers_reasons_without_dedicated_handler():
+    """전월세처럼 전용 날짜 핸들러가 없던 사유도 같은 경로로 마감일이 나와야 한다."""
+    from src.agents.tools import check_early_withdrawal
+
+    result = check_early_withdrawal.invoke(
+        {"reason": "무주택전월세", "plan_type": "IRP", "balance_payment_date": "2026-01-31"}
+    )
+
+    assert result["deadline"] == "2026-02-28"
+
+
+def test_early_withdrawal_still_judges_when_request_date_given():
+    """신청일이 주어지면 요건 판정도 함께 한다 (기한 정보와 공존)."""
+    from src.agents.tools import check_early_withdrawal
+
+    result = check_early_withdrawal.invoke({
+        "reason": "재난피해", "plan_type": "IRP",
+        "damage_date": "2026-05-10", "request_date": "2026-06-01",
+    })
+
+    assert result["eligibility_checked"] is True
+    assert result["eligible"] is True
+    assert result["deadline"] == "2026-08-10"
+
+
+def test_in_kind_transfer_returns_code_descriptions():
+    """코드 번호만 주면 LLM이 그 코드의 의미를 지어낸다 — doc34 설명을 함께 넘긴다."""
+    from src.agents.tools import check_in_kind_transfer
+
+    result = check_in_kind_transfer.invoke({"is_mmf": True})
+
+    assert result["blocking_codes"] == ["04"]
+    reasons = result["blocking_reasons"]
+    assert reasons[0]["code"] == "04"
+    assert reasons[0]["name"] == "MMF"
+    assert reasons[0]["description"]

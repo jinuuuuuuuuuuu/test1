@@ -4,10 +4,22 @@ doc49(무주택 주택구입), doc50(재난피해)
 공통 규칙 (5개 문서 공통 서두):
 - DC(확정기여형), IRP(개인형퇴직연금)만 중도인출 가능. DB(확정급여형)는 중도인출 자체가 불가.
   (근로자퇴직급여보장법 시행령 제14조·제18조 각호)
+
+신청기한 (5개 사유 공통 구조 — WITHDRAWAL_DEADLINE_RULES):
+사유마다 문서가 다르지만 규정 형태는 전부 "기준일 + 기간 이내"로 같다. 사유별로 마감일
+계산을 따로 구현하면 사유가 늘 때마다 같은 코드를 복제하게 되고, 실제로 "요양·주택구입만
+날짜 핸들러가 있고 전월세·재난은 없는" 비대칭이 생겼다(실측: 전월세 날짜 질문이 사유 목록
+답변으로 빠짐). 그래서 기한 규정을 테이블로 선언하고 계산은 한 곳(calculate_deadline)에서만
+한다 — 사유가 추가돼도 테이블 한 줄이면 된다.
+
+⚠️ 기간 단위: 원문은 "1개월", "3개월", "5년"으로만 표현하고 30일/90일 환산을 정의하지
+않는다. 따라서 고정 일수가 아니라 달력 기준으로 계산한다(2026-01-31 + 1개월 = 2026-02-28).
+과거에 timedelta(days=30)을 쓰던 시기에는 1월 31일 기준 마감일이 3월 2일로 나와 실제보다
+이틀 관대하게 판정됐다.
 """
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 from enum import Enum
 
 
@@ -21,6 +33,73 @@ class PlanType(Enum):
 class WithdrawalEligibilityResult:
     eligible: bool
     reason: str
+
+
+@dataclass
+class WithdrawalDeadlineRule:
+    """한 사유의 신청기한 규정 — "무엇을 기준으로, 얼마 이내"."""
+
+    basis_event: str          # 기준일이 되는 사건 (사용자에게 그대로 보여줄 표현)
+    months: int | None        # 기간(개월). years와 둘 중 하나만 채운다.
+    years: int | None = None
+    source_doc: str = ""      # 근거 문서
+    note: str = ""            # 기한 외 유의사항 (예: 재난피해의 미해소 예외)
+
+
+# 사유 코드 -> 신청기한 규정. reason 값은 tools.check_early_withdrawal의 EarlyWithdrawalReason과 일치.
+WITHDRAWAL_DEADLINE_RULES: dict[str, WithdrawalDeadlineRule] = {
+    "요양": WithdrawalDeadlineRule(
+        basis_event="요양종료일", months=1, source_doc="doc46",
+        note="요양사유 확인일로부터 요양종료일 이후 1개월 이내가 원문 표현입니다.",
+    ),
+    "개인회생파산": WithdrawalDeadlineRule(
+        basis_event="개인회생절차개시 결정일 또는 파산선고일", months=None, years=5,
+        source_doc="doc47",
+        note="개인회생은 신청 시점에 절차 효력이 진행 중이어야 합니다(폐지·면책 결정 시 불가).",
+    ),
+    "무주택전월세": WithdrawalDeadlineRule(
+        basis_event="잔금지급일", months=1, source_doc="doc48",
+        note="주택임대차계약 체결일로부터 잔금지급일 이후 1개월 이내가 원문 표현입니다.",
+    ),
+    "무주택주택구입": WithdrawalDeadlineRule(
+        basis_event="소유권 이전 등기접수일", months=1, source_doc="doc49",
+        note="주택매매계약 체결일로부터 소유권 이전 등기 후 1개월 이내가 원문 표현입니다.",
+    ),
+    "재난피해": WithdrawalDeadlineRule(
+        basis_event="피해발생일", months=3, source_doc="doc50",
+        note="3개월이 지나도 피해 사유가 해소되지 않았음을 증명하면 해소 전까지 신청할 수 있습니다.",
+    ),
+}
+
+
+def add_calendar_months(base_date: date, months: int) -> date:
+    """달력 기준으로 개월을 더한다 (말일은 그 달의 마지막 날로 맞춘다).
+
+    2026-01-31 + 1개월 = 2026-02-28, 2024-01-31 + 1개월 = 2024-02-29.
+    """
+    import calendar
+
+    month_index = base_date.month - 1 + months
+    year = base_date.year + month_index // 12
+    month = month_index % 12 + 1
+    last_day = calendar.monthrange(year, month)[1]
+    return date(year, month, min(base_date.day, last_day))
+
+
+def calculate_deadline(reason: str, basis_date: date) -> date:
+    """사유와 기준일을 받아 신청 마감일을 계산한다 — 5개 사유 공통 진입점.
+
+    요건 충족 판정(check_*_eligibility)과 분리해 둔 이유: 사용자가 "언제까지 신청해야
+    하나요"만 물었을 때 신청일을 요구하면 안 되기 때문이다. 실측에서 신청일이 필수라
+    LLM이 기준일을 신청일로 그대로 넣어, 묻지도 않은 "그날 신청하면 가능한가" 판정을
+    해버리는 오작동이 있었다.
+    """
+    rule = WITHDRAWAL_DEADLINE_RULES.get(reason)
+    if rule is None:
+        raise ValueError(f"알 수 없는 중도인출 사유입니다: {reason}")
+    if rule.years is not None:
+        return add_calendar_months(basis_date, rule.years * 12)
+    return add_calendar_months(basis_date, rule.months)
 
 
 def check_plan_type_eligible(plan_type: PlanType) -> WithdrawalEligibilityResult:
@@ -59,9 +138,11 @@ def check_medical_treatment_eligibility(
                 "DC는 직전 1년 의료비 총액이 직전년도 연간임금총액의 12.5%를 초과해야 신청 가능합니다.",
             )
 
-    deadline = treatment_end_date + timedelta(days=30)
+    deadline = calculate_deadline("요양", treatment_end_date)
     if request_date > deadline:
-        return WithdrawalEligibilityResult(False, "요양종료일로부터 1개월(약 30일)이 지나 신청 기한이 지났습니다.")
+        return WithdrawalEligibilityResult(
+            False, f"요양종료일로부터 1개월(달력 기준 {deadline}까지)이 지나 신청 기한이 지났습니다."
+        )
 
     return WithdrawalEligibilityResult(True, "요양 사유 중도인출 요건을 충족합니다.")
 
@@ -93,9 +174,11 @@ def check_rehabilitation_bankruptcy_eligibility(
     if event_type not in ("개인회생", "파산선고"):
         raise ValueError("event_type은 '개인회생' 또는 '파산선고'여야 합니다")
 
-    deadline = decision_date.replace(year=decision_date.year + 5)
+    deadline = calculate_deadline("개인회생파산", decision_date)
     if request_date > deadline:
-        return WithdrawalEligibilityResult(False, f"{event_type} 결정일로부터 5년이 지나 신청 기한이 지났습니다.")
+        return WithdrawalEligibilityResult(
+            False, f"{event_type} 결정일로부터 5년(달력 기준 {deadline}까지)이 지나 신청 기한이 지났습니다."
+        )
 
     if event_type == "개인회생" and not rehabilitation_still_effective:
         return WithdrawalEligibilityResult(False, "개인회생절차가 폐지·면책 결정으로 이미 종료되어 신청할 수 없습니다.")
@@ -136,9 +219,11 @@ def check_rental_deposit_eligibility(
     if plan_type == PlanType.DC and dc_already_used:
         return WithdrawalEligibilityResult(False, "DC는 하나의 사업장에서 재직 중 1회만 가능하며, 이미 사용한 이력이 있습니다.")
 
-    deadline = balance_payment_date + timedelta(days=30)
+    deadline = calculate_deadline("무주택전월세", balance_payment_date)
     if request_date > deadline:
-        return WithdrawalEligibilityResult(False, "잔금지급일로부터 1개월(약 30일)이 지나 신청 기한이 지났습니다.")
+        return WithdrawalEligibilityResult(
+            False, f"잔금지급일로부터 1개월(달력 기준 {deadline}까지)이 지나 신청 기한이 지났습니다."
+        )
 
     return WithdrawalEligibilityResult(True, "무주택자 전월세보증금 사유 중도인출 요건을 충족합니다.")
 
@@ -167,9 +252,12 @@ def check_home_purchase_eligibility(
     if ownership_type in ("증여", "상속"):
         return WithdrawalEligibilityResult(False, "증여·상속으로 취득하는 주택구입은 중도인출 대상이 아닙니다.")
 
-    deadline = ownership_registration_date + timedelta(days=30)
+    deadline = calculate_deadline("무주택주택구입", ownership_registration_date)
     if request_date > deadline:
-        return WithdrawalEligibilityResult(False, "소유권 이전 등기일로부터 1개월(약 30일)이 지나 신청 기한이 지났습니다.")
+        return WithdrawalEligibilityResult(
+            False,
+            f"소유권 이전 등기접수일로부터 1개월(달력 기준 {deadline}까지)이 지나 신청 기한이 지났습니다.",
+        )
 
     return WithdrawalEligibilityResult(True, "무주택자 주택구입 사유 중도인출 요건을 충족합니다.")
 
@@ -191,8 +279,12 @@ def check_disaster_eligibility(
     if not plan_check.eligible:
         return plan_check
 
-    deadline = damage_date + timedelta(days=90)
+    deadline = calculate_deadline("재난피해", damage_date)
     if request_date > deadline and damage_resolved:
-        return WithdrawalEligibilityResult(False, "피해발생일로부터 3개월이 지났고 피해 사유도 이미 해소되어 신청 기한이 지났습니다.")
+        return WithdrawalEligibilityResult(
+            False,
+            f"피해발생일로부터 3개월(달력 기준 {deadline}까지)이 지났고 피해 사유도 이미 "
+            "해소되어 신청 기한이 지났습니다.",
+        )
 
     return WithdrawalEligibilityResult(True, "재난피해 사유 중도인출 요건을 충족합니다.")

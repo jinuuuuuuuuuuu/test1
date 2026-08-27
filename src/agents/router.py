@@ -114,12 +114,12 @@ ROUTER_SYSTEM_PROMPT = """당신은 연금 상담 AI의 질문 분류 게이트�
      ⚠️ "실물이전이 안 되는 상품"의 예시로 디폴트옵션이 언급된 것처럼 다른 주제의
      일부로만 나온 경우는 "해당없음"입니다.
    - 실물이전_불가사유: 실물이전이 안 되거나 제한되는 상품·사유에 어떤 것들이 있는지
-     목록을 묻는 질문.
+     **목록**을 묻는 질문 (보유 상품이 특정되지 않음).
      ⚠️ "실물이전이 되는 상품은?"처럼 허용되는 것을 묻거나, 실물이전 절차 자체를 묻는
      질문은 "해당없음"입니다(이 카테고리는 불가사유 전용입니다).
-     ⚠️ "제 상품이 왜 안 되나요", "MMF인데 이전 되나요", "만기가 됐는데 왜 안 되죠"처럼
-     보유 상품의 종류·상태가 제시되면 실물이전 가능여부 판정 툴이 정확히 답할 수 있으므로
-     "해당없음"입니다.
+   - 실물이전_개별판정: "MMF인데 이전 되나요", "만기가 됐는데 왜 안 되죠", "사모펀드도
+     옮길 수 있나요"처럼 **보유 상품의 종류·상태가 제시된** 실물이전 가능여부 질문.
+     목록을 나열하는 게 아니라 그 상품에 대해 가능/불가를 판정합니다.
    - 연금수령한도: 연금수령한도 계산식이나 그 개념 자체를 묻는 질문.
    - 퇴직소득세감면: 퇴직금을 연금으로 받을 때 이연퇴직소득세 감면율을 묻는 질문.
      ⚠️ 연금소득세(사적연금소득 종합과세) 질문과 혼동하지 마세요 — 퇴직소득세감면은
@@ -163,6 +163,7 @@ class RouterDecision(BaseModel):
         "중도인출_일반",
         "디폴트옵션_자동매수",
         "실물이전_불가사유",
+        "실물이전_개별판정",
         "연금수령한도",
         "퇴직소득세감면",
         "연금소득세_종합과세",
@@ -198,6 +199,45 @@ def _apply_asset_scope_override(
     # 상품을 지목한 질문이므로 상품 Agent가 처리해야 한다. 범위외 판정과 함께 intent가
     # 비어 나오는 경우가 있어(판정을 포기한 상태) 여기서 함께 보정한다.
     return "범위내", note, (intent or ["상품형"])
+
+
+def _drop_product_intent_for_deterministic_info(
+    intent: list[str], category: str, matched_funds: list[str]
+) -> list[str]:
+    """정형 제도 답변으로 확정된 질문에서 불필요한 상품형을 떼어낸다.
+
+    실측: "MMF인데 실물이전 옮길 수 있나요?"가 deterministic_category=실물이전_개별판정
+    으로 정확히 확정되고도 intent=['정보형','상품형']이 붙어 ③상품 Agent까지 실행됐다.
+    그 결과 최종 답변에 "[제도·세제 관련 답변] ... [상품 관련 답변] ..."이 함께 붙어
+    같은 질문에 두 번 답하는 형태가 됐다.
+
+    상품 유형 단어(MMF·펀드 등)가 들어갔다는 이유로 상품형이 붙지만, 정형 카테고리가
+    확정됐다는 것은 이 질문이 제도 판정으로 답해진다는 뜻이다. 보유 상품 조회까지
+    비어 있으면 ③이 할 일이 없다 — 실행되면 임의의 펀드를 근거로 끌어올 뿐이다.
+    프롬프트에 같은 취지의 지시가 있으나 지켜지지 않아 코드로 강제한다.
+    """
+    if category == "해당없음" or matched_funds:
+        return intent
+    remaining = [i for i in intent if i != "상품형"]
+    return remaining or ["정보형"]
+
+
+def _enforce_candidate_scope(category: str, candidates: list[str]) -> str:
+    """라우터가 후보 밖 카테고리를 고르면 "해당없음"으로 되돌린다.
+
+    후보 목록은 코드가 질문을 보고 만든 "이 카테고리를 검토할 근거가 있다"는 사실이다.
+    후보에 없다는 것은 그 카테고리의 트리거 신호가 질문에 없다는 뜻이므로, 그럼에도
+    확정하면 정형 답변이 엉뚱한 질문에 붙는다.
+
+    ⚠️ 이 강제는 candidate_categories가 **넓게** 후보를 잡는다는 전제 위에서만 안전하다.
+    후보를 좁게 잡으면서 밖을 막으면, 표현이 조금 다른 정상 질문까지 정형 경로를 잃는다
+    (실측: "나 74세인데 세금 어떻게 내?"가 후보 0건이었는데 라우터는 연금소득세율_연령별을
+    정확히 골랐다 — 그때 이 강제를 걸었다면 맞는 판단을 되돌렸을 것이다). 그래서
+    candidate_categories를 먼저 넓히고 이 강제를 함께 도입한다. 둘은 한 쌍이다.
+    """
+    if category == "해당없음" or category in candidates:
+        return category
+    return "해당없음"
 
 
 def build_router_node():
@@ -239,13 +279,19 @@ def build_router_node():
         scope, scope_note, intent = _apply_asset_scope_override(
             decision.scope, decision.scope_note, decision.intent, matched_funds
         )
+        deterministic_category = _enforce_candidate_scope(
+            decision.deterministic_category, candidates
+        )
+        intent = _drop_product_intent_for_deterministic_info(
+            intent, deterministic_category, matched_funds
+        )
         return {
             "intent": intent,
             "scope": scope,
             "scope_note": scope_note,
             "is_safe": decision.is_safe,
             "safety_reason": decision.safety_reason,
-            "deterministic_category": decision.deterministic_category,
+            "deterministic_category": deterministic_category,
         }
 
     return router_node

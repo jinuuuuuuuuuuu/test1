@@ -205,6 +205,55 @@ def enforce_missing_requirements(answer: str, missing: list[str]) -> str:
     )
 
 
+# ④가 premise_issues에 "답변의 결함"을 적어 넣는 경우가 있다. 실측 사례:
+#   - "2027년 연금 세제 개편안 확정 내용"      (자료에 없어 못 답한 것)
+#   - "초안이 날짜에 직접 답하지 않음"          (답변 누락)
+# 이건 "질문의 잘못된 전제"가 아니라 "요구사항 미충족"이다. 그대로 두면 최종 답변이
+# "먼저 질문에 담긴 전제를 짚고 넘어가겠습니다: 초안이 날짜에 직접 답하지 않음"처럼
+# 사용자가 하지도 않은 말을 전제라고 지적하는 이상한 문장으로 시작한다.
+#
+# 개별 문구를 블랙리스트로 거르면 표현이 바뀔 때마다 다시 뚫리므로, **서술 대상**으로
+# 구분한다: 진짜 전제는 사용자 발화를 인용하고(~다던데/~라는데/~맞죠), 오분류된 항목은
+# 답변·초안의 상태를 서술한다(~답하지 않음/~누락/~부족).
+_ANSWER_DEFECT_MARKERS = (
+    "답하지 않", "답변하지 않", "언급하지 않", "다루지 않", "포함하지 않",
+    "제공하지 않", "제시하지 않", "계산하지 않", "설명하지 않", "반영하지 않",
+    "누락", "빠졌", "빠져", "부족", "직접 답",
+    "확인되지 않", "확인할 수 없", "정보가 없", "자료에 없",
+)
+# 사용자가 실제로 한 말을 인용하는 표현. 이게 있으면 진짜 전제로 본다.
+# ⚠️ "라고 하여"처럼 인용 어미가 결함 서술 안에 섞이는 경우가 있어("질문은 '...'라고 하여
+# 정보를 제공하지 않고 있으며"), 인용 표현만으로 단정하지 않고 결함 표현과 함께 본다.
+_USER_PREMISE_MARKERS = (
+    "다던데", "라던데", "다는데", "라는데", "맞죠", "맞나요", "아닌가요",
+    "들었", "알고 있", "다고 하",
+)
+# ④가 "초안/질문이 ~하다"처럼 답변 과정을 서술하는 주어. 이게 등장하면 사용자 발화가
+# 아니라 시스템 내부 상태를 말하는 것이다.
+_META_SUBJECT_MARKERS = ("초안", "답변이", "답변은", "질문은", "질문이")
+
+
+def is_answer_defect_statement(text: str) -> bool:
+    """premise_issues 항목이 '질문의 전제'가 아니라 '답변의 결함'을 서술하는지 판정한다."""
+    has_defect = any(marker in text for marker in _ANSWER_DEFECT_MARKERS)
+    if not has_defect:
+        return False
+    # 결함 표현이 있고 초안·답변·질문을 주어로 서술하면 메타 서술로 확정한다.
+    if any(marker in text for marker in _META_SUBJECT_MARKERS):
+        return True
+    # 결함 표현은 있으나 사용자 발화 인용이면 진짜 전제로 남긴다.
+    return not any(marker in text for marker in _USER_PREMISE_MARKERS)
+
+
+def split_premise_issues(premise_issues: list[str]) -> tuple[list[str], list[str]]:
+    """premise_issues를 (진짜 전제, 실제로는 요구사항 미충족인 항목)으로 나눈다."""
+    real_premises: list[str] = []
+    misfiled_defects: list[str] = []
+    for issue in premise_issues:
+        (misfiled_defects if is_answer_defect_statement(issue) else real_premises).append(issue)
+    return real_premises, misfiled_defects
+
+
 def enforce_premise_issues(answer: str, premise_issues: list[str]) -> str:
     """④가 짚은 '질문의 잘못된 전제'를 답변이 바로잡지 않았으면 앞머리에 교정문을 붙인다.
 

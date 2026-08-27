@@ -199,3 +199,76 @@ def test_age_based_tax_rate_candidate_matches_natural_phrasing():
     """"연금소득세"라는 정확한 단어 없이 물어도 후보로 잡혀야 한다."""
     assert "연금소득세율_연령별" in candidate_categories("연금 받으면 세율이 몇 퍼센트인가요?")
     assert "연금소득세율_연령별" in candidate_categories("만 74세인데 연금 세금이 얼마인가요?")
+
+
+# ── 실물이전 개별판정 (task_type 공통화, 2026-08-27) ────────────────────
+#
+# "실물이전이 안 되는 경우는?"(목록답변)과 "MMF인데 옮길 수 있나요?"(개별판정)는
+# 같은 도메인이지만 다른 작업이다. 개별판정 경로가 없던 동안 라우터가 이런 질문을
+# 기각했고, LLM이 자유롭게 툴을 고르다 실물이전 질문에 투자 가능 여부 툴을 호출해
+# "네, 실물이전 문제없이 진행 가능합니다"라는 정반대 답을 냈다.
+
+
+def test_transfer_judgement_answers_no_for_blocked_product():
+    """불가 상품은 '아니요'로 시작해야 한다 — '네, 불가능합니다'는 반대로 읽힌다."""
+    draft, context = deterministic_response_for("실물이전_개별판정", "MMF인데 실물이전 옮길 수 있나요?")
+
+    assert draft.startswith("아니요")
+    assert "MMF" in draft
+    assert context
+
+
+def test_transfer_judgement_recognizes_colloquial_expressions():
+    """코드표 name 그대로가 아닌 구어 표현도 인식해야 한다."""
+    for question in (
+        "만기가 이미 도래한 상품인데 실물이전 되나요?",
+        "사모펀드 실물이전 되나요?",
+        "디폴트옵션 상품도 옮길 수 있나요?",
+    ):
+        result = deterministic_response_for("실물이전_개별판정", question)
+        assert result is not None, question
+        assert result[0].startswith("아니요"), question
+
+
+def test_transfer_judgement_returns_none_when_product_not_identified():
+    """상품이 특정되지 않으면 개별판정하지 않고 목록/일반 경로로 넘긴다."""
+    assert deterministic_response_for("실물이전_개별판정", "실물이전이 안 되는 경우는?") is None
+
+
+def test_transfer_judgement_cites_source_code():
+    """근거에 코드 번호와 설명이 함께 담겨야 답변이 지어내지 않는다."""
+    _, context = deterministic_response_for("실물이전_개별판정", "MMF인데 실물이전 되나요?")
+
+    assert "04" in context[0]["content"]
+    assert "MMF" in context[0]["content"]
+
+
+def test_both_transfer_categories_are_candidates():
+    """목록/개별판정 둘 다 후보로 올라가야 라우터가 고를 수 있다."""
+    candidates = candidate_categories("MMF인데 실물이전 되나요?")
+
+    assert "실물이전_불가사유" in candidates
+    assert "실물이전_개별판정" in candidates
+
+
+# ── 후보 목록 확장 (2026-08-27) ────────────────────────────────────────
+
+def test_age_tax_candidates_survive_paraphrase():
+    """같은 의도의 다른 표현에서도 후보가 나와야 한다.
+
+    "연금 + 세율" AND 조건을 요구하던 시절, 7개 표현 중 3개가 후보 0건이었다.
+    후보를 놓치면 라우터는 그 카테고리를 고려조차 못 한다.
+    """
+    for question in (
+        "나 74세인데 세금 어떻게 내?",
+        "74세인데 얼마나 떼나요?",
+        "제 나이가 74인데 세율 알려주세요",
+        "만 74세인데 연금 세율이 몇 %인가요?",
+    ):
+        assert "연금소득세율_연령별" in candidate_categories(question), question
+
+
+def test_broadened_candidates_do_not_overtrigger():
+    """넓혔다고 무관한 질문까지 후보가 생기면 안 된다."""
+    for question in ("IRP가 뭔가요?", "솔로몬 국공채 위험등급 알려줘", "DC와 DB 차이가 뭔가요?"):
+        assert candidate_categories(question) == [], question
