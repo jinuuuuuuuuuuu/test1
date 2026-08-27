@@ -83,8 +83,122 @@ GROUNDING_SYSTEM_PROMPT = """당신은 연금 상담 AI의 답변 검증기입�
 
 3. requirements_met / missing_requirements: 질문이 요구한 항목(여러 개를 동시에 물었다면 그
    전부)을 초안이 빠짐없이 다뤘는지 확인하세요. 하나라도 빠졌다면 requirements_met=False로
-   표시하고 missing_requirements에 빠진 항목을 구체적으로 적으세요."""
+   표시하고 missing_requirements에 빠진 항목을 구체적으로 적으세요.
+4. unsupported_claims:
+   초안에서 사실처럼 단정한 문장 중 [근거] 어느 항목에서도 직접 또는 합리적으로
+   뒷받침되지 않는 주장을 적으세요.
 
+   특히 다음을 반드시 확인하세요.
+   - 미래 수익률 또는 성과 예측
+   - "안전하다", "유리하다", "좋다"와 같은 평가적 단정
+   - 특정 상품의 특징을 상품군 전체로 일반화한 표현
+   - 근거에 없는 투자 가능/불가능 판단
+   - 근거에 없는 세제 혜택 또는 제도 적용 여부
+   - 검색된 근거보다 넓은 범위로 확대된 주장
+
+   단순 설명 문장이 아니라 검증 가능한 사실 주장만 대상으로 합니다.
+   근거가 있으면 포함하지 마세요.
+
+5. missing_evidence:
+   질문에 답하기 위해 필요한 핵심 정보인데 [근거]에서 확보되지 않은 것이 있다면
+   구체적인 정보 이름을 적으세요.
+
+   예:
+   - "해당 펀드의 IRP 투자 가능 여부"
+   - "해당 상품의 환매수수료"
+   - "연금저축 세액공제 한도 규정"
+   - "사용자의 위험성향" """
+
+def diagnose_grounding_failure(
+    *,
+    draft: str,
+    context: list,
+    verification: dict,
+) -> dict:
+    """최종 Grounding 결과를 바탕으로 실패 원인을 코드 레벨에서 분류한다."""
+
+    if not draft.strip():
+        return {
+            "failure_type": "EMPTY_DRAFT",
+            "failure_stage": "draft_generation",
+            "failure_reason": "Agent가 답변 초안을 생성하지 못했습니다.",
+        }
+
+    if not context:
+        return {
+            "failure_type": "NO_EVIDENCE",
+            "failure_stage": "retrieval",
+            "failure_reason": "검증에 사용할 검색 근거가 없습니다.",
+        }
+
+    if verification.get("unsupported_numbers_confirmed"):
+        return {
+            "failure_type": "UNSUPPORTED_NUMBER",
+            "failure_stage": "grounding",
+            "failure_reason": (
+                "초안에 근거에서 확인되지 않는 수치가 포함되어 있습니다."
+            ),
+        }
+
+    if verification.get("unsupported_claims"):
+        return {
+            "failure_type": "UNSUPPORTED_CLAIM",
+            "failure_stage": "grounding",
+            "failure_reason": (
+                "초안에 근거에서 뒷받침되지 않는 단정적 주장이 포함되어 있습니다."
+            ),
+        }
+
+    if verification.get("missing_evidence"):
+        return {
+            "failure_type": "INSUFFICIENT_EVIDENCE",
+            "failure_stage": "retrieval",
+            "failure_reason": (
+                "질문에 답하기 위한 핵심 근거가 충분히 확보되지 않았습니다."
+            ),
+        }
+
+    if verification.get("premise_issues"):
+        return {
+            "failure_type": "PREMISE_NOT_CORRECTED",
+            "failure_stage": "draft_generation",
+            "failure_reason": (
+                "질문의 잘못된 전제를 초안이 적절히 교정하지 못했습니다."
+            ),
+        }
+
+    if not verification.get("requirements_met", True):
+        return {
+            "failure_type": "MISSING_REQUIREMENT",
+            "failure_stage": "draft_generation",
+            "failure_reason": (
+                "질문이 요구한 항목을 초안이 모두 다루지 못했습니다."
+            ),
+        }
+
+    if verification.get("issues"):
+        return {
+            "failure_type": "GROUNDING_FAIL",
+            "failure_stage": "grounding",
+            "failure_reason": (
+                "초안과 근거 사이에 의미 불일치가 발견되었습니다."
+            ),
+        }
+
+    if not verification.get("grounded", True):
+        return {
+            "failure_type": "GROUNDING_FAIL",
+            "failure_stage": "grounding",
+            "failure_reason": (
+                "최종 Grounding 검사에서 근거 부합 조건을 충족하지 못했습니다."
+            ),
+        }
+
+    return {
+        "failure_type": "NONE",
+        "failure_stage": "none",
+        "failure_reason": "",
+    }
 
 class GroundingResult(BaseModel):
     """답변 초안이 근거·질문 요구사항과 부합하는지에 대한 검증 결과."""
@@ -101,6 +215,16 @@ class GroundingResult(BaseModel):
     requirements_met: bool = Field(description="질문이 요구한 항목을 모두 다뤘으면 True")
     missing_requirements: List[str] = Field(
         default_factory=list, description="질문에서 요구했는데 초안이 빠뜨린 항목 (없으면 빈 리스트)"
+    )
+
+    unsupported_claims: List[str] = Field(
+        default_factory=list,
+        description="근거에서 확인할 수 없는 단정적 주장"
+    )
+
+    missing_evidence: List[str] = Field(
+        default_factory=list,
+        description="답변을 위해 필요하지만 현재 근거에서 확보되지 않은 정보"
     )
 
 
@@ -140,36 +264,48 @@ def build_grounding_node():
             else ""
         )
 
-        result: GroundingResult = invoke_with_retry(llm, [
-            {"role": "system", "content": GROUNDING_SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": (
-                    f"[질문]\n{state['question']}\n\n"
-                    f"[초안 답변]\n{draft}\n\n"
-                    f"[근거]\n{context_text}\n\n"
-                    f"[코드 검사: 근거에 없는 것으로 보이는 수치]\n{suspects_text}"
-                    f"{clarification_note}"
-                ),
-            },
-        ])
+        result: GroundingResult = invoke_with_retry(
+            llm, 
+            [
+                {"role": "system", "content": GROUNDING_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": (
+                        f"[질문]\n{state['question']}\n\n"
+                        f"[초안 답변]\n{draft}\n\n"
+                        f"[근거]\n{context_text}\n\n"
+                        f"[코드 검사: 근거에 없는 것으로 보이는 수치]\n{suspects_text}"
+                        f"{clarification_note}"
+                    ),
+                },
+            ]
+        )
 
         verification = apply_l0_overrides(
             {
-                "grounded": result.grounded,
-                "issues": result.issues,
-                "unsupported_numbers_confirmed": result.unsupported_numbers_confirmed,
-                "premise_issues": result.premise_issues,
-                "requirements_met": result.requirements_met,
-                "missing_requirements": result.missing_requirements,
+            "grounded": result.grounded,
+            "issues": result.issues,
+            "unsupported_numbers_confirmed": result.unsupported_numbers_confirmed,
+            "unsupported_claims": result.unsupported_claims,
+            "missing_evidence": result.missing_evidence,
+            "premise_issues": result.premise_issues,
+            "requirements_met": result.requirements_met,
+            "missing_requirements": result.missing_requirements,
             },
             suspects=suspects,
             has_evidence=bool(context),
         )
-        if clarification or type_recommendation:
-            # 역질문 초안은 요구사항 검증을 코드로 면제한다 (프롬프트 지시만으로는 ④가
-            # "추천 누락"으로 판정 → ⑤가 추천을 되살리는 경로를 막을 수 없다).
-            verification = apply_clarification_override(verification)
-        return {"verification": verification}
 
+        if clarification or type_recommendation:
+            verification = apply_clarification_override(verification)
+
+        diagnosis = diagnose_grounding_failure(
+            draft=draft,
+            context=context,
+            verification=verification,
+        )
+
+        verification.update(diagnosis)
+
+        return {"verification": verification}
     return grounding_node
