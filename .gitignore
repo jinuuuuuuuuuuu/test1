@@ -29,3 +29,6 @@ nohup.out
 # OS
 .DS_Store
 Thumbs.db
+
+# 평가 실행 산출물 — 501문항 결과는 수십 MB이고 실행마다 바뀐다 (질문 CSV는 추적함)
+eval/results/
