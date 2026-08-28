@@ -215,7 +215,14 @@ def candidate_categories(question: str) -> list[str]:
         candidates.append("연금수령한도")
     if any(word in text for word in ("퇴직소득세", "이연퇴직소득세")):
         candidates.append("퇴직소득세감면")
-    if any(word in text for word in ("연금소득세", "종합과세", "분리과세")):
+    # ⚠️ "연금소득세"는 부분문자열 매칭이라 "연금소득세율"("세율" 부분)에도 걸린다.
+    # 그러면 "연령별 연금소득세율 표 알려줘"가 종합과세로만 후보를 잡고 정작 아래
+    # 연령별 세율 카테고리는 후보에서 빠지는 오발화가 생긴다(실측). "종합과세"·
+    # "분리과세"는 그 자체로 명확한 단어라 문제없지만, "연금소득세"만 뒤에 "율"이
+    # 붙지 않았는지 확인해 순수 종합과세 표현만 잡는다.
+    if any(word in text for word in ("종합과세", "분리과세")) or (
+        "연금소득세" in text and "연금소득세율" not in text
+    ):
         candidates.append("연금소득세_종합과세")
 
     # 연령별 연금소득세율 — 세금 얘기 + (나이 언급 OR 연금 수령 문맥)일 때 후보에 넣는다.
@@ -226,9 +233,15 @@ def candidate_categories(question: str) -> list[str]:
     # 5000만원인데 세액공제 얼마?"가 "연금"(연금저축) + "얼마"만으로 후보가 되어,
     # 나이가 전혀 없는데도 연령별 세율표를 답하는 경로가 열린다(실측). 이 카테고리는
     # 이름 그대로 **연령별**이므로, 나이가 없다면 "연금을 받는" 문맥이라도 있어야 한다.
+    #
+    # ⚠️ "연령별"이라는 단어 자체는 이 카테고리를 직접 지목하는 명시적 신호라 나이 숫자·
+    # 수령 문맥 없이도 후보에 넣는다 — 실측: "연령별 연금소득세율 표 알려줘"에 만 나이가
+    # 없어 후보 0건이 되고, 라우터가 맞게 판정해도 _enforce_candidate_scope가 되돌렸다.
     has_tax_context = any(word in text for word in _TAX_AMOUNT_WORDS)
     has_receipt_context = any(word in text for word in _PENSION_RECEIPT_WORDS)
-    if has_tax_context and (_AGE_MENTION_RE.search(text) or has_receipt_context):
+    if "연령별" in text or (
+        has_tax_context and (_AGE_MENTION_RE.search(text) or has_receipt_context)
+    ):
         candidates.append("연금소득세율_연령별")
 
     return candidates

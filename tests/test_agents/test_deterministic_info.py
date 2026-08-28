@@ -499,6 +499,28 @@ def test_age_rate_category_requires_age_or_receipt_context():
     assert "연금소득세율_연령별" in candidate_categories("연금 수령할 때 세금 얼마나 나가요?")
 
 
+def test_age_rate_general_table_question_gets_correct_candidate():
+    """"연령별"이라는 단어 자체가 명시적 신호이므로 나이 숫자·수령 문맥 없이도 후보가 된다.
+
+    실측 버그: "연금소득세"가 "연금소득세율"에도 부분문자열로 매칭돼, "연령별 연금소득세율
+    표 알려줘"가 연금소득세_종합과세(무관한 카테고리)만 후보로 잡고 정작 맞는
+    연금소득세율_연령별은 후보에서 빠졌다 — 라우터가 뭘 고르든 _enforce_candidate_scope가
+    되돌리는 구조라 모델과 무관하게 항상 실패했다.
+    """
+    candidates = candidate_categories("연령별 연금소득세율 표 알려줘")
+    assert "연금소득세율_연령별" in candidates
+    assert "연금소득세_종합과세" not in candidates
+
+
+def test_pure_comprehensive_tax_question_not_swallowed_by_age_rate_fix():
+    """순수 종합과세 질문(연령별 세율과 무관)은 계속 연금소득세_종합과세로 잡혀야 한다."""
+    candidates = candidate_categories("연금소득세가 뭔가요")
+    assert "연금소득세_종합과세" in candidates
+
+    candidates2 = candidate_categories("사적연금소득 1500만원 넘으면 종합과세인가요 분리과세인가요")
+    assert "연금소득세_종합과세" in candidates2
+
+
 def test_candidates_cover_paraphrases_without_domain_keyword():
     """제도명을 그대로 쓰지 않는 표현도 후보로 잡아야 한다."""
     assert "디폴트옵션_자동매수" in candidate_categories("저는 기존가입자인데 언제 자동매수되나요?")
