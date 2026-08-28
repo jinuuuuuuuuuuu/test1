@@ -106,3 +106,79 @@ def test_enforce_leaves_clean_answer_untouched_except_reference():
     out = _enforce_verification(answer, {"missing_requirements": [], "premise_issues": []}, _ctx("doc41"))
 
     assert out == answer
+
+
+# ── ④가 확정한 "근거에 없는 수치" 목록을 ⑤ 프롬프트로 전달 ──────────────
+
+
+def _capture_generator_prompt(monkeypatch, verification: dict) -> str:
+    """⑤가 LLM에 실제로 보내는 프롬프트를 가로채 반환한다 (네트워크 호출 없음)."""
+    import src.agents.generator as gen
+
+    captured = {}
+
+    class FakeLLM:
+        pass
+
+    def fake_invoke(_llm, messages):
+        captured["prompt"] = messages[-1]["content"]
+
+        class R:
+            content = "최종 답변입니다."
+
+        return R()
+
+    monkeypatch.setattr(gen, "get_llm", lambda *a, **k: FakeLLM())
+    monkeypatch.setattr(gen, "invoke_with_retry", fake_invoke)
+
+    node = gen.build_generator_node()
+    node({
+        "question": "연금저축 세액공제율이 얼마인가요?",
+        "is_safe": True,
+        "scope": "범위내",
+        "info_draft": "세액공제율은 16.5%입니다.",
+        "retrieved_context": [{"source": "doc41", "content": "세액공제 관련 규정", "node": "info_agent"}],
+        "verification": verification,
+    })
+    return captured["prompt"]
+
+
+def test_confirmed_unsupported_numbers_are_passed_to_generator_prompt(monkeypatch):
+    """④가 '근거에 없다'고 확정한 수치 목록이 ⑤ 프롬프트에 실제로 전달돼야 한다.
+
+    이 목록 없이 "숫자를 근거와 대조하라"고만 시키면 ⑤가 그 대조를 처음부터 다시 해야 한다 —
+    ④는 L0(기계적 토큰 대조) + L1(LLM 확인)을 거쳐 답을 이미 갖고 있는데도 넘기지 않던
+    누락을 막는다.
+    """
+    prompt = _capture_generator_prompt(
+        monkeypatch,
+        {
+            "grounded": False,
+            "issues": ["근거 원문에 없는 수치입니다: 16.5%"],
+            "unsupported_numbers_confirmed": ["16.5%", "900만원"],
+            "premise_issues": [],
+            "requirements_met": True,
+            "missing_requirements": [],
+        },
+    )
+
+    assert "근거에 없는 것으로 확정된 수치" in prompt
+    assert "16.5%" in prompt
+    assert "900만원" in prompt
+
+
+def test_no_unsupported_numbers_line_when_list_is_empty(monkeypatch):
+    """확정 목록이 비면 그 줄을 넣지 않는다 — 빈 목록을 보여주면 프롬프트만 길어진다."""
+    prompt = _capture_generator_prompt(
+        monkeypatch,
+        {
+            "grounded": True,
+            "issues": [],
+            "unsupported_numbers_confirmed": [],
+            "premise_issues": [],
+            "requirements_met": True,
+            "missing_requirements": [],
+        },
+    )
+
+    assert "근거에 없는 것으로 확정된 수치" not in prompt

@@ -28,6 +28,10 @@ GENERATOR_SYSTEM_PROMPT = """당신은 연금 상담 AI의 최종 답변 작성�
   숫자만 쓰거나, 숫자 없이 "구체적인 공제 비율은 계좌·수령 방식에 따라 달라 확인이
   필요합니다"처럼 일반론으로만 답하세요. 이건 문체 문제가 아니라 규칙입니다: 답변에 쓸 숫자
   하나하나에 대해 "이 숫자가 [근거] 원문에 그대로 있는가?"를 자문하고, 없으면 삭제하세요.
+- [검증결과]에 "근거에 없는 것으로 확정된 수치"가 있으면, 그 수치들은 **grounded 값과
+  무관하게** 답변에 절대 쓰지 마세요. 이미 근거 원문과 대조해 없다고 확인된 값이므로
+  다시 판단하지 말고 그대로 배제하면 됩니다. 초안에 있어도 베끼지 말고, 그 수치가 필요한
+  자리는 근거에 있는 값으로 바꾸거나 "제공된 자료로는 확인이 어렵습니다"로 처리하세요.
 - 검증결과의 premise_issues(질문의 잘못된/과장된 전제)가 있으면, 답변 시작 부분에서 그
   전제를 짚고 바로잡은 뒤 본 답변으로 넘어가세요 (예: "말씀하신 것만큼 크지는 않고,
   정확히는 ~입니다").
@@ -324,6 +328,17 @@ def build_generator_node():
         ) or "(근거 없음)"
         history_text = format_conversation_history(state.get("conversation_history"))
 
+        # ④가 이미 "근거에 없다"고 확정한 수치 목록을 ⑤에 그대로 넘긴다.
+        # 이 목록 없이 "숫자를 근거와 대조하라"고만 시키면 ⑤가 그 대조를 처음부터 다시
+        # 해야 하는데, ④는 L0(기계적 토큰 대조) + L1(LLM 확인)을 거쳐 답을 이미 갖고 있다.
+        # 구체적인 금지 목록을 주는 편이 "알아서 검사하라"보다 훨씬 지키기 쉽다.
+        confirmed_numbers = verification.get("unsupported_numbers_confirmed") or []
+        unsupported_line = (
+            f"- 근거에 없는 것으로 확정된 수치(절대 사용 금지): {confirmed_numbers}\n"
+            if confirmed_numbers
+            else ""
+        )
+
         prompt = (
             (f"[이전 대화]\n{history_text}\n\n" if history_text else "")
             + f"[질문]\n{state['question']}\n\n"
@@ -331,6 +346,7 @@ def build_generator_node():
             f"[근거]\n{context_text}\n\n"
             f"[검증결과]\n"
             f"- grounded: {verification.get('grounded')}, issues: {verification.get('issues')}\n"
+            f"{unsupported_line}"
             f"- premise_issues(질문의 잘못된 전제): {verification.get('premise_issues')}\n"
             f"- requirements_met: {verification.get('requirements_met')}, "
             f"missing_requirements: {verification.get('missing_requirements')}"
