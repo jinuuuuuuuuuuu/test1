@@ -206,6 +206,29 @@ def test_fallback_trace_states_evidence_origin():
     assert "투자설명서 DB를 직접 조회" in trace
 
 
+def test_deterministic_info_trace_states_mapped_evidence_origin():
+    """정형 정보 답변은 근거를 함께 반환하므로 '근거 미확보'로 쓰면 안 된다."""
+    from src.agents.generator import _format_think_trace
+
+    state = {
+        "question": "전세 중도인출 세금은?",
+        "intent": ["정보형"],
+        "scope": "범위내",
+        "is_safe": True,
+        "info_draft": "세금은 재원별로 다릅니다.",
+        "deterministic_info": True,
+        "retrieved_context": [{"source": "doc40", "content": "16.5%"}],
+        "tool_trace": [],
+        "verification": {"grounded": True, "issues": [], "requirements_met": True},
+    }
+
+    trace = _format_think_trace(state)
+
+    assert "정형 규칙 핸들러 실행" in trace
+    assert "사전 매핑된 근거" in trace
+    assert "근거 미확보" not in trace
+
+
 def test_fallback_trace_marks_draft_replacement():
     """폴백은 LLM 초안을 폐기하고 대체한다 — 그 사실도 trace에 남긴다."""
     from src.agents.generator import _format_think_trace

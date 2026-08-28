@@ -94,6 +94,28 @@ _PROFILE_FIELD_LABELS = {
     "investment_goal": "투자목적",
 }
 
+_CLARIFICATION_BLOCKED_MARKERS = (
+    "시장 상황이 바뀐다면",
+    "미국·해외 증시",
+    "원/달러 환율",
+    "금리가 하락하면",
+    "금리가 상승하면",
+)
+
+_INVESTMENT_LIMIT_SOURCE = "doc56~doc58 적립금 운용 및 투자한도 규칙"
+_INVESTMENT_LIMIT_CONTENT = (
+    "위험자산은 DB/DC/IRP 공통으로 적립금의 70%까지만 투자 가능하며, "
+    "주식형·주식혼합형펀드는 위험자산으로 분류됩니다. "
+    "TDF는 감독원장이 정한 조건을 충족하면 DC/IRP에 한해 100%까지 투자할 수 있습니다."
+)
+
+_SCENARIO_RULE_SOURCE = "상품 시나리오 규칙 — 후보 속성 기반 점검"
+_SCENARIO_RULE_CONTENT = (
+    "상품 후보의 구조화 속성에 주식형이 확인되면 주식형 가격 변동 위험을 점검합니다. "
+    "채권형이 확인되면 채권형 상품의 가격 변동과 신용위험을 점검합니다. "
+    "상품명이나 유형에서 USD 등 외화 노출 가능성이 확인되면 통화 관련 조건 확인 필요성을 점검합니다."
+)
+
 
 def _is_product_flow_turn(text: str) -> bool:
     """이 발화가 상품 추천 흐름에 속하는지 — 이력을 이어받을지 판단하는 기준.
@@ -358,10 +380,6 @@ def _missing_profile_fields(profile: dict) -> list[str]:
         missing.append("risk_profile")
     if not profile.get("investment_horizon") and not profile.get("age_or_retirement_horizon"):
         missing.append("investment_horizon")
-    if not profile.get("monthly_investment"):
-        missing.append("monthly_investment")
-    if not profile.get("investment_goal"):
-        missing.append("investment_goal")
     return missing
 
 
@@ -376,24 +394,67 @@ def _clarification_questions(missing: list[str]) -> list[str]:
     return [prompts[field] for field in missing]
 
 
-def _clarification_answer(profile: dict, missing: list[str]) -> str:
+def _grounded_account_constraint(profile: dict) -> tuple[str, list[RetrievedItem]]:
+    """clarification mode에서도 DB/Rule 근거가 있는 계좌 제약만 짧게 안내한다."""
+    account = profile.get("account_type")
+    preferred = profile.get("preferred_product_type") or ""
+    if account not in {"IRP", "DC"}:
+        return "", []
+    if not any(marker in preferred for marker in ("주식형", "해외주식형", "국내주식형", "TDF")):
+        return "", []
+
+    section = (
+        "확인된 계좌 제약은 다음과 같습니다.\n"
+        "- IRP/DC에서 주식형·주식혼합형펀드는 위험자산으로 분류되어 위험자산 한도 확인이 필요합니다."
+    )
+    return section, [
+        {
+            "source": _INVESTMENT_LIMIT_SOURCE,
+            "content": _INVESTMENT_LIMIT_CONTENT,
+            "node": "product_agent",
+        }
+    ]
+
+
+def _apply_clarification_policy(answer: str) -> str:
+    """clarification 답변에서 근거 없는 시장/what-if 블록이 남으면 최종 조립 전에 제거한다."""
+    lines = answer.splitlines()
+    kept: list[str] = []
+    skipping_section = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("**시장 상황이 바뀐다면"):
+            skipping_section = True
+            continue
+        if skipping_section and (not stripped or stripped.startswith("**")):
+            skipping_section = False
+            if not stripped:
+                continue
+        if skipping_section:
+            continue
+        if any(marker in line for marker in _CLARIFICATION_BLOCKED_MARKERS):
+            continue
+        kept.append(line)
+    return "\n".join(kept).strip()
+
+
+def _clarification_response(profile: dict, missing: list[str]) -> tuple[str, list[RetrievedItem]]:
     questions = _clarification_questions(missing)
     known = _format_profile_summary(profile)
     missing_labels = ", ".join(_PROFILE_FIELD_LABELS.get(field, field) for field in missing)
     known_block = f"\n\n현재 확인된 조건은 다음과 같습니다.\n{known}" if known else ""
-    conditional = _conditional_recommendation_guidance(profile)
-    scenario = _what_if_scenario_block(profile)
-    return (
-        "현재 질문만으로는 계좌별 투자 제한과 투자성향을 확인할 수 없어 특정 상품을 바로 추천하기 어렵습니다."
+    account_constraint, context = _grounded_account_constraint(profile)
+    answer = (
+        "현재 질문만으로는 특정 상품을 바로 추천하기 어렵습니다."
         f"{known_block}\n\n"
-        "현재 정보만으로는 연금계좌에서 일반적으로 고려할 수 있는 상품 유형을 설명하는 정도는 가능하지만, "
-        "개별 펀드명·상품코드·수익률 순위를 확정 추천하는 것은 안전하지 않습니다.\n\n"
-        f"{conditional}"
-        f"{scenario}"
+        "조건에 맞는 상품 후보를 비교하려면 추천 결과를 실제로 바꾸는 정보가 더 필요합니다.\n\n"
+        f"{account_constraint}"
+        f"{'\n\n' if account_constraint else ''}"
         f"구체적인 추천을 위해 부족한 정보는 {missing_labels}입니다. 다음 정보를 한 번에 알려주세요.\n"
         + "\n".join(f"{i}. {question}" for i, question in enumerate(questions, start=1))
-        + "\n\n위 정보가 확인되지 않은 상태에서는 특정 펀드명이나 상품코드를 임의로 추천하지 않겠습니다."
+        + "\n\n이 정보가 확인되면 상품 DB에서 투자 가능한 후보를 확인한 뒤, 상품별 근거를 바탕으로 비교하겠습니다."
     )
+    return _apply_clarification_policy(answer), context
 
 
 def _recommend_product_types(profile: dict) -> list[str]:
@@ -445,7 +506,6 @@ def _product_type_recommendation_answer(profile: dict) -> str:
         f"으로 정리됩니다.\n\n"
         f"이 조건에서는 먼저 아래 상품 유형을 고려하는 편이 좋습니다.\n{type_lines}\n\n"
         f"{reasons}\n\n"
-        f"{_what_if_scenario_block(profile)}"
         "위 조건에 맞는 구체적인 상품까지 추천받고 싶다면 `상품추천`을 입력해 주세요."
     )
 
@@ -565,6 +625,42 @@ def _scenario_kind(profile: dict) -> str | None:
     return None
 
 
+def _candidate_scenario_notes(candidates: list[dict]) -> tuple[str, list[RetrievedItem]]:
+    """상품 후보의 확인된 속성과 승인된 scenario rule이 모두 있을 때만 추가 점검을 붙인다."""
+    joined = " ".join(
+        " ".join(str(item.get(key) or "") for key in ("fund_name", "fund_category"))
+        for item in candidates
+    )
+    notes: list[str] = []
+    if "주식형" in joined:
+        notes.append(
+            "- 후보 중 주식형으로 분류된 상품은 주식형 자산 가격 변동에 따라 평가금액이 변동할 수 있습니다."
+        )
+    if "채권형" in joined:
+        notes.append(
+            "- 후보 중 채권형으로 분류된 상품은 채권 가격 변동과 발행자 신용위험을 함께 확인해야 합니다."
+        )
+    if any(marker in joined.upper() for marker in ("USD", "UH", "H]")):
+        notes.append(
+            "- 후보명이나 유형에서 외화 관련 표기가 확인되는 상품은 환헤지 여부와 통화 관련 조건을 상품 설명에서 확인해야 합니다."
+        )
+    if not notes:
+        return "", []
+
+    section = (
+        "**상품 속성 기반 시나리오 점검**\n"
+        "아래 내용은 실제 후보 상품의 구조화 속성과 승인된 시나리오 규칙이 함께 확인된 경우만 표시합니다.\n"
+        + "\n".join(notes)
+    )
+    return section, [
+        {
+            "source": _SCENARIO_RULE_SOURCE,
+            "content": _SCENARIO_RULE_CONTENT,
+            "node": "product_agent",
+        }
+    ]
+
+
 def _recommendation_flow_response(state: PensionAgentState) -> tuple[str, list[RetrievedItem], dict, bool] | None:
     reference_response = _context_reference_response(state)
     if reference_response is not None:
@@ -582,9 +678,10 @@ def _recommendation_flow_response(state: PensionAgentState) -> tuple[str, list[R
     wants_specific = _is_specific_recommendation_request(current)
 
     if missing:
-        return _clarification_answer(profile, missing), [], profile, True
+        draft, context = _clarification_response(profile, missing)
+        return draft, context, profile, True
 
-    if wants_specific or _is_recommendation_intent(current):
+    if wants_specific or _is_recommendation_intent(combined):
         draft, context = _specific_product_recommendation(profile, state)
         return draft, context, profile, False
 
@@ -645,6 +742,10 @@ def _specific_product_recommendation(profile: dict, state: PensionAgentState) ->
             f"   - 추천 이유: 현재 위험성향과 투자기간 기준으로 위험등급·보수·과거 성과를 함께 비교했을 때 후보군에 포함됩니다.\n"
             f"   - 유의사항: 과거 수익률은 미래 수익을 보장하지 않으며, 계좌 내 실제 매수 가능 여부는 금융기관에서 최종 확인이 필요합니다."
         )
+    scenario_section, scenario_context = _candidate_scenario_notes(candidates)
+    if scenario_section:
+        lines.append(scenario_section)
+        context.extend(scenario_context)
     return "\n\n".join(lines), context
 
 
@@ -840,6 +941,8 @@ def build_product_agent_node():
         draft, needs_clarification = split_clarification_marker(
             final_ai.content if final_ai else ""
         )
+        if needs_clarification:
+            draft = _apply_clarification_policy(draft)
         fallback_used = False
         if not retrieved_context:
             fallback_draft, fallback_context = _fallback_product_recommendation(state)

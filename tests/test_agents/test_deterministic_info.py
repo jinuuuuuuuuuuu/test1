@@ -120,7 +120,7 @@ def test_early_withdrawal_medical_date_question_does_not_invent_exact_judgement(
 
     draft, context = deterministic_response_for("중도인출_기한판정", question)
 
-    assert "요양종료일로부터 1개월 이내" in draft
+    assert "요양종료일 이후 1개월 이내" in draft
     assert "DB 근거만으로 정확히 판정하지 않겠습니다" in draft
     assert "2026년 2월 28일 신청: 신청기한 안" not in draft
     assert "2026년 3월 1일 신청: 신청기한이 지난" not in draft
@@ -137,7 +137,7 @@ def test_early_withdrawal_home_purchase_deadline_question_gets_calendar_deadline
 
     # 연도 없이 "3월 1일"이라고만 하면 기준일을 확정할 수 없으므로 규정을 안내한다 —
     # 연도를 임의로 채워 "2026년 4월 1일까지"라고 답하면 지어낸 정보가 된다.
-    assert "소유권 이전 등기접수일로부터 1개월 이내" in draft
+    assert "소유권 이전 등기접수일 기준 1개월 이내" in draft
     assert "정확한 날짜로 계산하는 방식" in draft
     assert "대표적인 중도인출 사유" not in draft
     assert context
@@ -149,7 +149,7 @@ def test_early_withdrawal_home_purchase_general_deadline_question_is_specific():
 
     draft, context = deterministic_response_for("중도인출_기한판정", question)
 
-    assert "소유권 이전 등기접수일로부터 1개월 이내" in draft
+    assert "소유권 이전 등기접수일 기준 1개월 이내" in draft
     assert "정확한 날짜로 계산하는 방식" in draft
     assert "대표적인 중도인출 사유" not in draft
     assert "6개월 이상 요양" not in draft
@@ -394,9 +394,9 @@ def test_withdrawal_deadline_covers_every_reason_without_exact_dates():
         "개인회생": "개인회생 결정일이 2026년 3월 10일인데 중도인출 언제까지 신청 가능한가요?",
     }
     expected_rules = {
-        "요양": "요양종료일로부터 1개월 이내",
-        "전월세": "잔금지급일로부터 1개월 이내",
-        "주택구입": "소유권 이전 등기접수일로부터 1개월 이내",
+        "요양": "요양종료일 이후 1개월 이내",
+        "전월세": "잔금지급일 이후 1개월 이내",
+        "주택구입": "소유권 이전 등기접수일 기준 1개월 이내",
         "재난": "피해발생일로부터 3개월 이내",
         "개인회생": "개인회생절차개시 결정일 또는 파산선고일로부터 5년 이내",
     }
@@ -416,7 +416,7 @@ def test_withdrawal_deadline_does_not_judge_multiple_request_dates_from_db_only(
     )
     draft, _ = deterministic_response_for("중도인출_기한판정", question)
 
-    assert "요양종료일로부터 1개월 이내" in draft
+    assert "요양종료일 이후 1개월 이내" in draft
     assert "DB 근거만으로 정확히 판정하지 않겠습니다" in draft
     assert "신청기한 안에 들어갑니다" not in draft
     assert "신청기한이 지난" not in draft
@@ -525,3 +525,100 @@ def test_candidates_cover_paraphrases_without_domain_keyword():
     """제도명을 그대로 쓰지 않는 표현도 후보로 잡아야 한다."""
     assert "디폴트옵션_자동매수" in candidate_categories("저는 기존가입자인데 언제 자동매수되나요?")
     assert "실물이전_개별판정" in candidate_categories("디폴트옵션 상품도 옮길 수 있나요?")
+
+
+def test_composite_withdrawal_deadline_documents_and_tax_are_answered_together():
+    question = "전세보증금 때문에 IRP 중도인출하려고 하는데, 언제까지 신청해야 하고 필요한 서류랑 세금은 어떻게 되나요?"
+
+    candidates = candidate_categories(question)
+    assert candidates[0] == "복합정보_태스크플랜"
+
+    draft, context = deterministic_response_for("복합정보_태스크플랜", question)
+
+    assert "**가능 여부**" in draft
+    assert "**신청기한**" in draft
+    assert "**필요서류**" in draft
+    assert "**세금**" in draft
+    assert "잔금지급일" in draft
+    assert "잔금지급일 이후 1개월 이내" in draft
+    assert "임대차계약서" in draft or "전월세계약서" in draft
+    assert "16.5%" in draft
+    assert "퇴직금 재원" in draft
+    assert "세액공제 받지 않은 납입원금" in draft
+    assert "재원별 금액" in draft
+    assert "실제 심사에서는 상황에 따라 추가서류" not in draft
+    assert "수령 방식" not in draft
+    assert {item["source"] for item in context} >= {
+        "doc46~doc50 중도인출 요건판정 규칙",
+        "doc48 중도인출 무주택 전월세보증금 필요서류",
+        "doc38~doc40 중도인출 재원별 과세 규칙",
+    }
+
+
+def test_composite_retirement_benefit_split_tax_answers_each_part():
+    question = "퇴직금을 IRP로 받은 뒤 일부는 중도인출하고 나머지는 연금으로 받으려고 해요. 각각 세금이 어떻게 되나요?"
+
+    assert candidate_categories(question)[0] == "복합정보_태스크플랜"
+    draft, context = deterministic_response_for("복합정보_태스크플랜", question)
+
+    assert "전제 확인" in draft
+    assert "IRP 중도인출은 법정 사유를 충족하는 경우에만 가능합니다" in draft
+    assert "중도인출하는 퇴직금 부분" in draft
+    assert "나머지를 연금으로 받는 부분" in draft
+    assert "연금외수령" in draft
+    assert "감면 없이" in draft
+    assert "연금실제수령연차" in draft
+    assert "1~10년차" in draft and "11~20년차" in draft and "21년차" in draft
+    assert context[0]["source"] == "doc39~doc40 이연퇴직소득세 감면 규칙"
+
+
+def test_composite_house_purchase_db_type_still_includes_deadline_and_documents():
+    question = "무주택자인데 집을 사려고 퇴직연금 중도인출하려고 해요. 신청기한, 필요한 서류, DB형에서도 가능한지 알려주세요."
+
+    draft, context = deterministic_response_for("복합정보_태스크플랜", question)
+
+    assert "DB형 퇴직연금은 중도인출이 허용되지 않습니다" in draft
+    assert "아래 신청기한과 필요서류는 DC 또는 IRP" in draft
+    assert "무주택 주택구입" in draft
+    assert "소유권 이전 등기접수일 기준 1개월 이내" in draft
+    assert "매매계약서" in draft
+    assert "실제 심사에서는 상황에 따라 추가서류" not in draft
+    assert "전월세보증금 같은" not in draft
+    assert {item["source"] for item in context} >= {
+        "doc46~doc50 중도인출 요건판정 규칙",
+        "doc49 중도인출 무주택 주택구입 필요서류",
+    }
+
+
+def test_composite_withdrawal_tax_question_covers_all_resource_types():
+    question = "전세 중도인출하려는데 세금 어떻게 돼?"
+
+    assert candidate_categories(question)[0] == "복합정보_태스크플랜"
+    draft, _ = deterministic_response_for("복합정보_태스크플랜", question)
+
+    assert "법정 사유" in draft
+    assert "16.5%" in draft
+    assert "퇴직금 재원" in draft
+    assert "세액공제 받지 않은 납입원금" in draft
+    assert "재원별 금액" in draft
+
+
+def test_db_house_purchase_action_question_corrects_db_scope():
+    draft, _ = deterministic_response_for("중도인출_요건판정", "DB형인데 집 사려고 중도인출할래")
+
+    assert "DB형 퇴직연금은 중도인출이 허용되지 않습니다" in draft
+    assert "무주택 주택구입 같은 법정 사유" in draft
+    assert "전월세보증금 같은" not in draft
+
+
+def test_db_alternative_withdrawal_plan_question_answers_plan_types_directly():
+    draft, _ = deterministic_response_for(
+        "중도인출_요건판정",
+        "DB형은 안 되면 중도인출 가능한 다른 제도는 뭐가 있어?",
+    )
+
+    assert draft.startswith("중도인출 가능한 제도는 DC와 IRP입니다")
+    assert "법정 사유를 충족해야 합니다" in draft
+    assert "DB형 퇴직연금은 중도인출이 허용되지 않습니다" in draft
+    assert "법정 사유 같은 법정 사유" not in draft
+    assert not draft.startswith("아니요")

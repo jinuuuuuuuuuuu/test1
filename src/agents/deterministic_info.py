@@ -80,6 +80,7 @@ from src.rules.withdrawal_limit import (
 from src.agents.tax_context import personal_tax_response
 
 DeterministicCategory = Literal[
+    "복합정보_태스크플랜",
     "세액공제_계산_입력부족",
     "세액공제_한도",
     "세금혜택_개요",
@@ -99,6 +100,7 @@ DeterministicCategory = Literal[
 
 # router.py가 프롬프트/RouterDecision의 Literal 정의에 그대로 재사용한다.
 DETERMINISTIC_CATEGORIES: tuple[str, ...] = (
+    "복합정보_태스크플랜",
     "세액공제_계산_입력부족",
     "세액공제_한도",
     "세금혜택_개요",
@@ -138,6 +140,7 @@ DETERMINISTIC_CATEGORIES: tuple[str, ...] = (
 # 참고: "무관한 질문에도 답하는가"는 더 이상 기준이 아니다. 그 문제는
 # deterministic_response_for가 후보 목록을 재확인하도록 고쳐 13개 전부 해결됐다.
 CODE_OVERRIDABLE_CATEGORIES: frozenset[str] = frozenset({
+    "복합정보_태스크플랜",
     "개인세금_입력충분성",
     "중도인출_기한판정",
     "중도인출_요건판정",
@@ -182,6 +185,8 @@ def candidate_categories(question: str) -> list[str]:
     text = _compact(question)
     candidates: list[str] = []
 
+    if _build_composite_info_tasks(question):
+        candidates.append("복합정보_태스크플랜")
     if personal_tax_response(question) is not None:
         candidates.append("개인세금_입력충분성")
     if "세액공제" in text:
@@ -283,6 +288,26 @@ def deterministic_response_for(
 
 def _compact(text: str) -> str:
     return re.sub(r"\s+", "", text or "")
+
+
+def _asks_alternative_withdrawal_plan_types(compact_text: str) -> bool:
+    if "중도인출" not in compact_text:
+        return False
+    return any(
+        marker in compact_text
+        for marker in (
+            "다른제도",
+            "다른퇴직연금",
+            "다른계좌",
+            "가능한제도",
+            "가능한종류",
+            "어떤제도",
+            "어떤종류",
+            "무슨제도",
+            "뭐가있",
+            "무엇이있",
+        )
+    )
 
 
 def _won(amount: int) -> str:
@@ -582,7 +607,7 @@ _WITHDRAWAL_REASON_ALIASES: dict[str, tuple[str, ...]] = {
     "요양": ("요양", "치료", "병원", "의료비"),
     "개인회생파산": ("개인회생", "파산", "회생절차"),
     "무주택전월세": ("전월세", "전세", "월세", "임차보증금", "임대차"),
-    "무주택주택구입": ("주택구입", "주택매입", "집구입", "소유권이전", "등기"),
+    "무주택주택구입": ("주택구입", "주택매입", "집구입", "집을사", "집사", "주택을사", "소유권이전", "등기"),
     "재난피해": ("재난", "피해", "수해", "화재"),
 }
 _WITHDRAWAL_REASON_LABELS = {
@@ -617,6 +642,290 @@ def _detect_withdrawal_reason(text: str) -> str | None:
     return None
 
 
+_COMPOSITE_TAX_WORDS = ("세금", "세율", "과세", "얼마", "떼")
+_COMPOSITE_DEADLINE_WORDS = ("언제까지", "기한", "신청기한", "시기")
+_COMPOSITE_DOCUMENT_WORDS = ("서류", "필요서류", "구비서류", "징구서류")
+_COMPOSITE_ELIGIBILITY_WORDS = (
+    "가능",
+    "가능한지",
+    "되나요",
+    "되는지",
+    "할수",
+    "하려",
+    "할래",
+    "하고싶",
+    "DB형",
+    "DC형",
+    "IRP",
+)
+
+
+def _dedupe_keep_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def _build_composite_info_tasks(question: str) -> list[str]:
+    """한 질문에 여러 정보 작업이 섞였는지 판정한다.
+
+    "기한+서류+세금", "중도인출분+연금수령분 각각 세금"처럼 사용자 요구가 여러 개인데
+    단일 정형 카테고리가 전체 질문을 먹으면 나머지 요구가 누락된다. 여기서는 새 지식을
+    만들지 않고, 이미 결정론 핸들러/문서로 답할 수 있는 하위 작업만 감지한다.
+    """
+    text = _compact(question)
+    tasks: list[str] = []
+
+    if "중도인출" in text:
+        if any(word in text for word in _COMPOSITE_ELIGIBILITY_WORDS):
+            tasks.append("early_withdrawal_eligibility")
+        if any(word in text for word in _COMPOSITE_DEADLINE_WORDS):
+            tasks.append("early_withdrawal_deadline")
+        if any(word in text for word in _COMPOSITE_DOCUMENT_WORDS):
+            tasks.append("early_withdrawal_documents")
+        if any(word in text for word in _COMPOSITE_TAX_WORDS):
+            tasks.append("early_withdrawal_tax")
+
+    if (
+        "퇴직금" in text
+        and "연금" in text
+        and any(word in text for word in _COMPOSITE_TAX_WORDS)
+    ):
+        if "중도인출" in text or "일부" in text or "연금외" in text:
+            tasks.append("retirement_benefit_non_pension_tax")
+        if "나머지" in text or "연금으로" in text or "연금수령" in text:
+            tasks.append("retirement_benefit_pension_tax")
+
+    tasks = _dedupe_keep_order(tasks)
+    if any(task.startswith("retirement_benefit_") for task in tasks):
+        tasks = [
+            task
+            for task in tasks
+            if task not in {"early_withdrawal_eligibility", "early_withdrawal_tax"}
+        ]
+    return tasks if len(tasks) >= 2 else []
+
+
+_WITHDRAWAL_DOCUMENT_RULES: dict[str, tuple[str, str, tuple[str, ...]]] = {
+    "무주택전월세": (
+        "doc48 중도인출 무주택 전월세보증금 필요서류",
+        "무주택 전월세보증금 중도인출 필요서류는 공통서류, 전월세 계약서류, 상황에 따른 추가서류입니다. "
+        "공통서류에는 중도인출신청서, 현거주지 주민등록등본, 주민등록등본주소지의 건물등기사항증명서 "
+        "또는 건축물관리대장, 지방세 세목별 과세증명서가 포함됩니다. 전월세 계약서류는 주택 "
+        "임대차계약서 사본 또는 전월세계약서 사본입니다. 잔금일 이후 1개월 이내 신청하는 경우 "
+        "계약금 입금확인증 또는 영수증이 필요할 수 있습니다.",
+        (
+            "중도인출신청서",
+            "무주택 확인서류: 현거주지 주민등록등본, 등본주소지 건물등기사항증명서 또는 건축물관리대장, 지방세 세목별 과세증명서",
+            "전월세 계약서류: 주택 임대차계약서 사본 또는 전월세계약서 사본",
+            "상황별 추가서류: 잔금일 이후 신청 시 계약금 입금확인증 또는 영수증 등",
+        ),
+    ),
+    "무주택주택구입": (
+        "doc49 중도인출 무주택 주택구입 필요서류",
+        "무주택 주택구입 중도인출 구비서류는 무주택 확인서류와 주택구입 유형별 계약서류입니다. "
+        "무주택 확인서류에는 현거주지 주민등록등본, 주민등록등본주소지의 건물등기사항증명서, "
+        "지방세 세목별 과세증명서가 포함됩니다. 구입은 매매계약서 사본, 분양은 분양계약서 "
+        "또는 공급계약서 또는 분양권매매계약서 사본, 신축은 공사계약서와 건축허가서 또는 "
+        "착공신고필증, 경매·공매는 입찰보증금 입금영수증과 사건검색 발급본 등이 필요합니다.",
+        (
+            "무주택 확인서류: 현거주지 주민등록등본, 등본주소지 건물등기사항증명서, 지방세 세목별 과세증명서",
+            "구입: 매매계약서 사본",
+            "분양: 분양계약서, 공급계약서 또는 분양권매매계약서 사본",
+            "신축·경매·공매는 공사계약서, 건축허가서, 입찰보증금 입금영수증 등 유형별 서류",
+        ),
+    ),
+}
+
+
+def _withdrawal_deadline_section(reason: str) -> tuple[str, list[RetrievedItem]]:
+    rule = WITHDRAWAL_DEADLINE_RULES[reason]
+    reason_label = _WITHDRAWAL_REASON_LABELS.get(reason, reason)
+    period = f"{rule.years}년" if rule.years else f"{rule.months}개월"
+    deadline_phrase = _withdrawal_deadline_phrase(reason, rule.basis_event, period)
+    source = f"{rule.source_doc} 중도인출 {reason_label} 신청기한 규칙"
+    content = (
+        f"{reason_label} 사유의 중도인출 신청기한은 {deadline_phrase}입니다. "
+        "제공 DB에는 해당 기간을 정확한 날짜로 환산하는 방식이 명시되어 있지 않습니다. "
+        f"{rule.note}"
+    )
+    section = (
+        f"**신청기한**\n"
+        f"- {reason_label} 사유의 신청기한은 **{deadline_phrase}**입니다.\n"
+        "- 제공 자료에는 정확한 날짜 환산 방식, 초일산입 여부, 말일·휴일 처리, 신청서 작성일/접수일 기준이 명확히 적혀 있지 않아 특정 마감일은 단정하지 않겠습니다."
+    )
+    return section, _context(source, content)
+
+
+def _withdrawal_deadline_phrase(reason: str, basis_event: str, period: str) -> str:
+    """원문 표현에 가까운 신청기한 문구를 만든다."""
+    if reason == "요양":
+        return f"요양종료일 이후 {period} 이내"
+    if reason == "무주택전월세":
+        return f"잔금지급일 이후 {period} 이내"
+    if reason == "무주택주택구입":
+        return f"소유권 이전 등기접수일 기준 {period} 이내"
+    return f"{basis_event}로부터 {period} 이내"
+
+
+def _withdrawal_documents_section(reason: str | None) -> tuple[str, list[RetrievedItem]] | None:
+    if reason not in _WITHDRAWAL_DOCUMENT_RULES:
+        return None
+    source, content, bullets = _WITHDRAWAL_DOCUMENT_RULES[reason]
+    lines = "\n".join(f"- {bullet}" for bullet in bullets)
+    section = f"**필요서류**\n{lines}"
+    return section, _context(source, content)
+
+
+def _withdrawal_eligibility_section(question: str, reason: str | None) -> tuple[str, list[RetrievedItem]]:
+    reason_label = _WITHDRAWAL_REASON_LABELS.get(reason or "", "해당 사유")
+    source = "doc46~doc50 중도인출 요건판정 규칙"
+    content = (
+        "DB형은 중도인출이 허용되지 않습니다. 중도인출 가능한 제도는 DC와 IRP이며, "
+        "DC와 IRP는 법정 사유가 있으면 중도인출 대상 제도입니다. "
+        "가능 사유는 6개월 이상 요양, 개인회생 또는 파산선고, 무주택자 전월세보증금, "
+        "무주택자 주택구입, 재난피해입니다."
+    )
+    if "DB형" in question or re.search(r"\bDB\b", question, flags=re.IGNORECASE):
+        reason_sentence = (
+            f"{reason_label} 같은 법정 사유가 있더라도"
+            if reason
+            else "법정 사유가 있더라도"
+        )
+        section = (
+            "**가능 여부**\n"
+            "- DB형 퇴직연금은 중도인출이 허용되지 않습니다.\n"
+            f"- {reason_sentence} 중도인출 가능한 제도는 DC와 IRP입니다.\n"
+            "- 아래 신청기한과 필요서류는 DC 또는 IRP에서 해당 사유로 중도인출하는 경우의 기준입니다."
+        )
+    elif reason:
+        section = (
+            "**가능 여부**\n"
+            f"- 중도인출 가능한 제도는 IRP와 DC이며, 법정 사유를 충족해야 합니다.\n"
+            f"- 질문의 사유는 제공 DB상 중도인출 사유 중 **{reason_label}**에 해당할 수 있습니다. 실제 가능 여부는 무주택 여부, 계약 명의 등 세부 요건과 증빙으로 확인됩니다."
+        )
+    else:
+        section = (
+            "**가능 여부**\n"
+            "- DB형은 중도인출이 허용되지 않고, DC와 IRP는 법정 사유가 있을 때 중도인출 대상 제도입니다."
+        )
+    return section, _context(source, content)
+
+
+def _early_withdrawal_tax_section(reason: str | None) -> tuple[str, list[RetrievedItem]]:
+    reason_label = _WITHDRAWAL_REASON_LABELS.get(reason or "", "중도인출")
+    source = "doc38~doc40 중도인출 재원별 과세 규칙"
+    content = (
+        "무주택자인 가입자의 본인 명의 주택 구입과 주거 목적 전세보증금 부담은 근퇴법상 "
+        "중도인출 사유이나 세법상 부득이한 사유는 아니며, 표에는 16.5% 기타소득세로 표시되어 "
+        "있습니다. 주택구입·전월세보증금 중도인출 사유에 해당되면 퇴직금에 대해서는 "
+        "퇴직소득세를 차감 후 지급합니다. 세액공제 받지 않은 원금과 퇴직금은 사적연금소득 "
+        "1,500만원 초과 여부 판단에서 제외합니다."
+    )
+    if reason in {"무주택전월세", "무주택주택구입"}:
+        section = (
+            "**세금**\n"
+            f"- {reason_label}은 근퇴법상 중도인출 사유이지만, 제공 자료의 세법상 부득이한 사유 표에서는 부득이한 사유가 아닌 것으로 표시되어 있습니다.\n"
+            "- 세액공제 받은 납입금·운용수익 재원은 16.5% 기타소득세로 안내되어 있습니다.\n"
+            "- 퇴직금 재원은 퇴직소득세를 차감 후 지급하는 것으로 안내되어 있습니다.\n"
+            "- 세액공제 받지 않은 납입원금은 위 두 재원과 구분해야 하며, 제공 자료상 사적연금소득 1,500만원 초과 여부 판단에서는 제외됩니다.\n"
+            "- 정확한 세액을 계산하려면 인출 재원의 종류와 재원별 금액을 확인해야 합니다."
+        )
+    else:
+        section = (
+            "**세금**\n"
+            "- 중도인출 세금은 사유가 세법상 부득이한 사유에 해당하는지와 인출 재원에 따라 달라집니다.\n"
+            "- 재원은 적어도 세액공제 받은 납입금·운용수익, 퇴직금, 세액공제 받지 않은 납입원금을 구분해야 합니다.\n"
+            "- 정확한 세액을 계산하려면 중도인출 사유, 인출 재원, 재원별 금액이 필요합니다."
+        )
+    return section, _context(source, content)
+
+
+def _retirement_benefit_split_tax_sections() -> tuple[list[str], list[RetrievedItem]]:
+    source = "doc39~doc40 이연퇴직소득세 감면 규칙"
+    content = (
+        "IRP 중도인출은 법정 사유를 충족하는 경우에만 가능합니다. "
+        "퇴직금을 연금으로 수령하면 연금실제수령연차 1~10년차는 이연퇴직소득세의 70%를 납부하고, "
+        "11~20년차는 60%를 납부하며, 21년차 이상은 50%를 납부합니다. 연금외수령은 감면 없이 "
+        "이연퇴직소득세를 전액 납부합니다."
+    )
+    sections = [
+        (
+            "**전제 확인**\n"
+            "- IRP 중도인출은 법정 사유를 충족하는 경우에만 가능합니다. 해당 요건을 충족한다는 전제에서 세금은 다음과 같습니다."
+        ),
+        (
+            "**중도인출하는 퇴직금 부분**\n"
+            "- 중도인출로 퇴직금 재원을 연금외수령하는 부분은 감면 없이 이연퇴직소득세를 전액 납부하는 구조입니다."
+        ),
+        (
+            "**나머지를 연금으로 받는 부분**\n"
+            "- 퇴직금 재원을 연금으로 수령하면 연금실제수령연차에 따라 이연퇴직소득세 납부 비율이 달라집니다.\n"
+            "- 1~10년차는 70%, 11~20년차는 60%, 21년차 이상은 50%를 납부합니다.\n"
+            "- 정확한 세액 계산에는 연금실제수령연차와 원래 납부해야 할 이연퇴직소득세 금액이 필요합니다."
+        ),
+    ]
+    return sections, _context(source, content)
+
+
+def _composite_info_task_plan_response(question: str) -> tuple[str, list[RetrievedItem]] | None:
+    tasks = _build_composite_info_tasks(question)
+    if not tasks:
+        return None
+
+    text = _compact(question)
+    reason = _detect_withdrawal_reason(text)
+    sections: list[str] = []
+    context: list[RetrievedItem] = []
+
+    if "early_withdrawal_eligibility" in tasks:
+        section, ctx = _withdrawal_eligibility_section(question, reason)
+        sections.append(section)
+        context.extend(ctx)
+
+    if "early_withdrawal_deadline" in tasks and reason in WITHDRAWAL_DEADLINE_RULES:
+        section, ctx = _withdrawal_deadline_section(reason)
+        sections.append(section)
+        context.extend(ctx)
+
+    if "early_withdrawal_documents" in tasks:
+        result = _withdrawal_documents_section(reason)
+        if result is not None:
+            section, ctx = result
+            sections.append(section)
+            context.extend(ctx)
+        else:
+            sections.append("**필요서류**\n- 중도인출 필요서류는 사유별로 달라서, 먼저 중도인출 사유를 확정해야 합니다.")
+
+    if "early_withdrawal_tax" in tasks:
+        section, ctx = _early_withdrawal_tax_section(reason)
+        sections.append(section)
+        context.extend(ctx)
+
+    if (
+        "retirement_benefit_non_pension_tax" in tasks
+        or "retirement_benefit_pension_tax" in tasks
+    ):
+        split_sections, ctx = _retirement_benefit_split_tax_sections()
+        sections.append(split_sections[0])
+        if "retirement_benefit_non_pension_tax" in tasks:
+            sections.append(split_sections[1])
+        if "retirement_benefit_pension_tax" in tasks:
+            sections.append(split_sections[2])
+        context.extend(ctx)
+
+    if len(sections) < 2:
+        return None
+
+    draft = "\n\n".join(sections)
+    return draft, context
+
+
 def _early_withdrawal_deadline_response(question: str) -> tuple[str, list[RetrievedItem]] | None:
     """중도인출 신청기한 규칙을 안내한다. DB-grounded 경로에서는 exact date를 만들지 않는다.
 
@@ -642,10 +951,11 @@ def _early_withdrawal_deadline_response(question: str) -> tuple[str, list[Retrie
     rule = WITHDRAWAL_DEADLINE_RULES[reason]
     reason_label = _WITHDRAWAL_REASON_LABELS.get(reason, reason)
     period = f"{rule.years}년" if rule.years else f"{rule.months}개월"
+    deadline_phrase = _withdrawal_deadline_phrase(reason, rule.basis_event, period)
 
     source = f"{rule.source_doc} 중도인출 {reason_label} 신청기한 규칙"
     content = (
-        f"{reason_label} 사유의 중도인출 신청기한은 {rule.basis_event}로부터 {period} 이내입니다. "
+        f"{reason_label} 사유의 중도인출 신청기한은 {deadline_phrase}입니다. "
         "제공 DB에는 해당 기간을 정확한 날짜로 환산하는 방식이 명시되어 있지 않습니다. "
         f"{rule.note} "
         "중도인출 원문에는 30일/90일 환산 여부, 초일산입 여부, 말일·휴일 처리, "
@@ -653,7 +963,7 @@ def _early_withdrawal_deadline_response(question: str) -> tuple[str, list[Retrie
         "calculation_basis=not_defined_in_source."
     )
     caveat = (
-        "다만 제공 자료에는 이 기간을 정확한 날짜로 계산하는 방식, 초일산입 여부, 말일·휴일 "
+        "제공 자료에는 이 기간을 정확한 날짜로 계산하는 방식, 초일산입 여부, 말일·휴일 "
         "처리, 신청서 작성일/접수일 기준이 명확히 적혀 있지 않습니다. 따라서 DB 근거만으로는 "
         "특정 날짜가 정확한 마감일인지 또는 신청기한 안인지 단정하지 않겠습니다."
     )
@@ -663,7 +973,7 @@ def _early_withdrawal_deadline_response(question: str) -> tuple[str, list[Retrie
         # 날짜가 없으면 규정만 안내한다(기준일을 지어내지 않는다).
         draft = (
             f"{reason_label} 사유로 중도인출을 신청하는 경우, 신청기한은 "
-            f"**{rule.basis_event}로부터 {period} 이내**입니다.\n\n"
+            f"**{deadline_phrase}**입니다.\n\n"
             f"{rule.note}\n\n{caveat}"
         )
         return draft, _context(source, content)
@@ -678,7 +988,7 @@ def _early_withdrawal_deadline_response(question: str) -> tuple[str, list[Retrie
     if not request_dates:
         draft = (
             f"**{fmt(basis_date)}이 {_with_particle(rule.basis_event, '이라는', '라는')} 조건**이라면, "
-            f"제공 자료에서 확인되는 신청기한 규칙은 **{rule.basis_event}로부터 {period} 이내**입니다.\n\n"
+            f"제공 자료에서 확인되는 신청기한 규칙은 **{deadline_phrase}**입니다.\n\n"
             f"{caveat}"
         )
         return draft, _context(source, content)
@@ -686,8 +996,8 @@ def _early_withdrawal_deadline_response(question: str) -> tuple[str, list[Retrie
     request_date_text = ", ".join(fmt(d) for d in request_dates)
     draft = (
         f"{rule.basis_event}이 {fmt(basis_date)}이면 제공 자료에서 확인되는 신청기한 규칙은 "
-        f"**{rule.basis_event}로부터 {period} 이내**입니다.\n\n"
-        f"다만 {request_date_text} 신청이 각각 기한 안인지 여부는 DB 근거만으로 정확히 판정하지 않겠습니다.\n\n"
+        f"**{deadline_phrase}**입니다.\n\n"
+        f"{request_date_text} 신청이 각각 기한 안인지 여부는 DB 근거만으로 정확히 판정하지 않겠습니다.\n\n"
         f"{caveat}"
     )
     return draft, _context(source, content)
@@ -700,8 +1010,8 @@ def _early_withdrawal_general_response(question: str) -> tuple[str, list[Retriev
         "무주택자 주택구입, 재난피해입니다. 요양은 DC에서 직전 1년 의료비가 직전년도 연간임금총액의 "
         "12.5%를 초과해야 하며, IRP에는 이 비율 기준이 적용되지 않습니다. 개인회생·파산은 결정일 또는 "
         "선고일로부터 5년 이내 요건이 있습니다. 전월세보증금과 주택구입은 잔금지급일 또는 소유권 이전 "
-        "등기접수일로부터 달력 기준 1개월 이내 신청 요건이 있습니다. 재난피해는 피해발생일로부터 "
-        "달력 기준 3개월 이내가 원칙입니다."
+        "등기접수일로부터 1개월 이내 신청 요건이 있습니다. 재난피해는 피해발생일로부터 "
+        "3개월 이내가 원칙입니다. 제공 DB에는 이 기간을 정확한 날짜로 환산하는 방식이 명시되어 있지 않습니다."
     )
     draft = (
         "IRP는 중도인출이 가능한 제도이지만, 아무 때나 인출할 수 있는 것은 아니고 법정 사유가 필요합니다.\n\n"
@@ -713,7 +1023,7 @@ def _early_withdrawal_general_response(question: str) -> tuple[str, list[Retriev
         "- 재난피해\n\n"
         "참고로 DB형은 중도인출이 허용되지 않고, DC와 IRP가 중도인출 대상 제도입니다. "
         "각 사유별로 신청기한이나 추가 요건이 다릅니다. 예를 들어 개인회생·파산은 5년 이내 요건, "
-        "전월세보증금·주택구입은 달력 기준 1개월 이내 신청 요건, 재난피해는 달력 기준 3개월 이내 "
+        "전월세보증금·주택구입은 1개월 이내 신청 요건, 재난피해는 3개월 이내 "
         "신청 요건이 문제될 수 있습니다."
     )
     return draft, _context(source, content)
@@ -723,7 +1033,7 @@ def _early_withdrawal_eligibility_response(question: str) -> tuple[str, list[Ret
     text = _compact(question)
     if "중도인출" not in text:
         return None
-    if not any(word in text for word in ("가능", "되나요", "할수", "되냐", "되는지", "가능한가")):
+    if not any(word in text for word in ("가능", "되나요", "할수", "되냐", "되는지", "가능한가", "하려", "할래", "하고싶")):
         return None
 
     source = "doc46~doc50 중도인출 요건판정 규칙"
@@ -734,10 +1044,24 @@ def _early_withdrawal_eligibility_response(question: str) -> tuple[str, list[Ret
     )
 
     if "DB형" in question or re.search(r"\bDB\b", question, flags=re.IGNORECASE):
+        if _asks_alternative_withdrawal_plan_types(text):
+            draft = (
+                "중도인출 가능한 제도는 DC와 IRP입니다.\n\n"
+                "다만 DC와 IRP도 언제든 중도인출할 수 있는 것은 아니며, 법정 사유를 충족해야 합니다. "
+                "DB형 퇴직연금은 중도인출이 허용되지 않습니다."
+            )
+            return draft, _context(source, content)
+        reason = _detect_withdrawal_reason(text)
+        reason_label = _WITHDRAWAL_REASON_LABELS.get(reason or "", "법정 사유")
+        reason_sentence = (
+            f"{reason_label} 같은 법정 사유가 있더라도"
+            if reason
+            else "법정 사유가 있더라도"
+        )
         draft = (
             "아니요. DB형 퇴직연금은 중도인출이 허용되지 않습니다.\n\n"
-            "전월세보증금 같은 법정 사유가 있더라도 중도인출 대상 제도는 DC와 IRP입니다. "
-            "따라서 질문 조건이 DB형이라면 전월세보증금 사유로도 중도인출할 수 없다고 보는 것이 맞습니다."
+            f"{reason_sentence} 중도인출 가능한 제도는 DC와 IRP입니다. "
+            "따라서 질문 조건이 DB형이라면 중도인출할 수 없다고 보는 것이 맞습니다."
         )
         return draft, _context(source, content)
 
@@ -1078,6 +1402,7 @@ def _pension_income_tax_rate_response(question: str) -> tuple[str, list[Retrieve
 
 
 _CATEGORY_HANDLERS = {
+    "복합정보_태스크플랜": _composite_info_task_plan_response,
     "세액공제_계산_입력부족": _tax_credit_calculation_missing_response,
     "세액공제_한도": _tax_credit_limit_response,
     "세금혜택_개요": _tax_benefit_overview_response,

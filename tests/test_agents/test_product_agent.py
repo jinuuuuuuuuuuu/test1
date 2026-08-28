@@ -8,9 +8,11 @@ from src.agents.product_agent import (
 def test_recommendation_flow_starts_with_one_question():
     draft, context, profile, needs_clarification = _recommendation_flow_response({"question": "상품 추천해줘"})
 
-    for word in ("계좌유형", "위험성향", "투자기간", "투자금액", "투자목적"):
+    for word in ("계좌유형", "위험성향", "투자기간"):
         assert word in draft
-    assert "특정 펀드명이나 상품코드를 임의로 추천하지 않겠습니다" in draft
+    for word in ("투자금액", "투자목적", "시장 상황이 바뀐다면", "TDF", "채권형"):
+        assert word not in draft
+    assert "상품별 근거를 바탕으로 비교하겠습니다" in draft
     assert context == []
     assert profile == {}
     assert needs_clarification is True
@@ -86,43 +88,76 @@ def test_recommendation_flow_infers_retirement_goal_from_irp_request():
     assert profile["account_type"] == "IRP"
     assert profile["risk_profile"] == "안정형"
     assert profile["investment_goal"] == "노후/은퇴 준비"
-    assert "투자 가능 금액 또는 월 납입금액" in draft
     assert "예상 투자기간" in draft
     assert context == []
     assert needs_clarification is True
-    assert "채권형" in draft or "원리금보장형" in draft
-    assert "위 정보가 확인되지 않은 상태에서는 특정 펀드명이나 상품코드를 임의로 추천하지 않겠습니다" in draft
+    assert "투자 가능 금액 또는 월 납입금액" not in draft
+    assert "채권형" not in draft
+    assert "원리금보장형" not in draft
+    assert "상품별 근거를 바탕으로 비교하겠습니다" in draft
 
 
-def test_incomplete_recommendation_includes_conditional_guidance_without_specific_fund():
+def test_incomplete_recommendation_is_clarification_only_without_guidance():
     draft, context, profile, needs_clarification = _recommendation_flow_response({
         "question": "IRP에 넣을 안전한 상품 추천해주세요."
     })
 
     assert profile["account_type"] == "IRP"
     assert profile["risk_profile"] == "안정형"
-    assert "채권형" in draft
-    assert "원리금보장형" in draft
-    assert "IRP/DC에는 위험자산 투자 제한" in draft
-    assert "펀드명이나 상품코드를 임의로 추천하지 않겠습니다" in draft
+    assert "예상 투자기간" in draft
+    assert "채권형" not in draft
+    assert "원리금보장형" not in draft
+    assert "IRP/DC에는 위험자산 투자 제한" not in draft
+    assert "시장 상황이 바뀐다면" not in draft
     assert "상품코드=" not in draft
     assert context == []
     assert needs_clarification is True
 
 
-def test_overseas_equity_recommendation_includes_what_if_scenarios():
+def test_overseas_equity_clarification_does_not_include_what_if_scenarios():
     draft, context, profile, needs_clarification = _recommendation_flow_response({
         "question": "IRP에서 미국 주식에 투자하는 상품 추천해줘"
     })
 
     assert profile["account_type"] == "IRP"
     assert profile["preferred_product_type"] == "해외주식형 펀드"
-    assert "미국·해외 증시" in draft
-    assert "원/달러 환율" in draft
+    assert "미국·해외 증시" not in draft
+    assert "원/달러 환율" not in draft
+    assert "시장 상황이 바뀐다면" not in draft
     assert "투자성향" in draft
     assert "투자기간" in draft
-    assert context == []
+    assert "투자금액" not in draft
+    assert [item["source"] for item in context] == ["doc56~doc58 적립금 운용 및 투자한도 규칙"]
     assert needs_clarification is True
+
+
+def test_overseas_equity_follow_up_uses_fund_db_and_rule_based_scenario():
+    state = {
+        "question": "중립형이고 20년 이상이야",
+        "conversation_history": [
+            {
+                "question": "IRP에서 미국 주식에 투자하는 상품 추천해줘",
+                "answer": "투자성향과 투자기간을 알려주세요.",
+            }
+        ],
+    }
+
+    draft, context, profile, needs_clarification = _recommendation_flow_response(state)
+
+    assert profile["account_type"] == "IRP"
+    assert profile["preferred_product_type"] == "해외주식형 펀드"
+    assert profile["risk_profile"] == "중립형"
+    assert profile["investment_horizon"] == "20년 이상"
+    assert "위험등급" in draft
+    assert "총보수" in draft
+    assert "상품 속성 기반 시나리오 점검" in draft
+    assert "시장 상황이 바뀐다면" not in draft
+    assert "미국·해외 증시" not in draft
+    assert "원/달러 환율" not in draft
+    assert context
+    assert any("상품코드=" in item["content"] for item in context)
+    assert any(item["source"] == "상품 시나리오 규칙 — 후보 속성 기반 점검" for item in context)
+    assert needs_clarification is False
 
 
 def test_sp500_recommendation_does_not_reuse_previous_safe_profile():
@@ -144,9 +179,10 @@ def test_sp500_recommendation_does_not_reuse_previous_safe_profile():
     assert profile["preferred_product_type"] == "해외주식형 펀드"
     assert "risk_profile" not in profile
     assert "- 투자성향: 안정형" not in draft
-    assert "미국·해외 증시" in draft
-    assert "원/달러 환율" in draft
-    assert context == []
+    assert "미국·해외 증시" not in draft
+    assert "원/달러 환율" not in draft
+    assert "시장 상황이 바뀐다면" not in draft
+    assert [item["source"] for item in context] == ["doc56~doc58 적립금 운용 및 투자한도 규칙"]
     assert needs_clarification is True
 
 
@@ -211,8 +247,10 @@ def test_recommendation_flow_sufficient_profile_uses_fund_db():
     assert "상품코드" not in draft
     assert "위험등급" in draft
     assert "총보수" in draft
+    assert "상품 속성 기반 시나리오 점검" in draft
     assert context
-    assert all("상품코드=" in item["content"] for item in context)
+    assert any("상품코드=" in item["content"] for item in context)
+    assert any(item["source"] == "상품 시나리오 규칙 — 후보 속성 기반 점검" for item in context)
     assert needs_clarification is False
 
 
@@ -225,8 +263,10 @@ def test_specific_recommendation_with_missing_info_asks_only_needed_question():
         "question": "위험등급 낮고 수수료 적은 상품을 구체적으로 추천해줘"
     })
 
-    for word in ("계좌유형", "투자기간", "투자금액", "투자목적"):
+    for word in ("계좌유형", "투자기간"):
         assert word in draft
+    for word in ("투자금액", "투자목적", "시장 상황이 바뀐다면"):
+        assert word not in draft
     assert context == []
     assert profile["risk_profile"] == "안정형"
     assert needs_clarification is True

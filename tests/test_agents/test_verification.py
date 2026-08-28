@@ -369,6 +369,9 @@ def test_real_user_premises_are_kept(text):
     "나이가 74세이므로 세금 관련 구체적인 정보를 요청함",
     "74세에 연 1,000만원을 연금으로 받을 때 세금",
     "연금저축 600만원과 IRP 300만원, 총급여 5,000만원 조건에서 세액공제",
+    "전세보증금 때문에 IRP 중도인출",
+    "무주택자인데 집을 사려고 퇴직연금 중도인출하려고 함",
+    "집 사려고 중도인출할래",
 ])
 def test_benign_user_conditions_are_not_premise_issues(text):
     from src.agents.verification import split_premise_issues
@@ -411,3 +414,113 @@ def test_source_limited_exact_date_response_is_not_grounding_failure():
     assert out["issues"] == []
     assert out["missing_requirements"] == []
     assert out["source_limited_mode"] is True
+
+
+def test_answered_withdrawal_plan_requirement_is_not_reported_missing():
+    from src.agents.verification import apply_requirement_scope_override
+
+    verification = {
+        "grounded": True,
+        "issues": [],
+        "premise_issues": [],
+        "requirements_met": False,
+        "missing_requirements": ["중도인출이 가능한 다른 퇴직연금 종류(DC 및 IRP)에 대한 정보"],
+    }
+    draft = "무주택 주택구입 같은 법정 사유가 있더라도 중도인출 가능한 제도는 DC와 IRP입니다."
+
+    out = apply_requirement_scope_override(verification, "DB형인데 집 사려고 중도인출할래", draft)
+
+    assert out["requirements_met"] is True
+    assert out["missing_requirements"] == []
+
+
+def test_optional_withdrawal_plan_expansion_does_not_trigger_repair_when_not_asked():
+    from src.agents.graph import _route_after_grounding
+    from src.agents.verification import apply_requirement_scope_override
+
+    verification = {
+        "grounded": True,
+        "issues": [],
+        "premise_issues": [],
+        "requirements_met": False,
+        "missing_requirements": ["중도인출이 가능한 다른 퇴직연금 종류에 대한 정보"],
+    }
+    draft = "아니요. DB형 퇴직연금은 중도인출이 허용되지 않습니다."
+
+    out = apply_requirement_scope_override(verification, "DB형인데 집 사려고 중도인출할래", draft)
+
+    assert out["requirements_met"] is True
+    assert out["missing_requirements"] == []
+    assert _route_after_grounding({"intent": ["정보형"], "verification": out}) == "generator"
+
+
+def test_explicit_withdrawal_plan_request_is_kept_when_unanswered():
+    from src.agents.verification import apply_requirement_scope_override
+
+    verification = {
+        "grounded": True,
+        "issues": [],
+        "premise_issues": [],
+        "requirements_met": False,
+        "missing_requirements": ["중도인출이 가능한 다른 퇴직연금 종류에 대한 정보"],
+    }
+    draft = "아니요. DB형 퇴직연금은 중도인출이 허용되지 않습니다."
+
+    out = apply_requirement_scope_override(
+        verification,
+        "DB형은 안 되면 중도인출 가능한 다른 제도는 뭐가 있어?",
+        draft,
+    )
+
+    assert out["requirements_met"] is False
+    assert out["missing_requirements"] == ["중도인출이 가능한 다른 퇴직연금 종류에 대한 정보"]
+
+
+def test_housing_deposit_withdrawal_tax_does_not_expand_to_lease_loan():
+    from src.agents.verification import apply_requirement_scope_override
+
+    verification = {
+        "grounded": True,
+        "issues": [],
+        "premise_issues": [
+            "질문은 '전세 중도인출'에 관한 것이지만, 초안은 퇴직연금 관련 내용을 다루고 있어 질문에 맞지 않음"
+        ],
+        "requirements_met": False,
+        "missing_requirements": ["전세 대출 및 중도상환 수수료 관련 정보"],
+    }
+    draft = (
+        "**세금**\n"
+        "- 무주택 전월세보증금은 근퇴법상 중도인출 사유입니다.\n"
+        "- 세액공제 받은 납입금·운용수익 재원은 16.5% 기타소득세로 안내되어 있습니다."
+    )
+
+    out = apply_requirement_scope_override(verification, "전세 중도인출하려는데 세금 어떻게 돼?", draft)
+
+    assert out["requirements_met"] is True
+    assert out["premise_issues"] == []
+    assert out["missing_requirements"] == []
+
+
+def test_alternative_withdrawal_plan_question_does_not_create_inferred_db_premise():
+    from src.agents.verification import apply_requirement_scope_override
+
+    verification = {
+        "grounded": True,
+        "issues": [],
+        "premise_issues": [
+            "중도인출 가능한 다른 제도가 있는지 묻는 질문에 대해 'DB형이 아니면 중도인출 가능하다'라는 잘못된 전제가 있음"
+        ],
+        "requirements_met": False,
+        "missing_requirements": [],
+    }
+    draft = "중도인출 가능한 제도는 DC와 IRP입니다. 다만 법정 사유를 충족해야 합니다."
+
+    out = apply_requirement_scope_override(
+        verification,
+        "DB형은 안 되면 중도인출 가능한 다른 제도는 뭐가 있어?",
+        draft,
+    )
+
+    assert out["requirements_met"] is True
+    assert out["premise_issues"] == []
+    assert out["missing_requirements"] == []

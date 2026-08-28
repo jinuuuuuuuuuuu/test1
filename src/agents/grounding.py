@@ -33,6 +33,7 @@ from src.agents.verification import (
     apply_clarification_override,
     apply_l0_overrides,
     apply_premise_issue_normalization,
+    apply_requirement_scope_override,
     apply_source_limited_override,
     find_unsupported_numbers,
 )
@@ -174,6 +175,7 @@ def build_grounding_node():
             draft=draft,
             evidence_texts=[c["content"] for c in context],
         )
+        verification = apply_requirement_scope_override(verification, state["question"], draft)
         if (
             state.get("deterministic_category") == "실물이전_개별판정"
             and not verification.get("issues")
