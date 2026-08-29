@@ -148,8 +148,21 @@ def _is_personal_tax_question(compact: str) -> bool:
     # (실측: "세율 기준이 어떻게 돼?"가 "세율이/세율은/세율표" 어디에도 안 걸려
     # 계산 게이트로 잘못 넘어갔다). "세금 얼마나 떼요/떼나요"도 "세율"이라는 단어
     # 없이 같은 유형(나이 구간만으로 완결)이라 별도로 포함한다.
-    asks_rate_only = "세율" in compact or any(
-        word in compact for word in ("얼마나떼", "얼마떼")
+    # ⚠️ "세율"이라는 단어에만 의존하면 안 된다 — 실측 no.77("연금소득세는 몇 %인가요?"),
+    # no.336("세금이 적은 쪽은 뭔가요?")처럼 세율을 묻는 가장 흔한 표현에 정작 "세율"이라는
+    # 단어가 없다. 이 게이트가 가로채는 바람에 나이를 알면서도 세율을 말하지 않고
+    # "수령 방식과 재원"을 되물었다. 판별선은 어휘가 아니라 "%(비율)를 물었나"이므로,
+    # 퍼센트 기호·"몇 프로" 같은 비율 표현과 세율 비교 질문을 함께 본다.
+    asks_percent = bool(re.search(r"몇\s*%|몇\s*퍼센트|몇\s*프로|%인가요|%예요|%인지", compact))
+    # 세율 비교("55세와 70세 중 세금이 적은 쪽") — 금액이 아니라 구간별 세율 비교가 답이다.
+    asks_rate_comparison = any(
+        word in compact for word in ("적은쪽", "낮은쪽", "유리한쪽", "차이가얼마", "차이나")
+    )
+    asks_rate_only = (
+        "세율" in compact
+        or asks_percent
+        or asks_rate_comparison
+        or any(word in compact for word in ("얼마나떼", "얼마떼"))
     )
 
     # 세율 하나로 안 끝나는 신호 — 실제 원화 세액, 구체적 재원, 한도 계산 등
