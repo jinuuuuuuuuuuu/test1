@@ -405,3 +405,62 @@ def test_long_question_with_condition_words_is_not_flow():
 
     assert not _is_product_flow_turn("2026년에 인출하면 어떻게 되나요?")
     assert _is_product_flow_turn("월 30만원")
+
+
+# ── 추천 의도 어휘 확장 + LLM 실패 시 무응답 방지 (500문항 실측) ──────────
+#
+# 501문항 평가에서 파이프라인 실패 5건 중 4건이 product_agent에서 났다. 원인은
+# CLOVA의 간헐적 400 오류(재시도 예산 소진) 자체가 아니라, 그 뒤의 폴백이 "골라
+# 주세요"/"투자하고 싶어요" 같은 자연스러운 추천 표현을 인식하지 못해 조건 불충분
+# 으로 재실패하고, 그 경우 raise로 예외를 다시 던져 그래프 전체가 죽었다는 점이다.
+# "지연보다 무응답이 압도적으로 비싸다"(llm.py) 원칙에 따라 raise를 제거했다.
+
+
+def test_recommendation_intent_recognizes_natural_phrasings():
+    """"골라주세요"/"투자하고 싶어요"처럼 "추천"이라는 단어를 안 쓰는 자연스러운
+    표현도 추천 의도로 인식해야 한다.
+
+    실측: "DC형 추가납입금으로 위험등급 3등급 이내, 총보수 낮은 상품 골라주세요"와
+    "IRP 계좌에 목돈 5천만원을 위험등급 3등급 정도로 투자하고 싶어요"가 둘 다
+    추천 의도로 인식되지 않아 폴백이 빈 결과를 반환했다.
+    """
+    from src.agents.product_agent import _is_recommendation_intent
+
+    assert _is_recommendation_intent("위험등급 3등급 이내, 총보수 낮은 상품 골라주세요.")
+    assert _is_recommendation_intent("목돈 5천만원을 위험등급 3등급 정도로 투자하고 싶어요.")
+
+
+def test_recommendation_intent_does_not_overtrigger_on_institutional_questions():
+    """어휘를 넓혔다고 제도 질문까지 추천 의도로 오판하면 안 된다(과잉 확장 방지)."""
+    from src.agents.product_agent import _is_recommendation_intent
+
+    assert not _is_recommendation_intent("DC형 계좌에 위험자산을 얼마나 투자할 수 있나요?")
+    assert not _is_recommendation_intent("퇴직연금 계좌에서 국내주식에 투자할 수 있나요?")
+
+
+def test_product_agent_never_raises_when_llm_and_fallback_both_fail(monkeypatch):
+    """LLM 호출도 실패하고 폴백도 조건 불충분으로 실패하면, 예외 대신 계좌유형을
+    되묻는 역질문으로 응답해야 한다 (무응답으로 그 문항이 0점 처리되는 것을 막는다).
+    """
+    import src.agents.product_agent as product_agent_module
+
+    def always_fail(*_args, **_kwargs):
+        raise RuntimeError("simulated CLOVA 400 Unsupported function")
+
+    monkeypatch.setattr(product_agent_module, "invoke_with_retry", always_fail)
+
+    node = product_agent_module.build_product_agent_node()
+    # 계좌유형이 없어 _fallback_product_recommendation도 빈 결과를 반환하는 질문
+    state = {
+        "question": "채권형이면서 총보수 낮고 최근 3년 수익률도 좋은 상품 하나만 콕 집어서 추천해주세요.",
+        "conversation_history": [],
+        "recommendation_profile": {},
+        "intent": ["상품형"],
+    }
+
+    result = node(state)  # 예외를 던지면 이 호출 자체가 실패한다
+
+    assert result["needs_clarification"] is True
+    assert result["product_fallback_used"] is True
+    assert result["clarification_questions"]
+    assert "계좌" in result["product_draft"]

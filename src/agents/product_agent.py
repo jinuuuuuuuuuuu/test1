@@ -81,7 +81,10 @@ PRODUCT_AGENT_SYSTEM_PROMPT = """당신은 연금 상품(펀드) 추천 에이�
 search_funds/get_fund_detail로 다시 확인하세요."""
 
 
-_RECOMMENDATION_WORDS = ("추천", "뭐 사면", "뭐살", "투자하면 좋", "맞는 상품", "상품 알려", "펀드 알려")
+_RECOMMENDATION_WORDS = (
+    "추천", "뭐 사면", "뭐살", "투자하면 좋", "맞는 상품", "상품 알려", "펀드 알려",
+    "골라주세요", "골라줘", "골라달라", "투자하고 싶", "투자하고싶",
+)
 _SPECIFIC_RECOMMENDATION_WORDS = ("상품추천", "구체", "실제 상품", "펀드명", "상품명")
 _SPECIFIC_PRODUCT_WORDS = ("어때", "위험", "수수료", "보수", "수익률", "설명", "분석")
 _COMPARISON_WORDS = ("비교", "차이", " vs ", "VS")
@@ -929,7 +932,34 @@ def build_product_agent_node():
                     "repair_attempted": state.get("verification") is not None,
                     "product_fallback_used": True,
                 }
-            raise
+            # ⚠️ 여기서 raise하면 그래프 전체가 죽어 API가 500을 반환하고 그 문항은
+            # 무응답으로 0점 처리된다 (실측: 501문항 평가에서 5건, 전부 CLOVA 간헐적
+            # 400 "Unsupported function" 오류가 재시도 예산을 다 쓴 뒤 폴백까지 조건
+            # 불충분(계좌유형 등)으로 실패한 경우). "지연보다 무응답이 압도적으로
+            # 비싸다"(llm.py)는 이 프로젝트의 원칙에 따라, 여기서는 절대 죽지 않고
+            # 최소한 계좌유형을 되묻는 역질문으로 응답한다 — 정보가 부족해 정형 추천을
+            # 못 한다는 사실 자체가 사용자에게 유용한 답이다.
+            missing = _missing_profile_fields(_extract_recommendation_profile(state))
+            fallback_questions = _clarification_questions(missing) or [
+                "어떤 계좌에서 투자할 예정인가요? IRP, DC, DB, 연금저축 중 선택해 주세요."
+            ]
+            draft = (
+                "일시적인 오류로 상품 검색을 완료하지 못했습니다. "
+                "정확한 추천을 위해 다음 정보를 알려주시면 다시 확인해드리겠습니다.\n\n"
+                + "\n".join(f"- {q}" for q in fallback_questions)
+            )
+            return {
+                "product_draft": draft,
+                "retrieved_context": [],
+                "tool_trace": [],
+                "needs_clarification": True,
+                "recommendation_stage": "clarification",
+                "missing_information": [_PROFILE_FIELD_LABELS.get(f, f) for f in missing],
+                "clarification_questions": fallback_questions,
+                "response_mode": "clarification_included",
+                "repair_attempted": state.get("verification") is not None,
+                "product_fallback_used": True,
+            }
         messages = result["messages"]
 
         retrieved_context = build_retrieved_context(messages, node="product_agent")
