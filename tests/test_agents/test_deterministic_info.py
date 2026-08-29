@@ -70,6 +70,23 @@ def test_tax_credit_calculation_runs_when_inputs_are_sufficient():
     assert "입력 조건에서는 세액공제 대상 납입액 900만원 x 16.5% = 148만 5천원" in context[0]["content"]
 
 
+def test_tax_credit_calculation_excess_amount_is_in_evidence_too():
+    """답변에 쓴 초과분 금액은 근거(content)에도 반드시 포함돼야 한다.
+
+    실측 사고(500문항 평가): 초과분 문구("세액공제 대상 한도를 초과한 납입액
+    100만원은...")를 답변(lines)에만 넣고 근거(content)에는 빠뜨렸다. 그 결과 L0
+    (find_unsupported_numbers)가 "100만원"을 근거에 없는 수치로 오판했고, ④검증이
+    이걸 grounded=False + unsupported_numbers_confirmed에 확정하는 연쇄 오탐이
+    났다 — 정작 100만원은 calculate_tax_credit이 정확히 계산한 값이었다.
+    """
+    question = "연금저축 300만원, IRP 700만원 넣었고 총급여 4천만원이면 세액공제 얼마인가요?"
+
+    draft, context = deterministic_response_for("세액공제_계산_입력부족", question)
+
+    assert "100만원" in draft
+    assert "100만원" in context[0]["content"]  # 근거에도 반드시 있어야 한다
+
+
 def test_tax_credit_calculation_parses_korean_thousand_notation():
     """"N천만원" 표기(숫자와 단위 사이에 '천'이 낀 형태)도 정확히 파싱해야 한다.
 

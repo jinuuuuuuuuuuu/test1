@@ -476,6 +476,17 @@ def _tax_credit_calculation_missing_response(question: str) -> tuple[str, list[R
             f"초과이면 {_pct(CREDIT_RATE_HIGH)}입니다. 입력 조건에서는 세액공제 대상 납입액 "
             f"{_won(result.credited_total)} x {_pct(result.credit_rate)} = {_won_readable(result.tax_credit_amount)}입니다."
         )
+        # ⚠️ 아래 초과분 문구를 lines(답변)에만 넣고 content(근거)에는 안 넣으면, ④검증이
+        # "답변에 있는데 근거에는 없는 수치"로 오판해 grounded=False가 나고 그 지적이
+        # unsupported_numbers_confirmed에 실제 계산값(예: "100만원")으로 확정되는 사고가
+        # 난다(실측). 답변에 쓸 계산 결과는 반드시 근거에도 먼저 반영한다.
+        if result.excess_beyond_credit_limit:
+            content += (
+                f" 세액공제 대상 한도를 초과한 납입액 {_won(result.excess_beyond_credit_limit)}은 "
+                "세액공제액 계산에는 포함되지 않습니다."
+            )
+        if result.over_contribution_limit:
+            content += f" 연금저축+IRP 합산 납입한도 {_won(TOTAL_CONTRIBUTION_LIMIT)}도 초과합니다."
         lines = [
             "입력해주신 조건으로 세액공제액을 계산하면 다음과 같습니다.",
             "",

@@ -108,6 +108,54 @@ def test_enforce_leaves_clean_answer_untouched_except_reference():
     assert out == answer
 
 
+# ── ④가 확정한 근거 없는 수치가 답변에 남으면 경고 (500문항 실측) ─────────
+#
+# grounded=False/issues는 ⑤ 시스템 프롬프트에 "쓰지 마세요"라는 부탁만 있고 코드
+# 강제가 없었다. 실측(no.67): "연간 납입액 700만원까지 가능합니다"(옛 한도, 현행
+# 900만원)가 ④에서 근거 없음으로 확정됐는데도 최종 답변에 그대로 남았다.
+
+
+def test_enforce_flags_confirmed_unsupported_number_left_in_answer():
+    from src.agents.generator import _enforce_verification
+
+    answer = "일반적인 경우 연간 납입액 700만원까지 가능합니다."
+    verification = {
+        "grounded": False,
+        "unsupported_numbers_confirmed": ["700만원"],
+        "missing_requirements": [],
+        "premise_issues": [],
+    }
+    out = _enforce_verification(answer, verification, [])
+
+    assert "700만원" in out  # 삭제하지 않는다 — 문장이 깨진다
+    assert "확인되지 않아 참고용입니다" in out
+    assert "700만원" in out.split("참고용입니다")[1]  # 경고 문구에도 수치가 나열됨
+
+
+def test_enforce_does_not_flag_number_used_in_negation_context():
+    """수치를 '틀렸다'고 바로잡는 데 쓰였으면 경고를 붙이지 않는다.
+
+    실측(no.5): "평균 임금의 60%가 아니라 30일분에 계속근로기간을 곱하여"처럼 틀린
+    수치를 부정하며 교정한 답변까지 위반으로 잡으면, 오히려 올바른 답변에 불필요한
+    경고가 붙는다.
+    """
+    from src.agents.generator import _enforce_verification
+
+    answer = (
+        "퇴직급여는 평균 임금의 60%가 아니라 30일분에 계속근로기간을 곱하여 계산됩니다."
+    )
+    verification = {
+        "grounded": False,
+        "unsupported_numbers_confirmed": ["60%"],
+        "missing_requirements": [],
+        "premise_issues": [],
+    }
+    out = _enforce_verification(answer, verification, [])
+
+    assert out == answer  # 손대지 않는다
+    assert "참고용입니다" not in out
+
+
 # ── ④가 확정한 "근거에 없는 수치" 목록을 ⑤ 프롬프트로 전달 ──────────────
 
 

@@ -205,6 +205,54 @@ def enforce_missing_requirements(answer: str, missing: list[str]) -> str:
     )
 
 
+# 수치 뒤에 이 표현이 이어지면 그 수치를 사실로 주장하는 게 아니라 "틀렸다"고 바로잡는
+# 문맥이다. 실측(500문항 평가 스크리닝 중 발견): "평균 임금의 60%가 아니라 30일분에"처럼
+# 틀린 수치를 부정하며 교정하는 답변까지 위반으로 잡으면 오히려 올바른 답변에 경고가
+# 붙는다. eval/screen_results.py의 _is_asserted와 같은 판정을 코드 강제에도 적용한다.
+_NUMBER_NEGATION_MARKERS = (
+    "가 아니", "이 아니", "은 아니", "는 아니", "아닙니다", "아니라",
+    "가 아닌", "이 아닌", "잘못", "오해", "사실과 다",
+)
+
+
+def _number_is_asserted(answer: str, number_token: str) -> bool:
+    """답변이 그 수치를 사실로 주장하는지 판정한다 (부정 문맥에서만 등장하면 False)."""
+    core = _numeric_core(number_token)
+    normalized = strip_inline_markup(answer).replace(",", "")
+    start = 0
+    while True:
+        idx = normalized.find(core, start)
+        if idx == -1:
+            return False
+        tail = normalized[idx + len(core): idx + len(core) + 25]
+        if not any(marker in tail for marker in _NUMBER_NEGATION_MARKERS):
+            return True
+        start = idx + len(core)
+
+
+def enforce_unsupported_numbers(answer: str, confirmed: list[str]) -> str:
+    """④가 '근거에 없다'고 확정한 수치가 최종 답변에 사실로 남아 있으면 경고를 붙인다.
+
+    ⑤ 프롬프트에 이 목록을 넘기고 "쓰지 말라"고 부탁하지만(generator.py), 그 실측
+    4/4 위반이 이 프로젝트가 "프롬프트 순종은 확률적으로 실패한다"는 원칙을 세운
+    근거였다 — missing_requirements/premise_issues는 이미 코드로 강제하면서 정작
+    grounded=False의 핵심 증거인 unsupported_numbers_confirmed는 강제가 없었다.
+
+    수치를 코드로 지우면 문장이 깨진다("연금소득세율은 %입니다") — 그래서 삭제 대신
+    경고를 붙인다. 이미 부정 문맥으로 쓰였다면(수치를 틀렸다고 바로잡는 중) 손대지
+    않는다 — 그건 할루시네이션이 아니라 올바른 답변이다.
+    """
+    leaked = [n for n in confirmed if _number_is_asserted(answer, n)]
+    if not leaked:
+        return answer
+    items = ", ".join(dict.fromkeys(leaked))
+    return (
+        f"{answer}\n\n"
+        f"※ 위 답변에 포함된 다음 수치는 제공된 자료에서 확인되지 않아 참고용입니다: "
+        f"{items}. 정확한 수치는 가입하신 금융기관에 확인해 주시기 바랍니다."
+    )
+
+
 # ④가 premise_issues에 "답변의 결함"을 적어 넣는 경우가 있다. 실측 사례:
 #   - "2027년 연금 세제 개편안 확정 내용"      (자료에 없어 못 답한 것)
 #   - "초안이 날짜에 직접 답하지 않음"          (답변 누락)

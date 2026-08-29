@@ -10,6 +10,7 @@ from src.agents.state import PensionAgentState
 from src.agents.verification import (
     enforce_missing_requirements,
     enforce_premise_issues,
+    enforce_unsupported_numbers,
     replace_evidence_placeholders,
     split_premise_issues,
 )
@@ -110,10 +111,16 @@ def _enforce_verification(answer: str, verification: dict, context: list) -> str
     # ② 답하지 못한 요구 항목을 한계로 명시 (요강: 정보한계 대응)
     answer = enforce_missing_requirements(answer, missing)
 
-    # ③ 잘못된 전제를 바로잡지 않았으면 앞머리에 교정문을 붙인다 (요강: 정확성)
+    # ③ ④가 "근거에 없다"고 확정한 수치가 답변에 사실로 남아 있으면 경고를 붙인다.
+    # grounded=False/issues는 프롬프트 부탁만 있었는데(⑤ 시스템 프롬프트), 실측
+    # 4/4 위반이 이 프로젝트의 "프롬프트 순종은 확률적으로 실패한다" 원칙의 근거였다.
+    confirmed_numbers = list(verification.get("unsupported_numbers_confirmed") or [])
+    answer = enforce_unsupported_numbers(answer, confirmed_numbers)
+
+    # ④ 잘못된 전제를 바로잡지 않았으면 앞머리에 교정문을 붙인다 (요강: 정확성)
     answer = enforce_premise_issues(answer, premise_issues)
 
-    # ④ 근거를 썼는데 출처 줄이 없으면 코드가 붙인다 (LLM에게 맡기면 누락된다 — 실측 K1)
+    # ⑤ 근거를 썼는데 출처 줄이 없으면 코드가 붙인다 (LLM에게 맡기면 누락된다 — 실측 K1)
     return _append_reference_line(answer, context)
 
 

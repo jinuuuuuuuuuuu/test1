@@ -8,6 +8,7 @@ import pytest
 from src.agents.verification import (
     apply_clarification_override,
     apply_l0_overrides,
+    enforce_unsupported_numbers,
     extract_number_tokens,
     find_unsupported_numbers,
 )
@@ -524,3 +525,33 @@ def test_alternative_withdrawal_plan_question_does_not_create_inferred_db_premis
     assert out["requirements_met"] is True
     assert out["premise_issues"] == []
     assert out["missing_requirements"] == []
+
+
+# ── enforce_unsupported_numbers ───────────────────────────────────────────
+#
+# grounded=False/issues는 ⑤ 시스템 프롬프트에 부탁만 있고 코드 강제가 없었다.
+# missing_requirements/premise_issues는 이미 코드로 강제하는데(enforce_missing_
+# requirements, enforce_premise_issues) 정작 grounded=False의 핵심 증거인
+# unsupported_numbers_confirmed만 강제 없이 남아 있었다(실측 500문항 평가 no.67).
+
+
+def test_enforce_unsupported_numbers_appends_warning_when_asserted():
+    answer = "일반적인 경우 연간 납입액 700만원까지 가능합니다."
+    out = enforce_unsupported_numbers(answer, ["700만원"])
+
+    assert answer in out  # 원문은 지우지 않는다 — 삭제하면 문장이 깨진다
+    assert "700만원" in out
+    assert "확인되지 않아 참고용입니다" in out
+
+
+def test_enforce_unsupported_numbers_skips_negation_context():
+    """수치를 '아니다'라고 바로잡는 데 쓰였으면 경고를 붙이지 않는다."""
+    answer = "평균 임금의 60%가 아니라 30일분에 계속근로기간을 곱하여 계산됩니다."
+    out = enforce_unsupported_numbers(answer, ["60%"])
+
+    assert out == answer
+
+
+def test_enforce_unsupported_numbers_no_confirmed_list_is_noop():
+    answer = "세액공제 한도는 900만원입니다."
+    assert enforce_unsupported_numbers(answer, []) == answer
