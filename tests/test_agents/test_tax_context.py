@@ -1,4 +1,4 @@
-from src.agents.tax_context import personal_tax_response
+from src.agents.tax_context import _is_personal_tax_question, _compact, personal_tax_response
 
 
 def test_age_only_personal_tax_question_asks_branch_fields():
@@ -88,3 +88,37 @@ def test_assumption_request_does_not_fill_missing_fields():
     assert "임의 가정을 요청하더라도" in draft
     assert "대신 채우지 않겠습니다" in draft
     assert "4.4%" not in draft
+
+
+# ── 개인세금 게이트 vs 연령별 세율 게이트 판별 (500문항 실측) ─────────────
+#
+# 실측 사고: 나이 언급 하나만으로 이 게이트가 발동하던 이전 로직은 "제가 60세인데
+# 연금소득세율이 몇 %인가요?"조차 계산 질문으로 오판해, 501문항 중
+# 개인세금_입력충분성으로 확정된 45건의 96%(43건)를 역질문으로 되돌렸다. 나이 구간
+# 만으로 답이 완결되는 순수 세율 질문(연금소득세율_연령별이 정확히 답할 수 있는
+# 영역)까지 전부 삼킨 것 — 판별선은 "세율(%)만 물었나 vs 세액(원)·복합조건을
+# 물었나"여야 한다.
+
+
+def test_rate_only_question_is_not_personal_tax_gate():
+    """나이 구간만으로 완결되는 세율 질문은 개인세금 게이트가 아니다."""
+    questions = [
+        "제가 만 60세인데 연금소득세율이 몇 %인가요?",
+        "70세 이상 세율 기준이 어떻게 돼?",
+        "여든 살인데 연금 받으면 세금 얼마나 떼요?",
+        "연금 받으면 세율이 얼마인가요?",
+    ]
+    for q in questions:
+        assert not _is_personal_tax_question(_compact(q)), q
+
+
+def test_actual_calculation_question_stays_personal_tax_gate():
+    """금액·재원 등 세율표만으로 안 끝나는 조건이 있으면 계산 게이트를 유지한다."""
+    questions = [
+        "나 74세인데 세금 어떻게 내?",
+        "제가 만 68세인데 연금세금이 얼마나 나오나요?",
+        "제가 60세이고 세액공제받은 재원에서 연 2000만원을 인출하는데 세율이 어떻게 되나요?",
+        "74세 세율이 궁금한데 제 경우 실제 얼마 내나요?",
+    ]
+    for q in questions:
+        assert _is_personal_tax_question(_compact(q)), q

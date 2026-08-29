@@ -110,6 +110,21 @@ def required_missing_fields(branch: TaxBranch, context: TaxContext) -> list[str]
 
 
 def _is_personal_tax_question(compact: str) -> bool:
+    """개인세금_입력충분성 게이트로 보낼지 판정한다.
+
+    이 게이트는 "세율(%) 자체가 아니라 실제 원화 세액·한도를 계산해 달라"는 질문
+    전용이다. 세율 자체를 묻는 질문(나이만 있으면 답이 완결됨)은
+    연금소득세율_연령별 핸들러가 이미 구간표 확정 + 종신연금/1,500만원 초과 같은
+    남은 조건은 분기로 안내하도록 정교하게 처리하므로, 여기서 가로채면 그 핸들러가
+    아예 호출되지 못한다.
+
+    ⚠️ 실측(500문항 평가): 나이 언급 하나만으로 has_personal_signal이 True가 되던
+    이전 로직은 "제가 60세인데 연금소득세율이 몇 %인가요?"조차 계산 질문으로 오판해
+    45건 중 43건(96%)을 역질문으로 되돌렸다 — asks_general_rate_rule 어휘("세율표",
+    "연령별" 등 4개)가 "세율이 몇 %"·"세율이 얼마" 같은 실제 표현을 못 잡았기 때문이다.
+    핵심 판별선은 어휘 목록을 늘리는 게 아니라 "세율(%)만 물었나 vs 세액(원)이나
+    복합 조건을 물었나"이므로, 그 기준 자체를 판정에 반영한다.
+    """
     has_tax_word = any(
         word in compact
         for word in (
@@ -125,6 +140,27 @@ def _is_personal_tax_question(compact: str) -> bool:
     if not has_tax_word:
         return False
 
+    # 세율(%) 자체를 묻는 표현 — 나이 구간만 알면 완결되는 질문. 이 신호가 있고
+    # 아래 계산 신호가 없으면 연금소득세율_연령별에 맡긴다.
+    #
+    # "세율"이라는 단어 자체를 기본 신호로 삼는다 — "세율이 몇%", "세율 기준",
+    # "세율표" 등 표현이 다양해서 특정 조사·어미 조합만 나열하면 계속 빠진다
+    # (실측: "세율 기준이 어떻게 돼?"가 "세율이/세율은/세율표" 어디에도 안 걸려
+    # 계산 게이트로 잘못 넘어갔다). "세금 얼마나 떼요/떼나요"도 "세율"이라는 단어
+    # 없이 같은 유형(나이 구간만으로 완결)이라 별도로 포함한다.
+    asks_rate_only = "세율" in compact or any(
+        word in compact for word in ("얼마나떼", "얼마떼")
+    )
+
+    # 세율 하나로 안 끝나는 신호 — 실제 원화 세액, 구체적 재원, 한도 계산 등
+    # 세율표만으로는 답할 수 없는 조건이 함께 제시된 경우.
+    #
+    # ⚠️ "얼마나 떼나요/얼마 떼요"는 여기 넣지 않는다 — "세금을 떼다"는 세율만
+    # 묻는 질문에도 자연스럽게 쓰이는 표현이라("여든 살인데 세금 얼마나 떼요?") 계산
+    # 신호로 잡으면 오히려 순수 세율 질문을 계산 게이트로 도로 밀어넣는다(실측).
+    # ⚠️ "세금얼마"는 부분문자열이라 "세금 얼마나 떼요"(순수 세율 질문)에도 걸린다
+    # ("세금얼마" + "나떼요"). "세금 얼마 내나요/얼마인가요"처럼 뒤에 "나"가 붙지 않는
+    # 형태만 계산 신호로 잡는다(실측 오탐 확인 후 좁힘).
     has_actual_calculation_signal = any(
         word in compact
         for word in (
@@ -134,14 +170,12 @@ def _is_personal_tax_question(compact: str) -> bool:
             "계산",
             "얼마내",
             "얼마를내",
-            "세금얼마",
             "어떻게내",
-            "얼마나떼",
-            "얼마떼",
         )
-    )
-    asks_general_rate_rule = any(word in compact for word in ("세율표", "연령별", "기준", "설명"))
-    if asks_general_rate_rule and not has_actual_calculation_signal:
+    ) or bool(re.search(r"세금얼마(?!나)", compact)) or bool(
+        re.search(r"\d[\d,]*\s?(?:만원|억원|원)", compact)
+    )  # 구체적 금액 언급
+    if asks_rate_only and not has_actual_calculation_signal:
         return False
 
     has_personal_signal = bool(_extract_age(compact)) or any(
