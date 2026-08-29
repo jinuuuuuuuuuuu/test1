@@ -344,13 +344,51 @@ def check_default_option(
       받아 자동매수 통지일/적용일을 계산.
     """
     if mode == "옵트인가능여부":
+        # 필수 입력이 없으면 예외로 죽지 않고 "판정하지 않았다"를 구조화해 돌려준다.
+        # 실측(no.42): LLM이 current_holdings_count 없이 이 툴을 호출해
+        # "TypeError: '<' not supported between 'NoneType' and 'int'"가 났고, 그
+        # 에러 문자열이 그대로 근거로 들어가 grounded=False까지 이어졌다. 보유 개수는
+        # 0개/1개/2개 이상에 따라 결론이 정반대로 갈리므로 임의 가정도 할 수 없다 —
+        # check_early_withdrawal이 신청일 없을 때 쓰는 처리와 같은 방식으로 되묻게 한다.
+        if current_holdings_count is None:
+            return {
+                "eligibility_checked": False,
+                "note": (
+                    "현재 실제 보유 중인 디폴트옵션 개수(current_holdings_count)가 없어 "
+                    "옵트인 가능 여부를 판정하지 않았습니다. 0개면 1개 매수 가능, 1개면 "
+                    "동일 상품만 추가 가능, 2개 이상이면 전량 정리 후 가능으로 결론이 "
+                    "달라지므로 보유 개수를 확인해 다시 호출하세요."
+                ),
+            }
         result = check_optin_eligibility(
             current_holdings_count=current_holdings_count,
             target_is_same_as_only_holding=target_is_same_as_only_holding,
         )
     elif mode == "자동매수일정":
+        # 같은 이유로 필수 입력을 먼저 확인한다 — base_date가 없으면
+        # "TypeError: unsupported operand type(s) for +: 'NoneType' and 'timedelta'"가
+        # 나고, is_new_participant가 없으면 기존/신규 분기가 임의로 결정된다
+        # (기존가입자는 만기일+29일, 신규가입자는 납입일 다음 영업일로 통지일이 다르다).
+        parsed_base_date = _parse_date(base_date)
+        missing_inputs = []
+        if parsed_base_date is None:
+            missing_inputs.append(
+                "기준일(base_date: 기존가입자는 상품 만기일, 신규가입자는 최초 부담금 납입일)"
+            )
+        if is_new_participant is None:
+            missing_inputs.append("기존가입자/신규가입자 구분(is_new_participant)")
+        if missing_inputs:
+            return {
+                "schedule_calculated": False,
+                "note": (
+                    "다음 정보가 없어 자동매수 일정을 계산하지 않았습니다: "
+                    + ", ".join(missing_inputs)
+                    + ". 기존가입자는 만기일 기준, 신규가입자는 최초 납입일 기준으로 "
+                    "통지일이 달라 임의로 가정할 수 없습니다."
+                ),
+            }
         result = get_auto_purchase_schedule(
-            base_date=_parse_date(base_date),
+            base_date=parsed_base_date,
             is_new_participant=is_new_participant,
             is_first_occurrence=is_first_occurrence,
         )

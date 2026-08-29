@@ -118,6 +118,43 @@ def test_check_default_option_tool_schedule():
     assert out["waited"] is True
 
 
+# ── mode별 필수 입력 누락 시 예외 대신 안내 (500문항 실측) ──────────────
+#
+# check_default_option은 mode에 따라 필수 인자가 달라져 전부 Optional로 선언돼
+# 있다. 그래서 LLM이 인자를 빠뜨린 채 호출해도 LangChain이 막지 못하고 규칙
+# 함수까지 그대로 전달돼 TypeError로 죽었다 — 그 에러 문자열이 근거로 들어가
+# grounded=False까지 이어졌다(실측 no.42). 다른 툴들은 진짜 필수 인자를
+# 시그니처에서 필수로 선언해 이 문제가 없다.
+
+
+def test_check_default_option_optin_without_holdings_count_returns_note():
+    """보유 개수 없이 옵트인 판정을 호출하면 예외 대신 안내를 돌려준다.
+
+    실측 no.42: TypeError("'<' not supported between 'NoneType' and 'int'").
+    보유 개수는 0개/1개/2개 이상에 따라 결론이 정반대라 임의 가정도 불가하다.
+    """
+    out = check_default_option.invoke({"mode": "옵트인가능여부"})
+
+    assert "error" not in out
+    assert out["eligibility_checked"] is False
+    assert "current_holdings_count" in out["note"]
+
+
+def test_check_default_option_schedule_without_required_inputs_returns_note():
+    """기준일·가입자구분 없이 자동매수 일정을 호출해도 예외로 죽지 않는다."""
+    no_date = check_default_option.invoke({"mode": "자동매수일정"})
+    assert "error" not in no_date
+    assert no_date["schedule_calculated"] is False
+    assert "base_date" in no_date["note"]
+
+    no_participant_type = check_default_option.invoke(
+        {"mode": "자동매수일정", "base_date": "2026-03-01"}
+    )
+    assert "error" not in no_participant_type
+    assert no_participant_type["schedule_calculated"] is False
+    assert "is_new_participant" in no_participant_type["note"]
+
+
 def test_check_in_kind_transfer_tool():
     out = check_in_kind_transfer.invoke({"private_fund": True})
     assert out["eligible"] is False
