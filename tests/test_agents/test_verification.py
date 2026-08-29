@@ -62,6 +62,27 @@ def test_comma_notation_difference_is_normalized():
     assert find_unsupported_numbers(draft, evidence) == []
 
 
+def test_korean_numeral_notation_is_normalized():
+    """사용자가 "5천만원"이라 쓰고 답변이 "5,000만원"으로 되받는 것은 위반이 아니다.
+
+    실측(no.486): L0 의심 4개 중 3개가 이런 표기 차이였고, 정작 진짜 할루시네이션인
+    "700만원"(옛 세액공제 한도, 현행 900만원)은 ④ LLM이 확정에서 누락해 최종 답변에
+    그대로 나갔다. 표기 차이 노이즈를 코드가 미리 걷어내면 ④가 진짜 지어낸 값을
+    골라내기 쉬워진다.
+    """
+    assert find_unsupported_numbers(
+        "총급여 5,000만원 기준입니다.", [], user_texts=["저는 연봉 5천만원 직장인인데"]
+    ) == []
+    assert find_unsupported_numbers(
+        "평가액은 3억원입니다.", [], user_texts=["IRP 잔고가 3억인데"]
+    ) == []
+
+    # 진짜 근거 없는 수치는 그대로 잡혀야 한다 (과잉 완화 방지)
+    assert find_unsupported_numbers(
+        "한도는 700만원입니다.", [], user_texts=["세액공제 한도를 다 채우고"]
+    ) == ["700만원"]
+
+
 def test_hallucinated_number_is_flagged():
     # 실제 실패 사례: 근거에 전혀 없는 "노란우산공제 연 500만원"
     draft = "노란우산공제로 연 500만원까지 공제받을 수 있습니다."

@@ -76,6 +76,30 @@ def _numeric_core(token: str) -> str:
     return (m.group(0) if m else token).replace(",", "")
 
 
+# "5천만원"처럼 아라비아 숫자와 단위 사이에 한글 보조단위가 낀 표기.
+# deterministic_info._parse_korean_amount와 같은 대상을 다루지만, 여기서는 금액을
+# 계산하는 게 아니라 "같은 값의 다른 표기"를 만들어 비교에 보태는 용도다.
+_KOREAN_SUBUNIT_RE = re.compile(r"(\d[\d,]*)\s*(천|백|십)\s*(만|억)?")
+_KOREAN_SUBUNIT_FACTOR = {"천": 1_000, "백": 100, "십": 10}
+
+
+def _expand_korean_numerals(text: str) -> str:
+    """한글 보조단위 표기를 아라비아 표기로 펼친 문자열을 만든다.
+
+    "5천만원" -> "5000만 50000000" 처럼 초안이 쓸 법한 표기를 모두 만들어 두면,
+    부분문자열 비교만으로도 같은 값을 알아본다.
+    """
+    expanded: list[str] = []
+    for raw, subunit, big_unit in _KOREAN_SUBUNIT_RE.findall(text):
+        base = int(raw.replace(",", "")) * _KOREAN_SUBUNIT_FACTOR[subunit]
+        expanded.append(str(base))
+        if big_unit == "만":
+            expanded.append(str(base * 10_000))
+        elif big_unit == "억":
+            expanded.append(str(base * 100_000_000))
+    return " ".join(expanded)
+
+
 def find_unsupported_numbers(
     draft: str,
     evidence_texts: list[str],
@@ -91,10 +115,16 @@ def find_unsupported_numbers(
     콤마 표기 차이(1,200 vs 1200)와 인라인 마크다운 서식(1,**800**만원)은 정규화해서
     비교한다. 숫자 부분의 부분문자열 일치만 보므로 "지원됨" 쪽으로 관대하다 — 여기서
     잡히지 않은 표기 차이(9백만 원 등)는 ④ LLM이 의심 목록을 근거와 대조할 때 걸러진다.
+
+    한글 수사("5천만원")는 아라비아 표기("5,000만원")로도 함께 펼쳐 비교한다 —
+    사용자가 "연봉 5천만원"이라 쓰고 답변이 "총급여 5,000만원"으로 되받는 것은
+    할루시네이션이 아닌데, 표기가 달라 의심 목록에 올라가면 ④ LLM이 그 목록에서
+    "진짜 지어낸 값"을 골라내는 일이 그만큼 어려워진다(실측 no.486: 의심 4개 중
+    3개가 이런 표기 차이였고, 정작 진짜 할루시네이션인 "700만원"은 확정에서
+    누락돼 최종 답변에 그대로 나갔다).
     """
-    normalized_support = strip_inline_markup(
-        " ".join([*evidence_texts, *user_texts])
-    ).replace(",", "")
+    support_text = strip_inline_markup(" ".join([*evidence_texts, *user_texts]))
+    normalized_support = support_text.replace(",", "") + " " + _expand_korean_numerals(support_text)
     return [
         token
         for token in extract_number_tokens(draft)
