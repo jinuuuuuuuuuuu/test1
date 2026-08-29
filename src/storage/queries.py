@@ -278,6 +278,34 @@ class DocSearchResult:
     distance: float = 0.0  # L2 거리(낮을수록 관련) — 임계값 캘리브레이션·디버깅용
 
 
+# 이름이 비슷하지만 지금과 다른 폐지 제도의 문서를 가리키는 표시.
+# "(구)개인연금저축"은 현행 "연금저축"과 한도·과세·요건이 전부 다르다
+# (중도해지 과세: 옛 제도 이자소득세 15.4% vs 현행 기타소득세 16.5%).
+_OBSOLETE_REGIME_MARKERS = ("(구)개인연금", "(구) 개인연금", "구 개인연금저축")
+
+# 사용자가 그 옛 제도를 **명시적으로** 물은 경우엔 걸러내면 안 된다.
+_OBSOLETE_REGIME_QUERY_MARKERS = ("(구)", "구 개인연금", "옛 개인연금", "예전 개인연금", "종전 개인연금")
+
+
+def _asks_obsolete_regime(query: str) -> bool:
+    """질문이 폐지된 (구)개인연금저축을 명시적으로 묻는지 판정한다."""
+    return any(marker in query for marker in _OBSOLETE_REGIME_QUERY_MARKERS)
+
+
+def _is_obsolete_regime_doc(meta: dict, content: str) -> bool:
+    """검색된 청크가 폐지 제도 문서인지 판정한다.
+
+    ⚠️ 실측(501문항): "연금저축 중도해지하면 세액공제는 어떻게 되나요?"에
+    (구)개인연금저축 문서가 근거로 잡혀 "이자소득세 15.4%"라고 답했다(정답은
+    기타소득세 16.5%). grounded=True로 통과까지 됐다 — 근거에 실재하는 숫자였기
+    때문이다. 22건에서 이 문서가 근거로 잡혔고 3건은 답변까지 오염됐다.
+    프롬프트로 "제도를 구분하라"고 지시해도 2/3이 여전히 15.4%를 답해, 검색
+    단계에서 걸러낸다.
+    """
+    haystack = f"{meta.get('file_title', '')} {meta.get('section', '')} {content[:200]}"
+    return any(marker in haystack for marker in _OBSOLETE_REGIME_MARKERS)
+
+
 def _filter_relevant(scored_hits: list, max_distance: float) -> list:
     """(Document, L2 거리) 쌍에서 임계값 초과를 제거한다. 전부 초과면 빈 리스트."""
     return [(doc, distance) for doc, distance in scored_hits if distance <= max_distance]
@@ -341,10 +369,14 @@ def search_pension_docs(
     )
     hits = call_with_retry(vectorstore.similarity_search_with_score, query, k=k)
 
+    asks_obsolete = _asks_obsolete_regime(query)
+
     results: list[DocSearchResult] = []
     seen_parents: set[str] = set()
     for doc, distance in _filter_relevant(hits, max_distance):
         meta = doc.metadata
+        if not asks_obsolete and _is_obsolete_regime_doc(meta, doc.page_content):
+            continue
         parent_id = meta.get("parent_chunk_id")
         chunk_id = meta.get("chunk_id", "")
         content = doc.page_content
