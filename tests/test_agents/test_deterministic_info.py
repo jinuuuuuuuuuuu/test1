@@ -828,3 +828,66 @@ def test_db_alternative_withdrawal_plan_question_answers_plan_types_directly():
     assert "DB형 퇴직연금은 중도인출이 허용되지 않습니다" in draft
     assert "법정 사유 같은 법정 사유" not in draft
     assert not draft.startswith("아니요")
+
+
+# ── 연금수령한도 실제 계산 (500문항 실측) ──────────────────────────────
+#
+# _withdrawal_limit_response는 question을 아예 읽지 않고 항상 공식만 안내했다.
+# 그래서 계산에 필요한 값이 질문에 다 있는데도 "구체적인 금액 계산을 하려면
+# 평가액과 연차가 필요합니다"라고 되물었다(실측 no.103, no.334).
+# calculate_withdrawal_limit 규칙은 이미 있었는데 호출되지 않았을 뿐이다.
+
+
+def test_withdrawal_limit_calculates_when_inputs_given():
+    """평가액과 연금수령연차가 모두 주어지면 실제 한도를 계산한다."""
+    draft, context = deterministic_response_for(
+        "연금수령한도", "연금계좌 평가액 5000만원이고 연금수령 3년차인데 올해 수령한도가 얼마인가요?"
+    )
+
+    assert "750만원" in draft  # 5000 / (11-3) * 1.2
+    assert "필요합니다" not in draft.split("계산식")[0]
+    assert "750만원" in context[0]["content"]  # 근거에도 계산 결과를 담는다
+
+
+def test_withdrawal_limit_handles_eok_notation():
+    """"1억원" 표기도 파싱한다."""
+    draft, _ = deterministic_response_for(
+        "연금수령한도", "연금계좌 평가액 1억원이고 연금수령 5년차인데 올해 수령한도가 얼마인가요?"
+    )
+
+    assert "2,000만원" in draft  # 10000 / (11-5) * 1.2
+
+
+def test_withdrawal_limit_unlimited_from_11th_year():
+    draft, _ = deterministic_response_for(
+        "연금수령한도", "연금계좌 평가액 1억이고 연금수령 12년차인데 한도가 얼마인가요?"
+    )
+
+    assert "한도가 적용되지 않습니다" in draft
+
+
+def test_withdrawal_limit_falls_back_to_formula_without_inputs():
+    """값이 없으면 기존처럼 공식만 안내한다(과잉 계산 방지)."""
+    draft, _ = deterministic_response_for("연금수령한도", "연금수령한도가 어떻게 계산되나요?")
+
+    assert "연금계좌 평가액 ÷ (11 - 연금수령연차) × 120%" in draft
+    assert "필요합니다" in draft
+
+
+def test_withdrawal_limit_does_not_hijack_actual_receipt_year_question():
+    """'연금실제수령연차'는 이연퇴직소득세 감면율용이라 한도 계산에 쓰면 안 된다.
+
+    연금수령연차(한도 산정, 개시 가능 시점부터 자동 누적)와 연금실제수령연차(감면율,
+    실제 인출한 해만 누적)는 서로 다른 값이다. 둘을 혼동해 계산하면 엉뚱한 한도가
+    나오므로, 추출 단계에서 실제수령연차 질문은 아예 걸러낸다.
+    """
+    from src.agents.deterministic_info import _extract_withdrawal_limit_inputs
+
+    assert _extract_withdrawal_limit_inputs(
+        "연금계좌 평가액 1억이고 연금실제수령연차 10년차인데 감면율이 얼마인가요?"
+    ) == (None, None)
+
+    # 한도용 '연금수령연차'는 정상 추출된다
+    assert _extract_withdrawal_limit_inputs(
+        "연금계좌 평가액 1억이고 연금수령 5년차인데 한도가 얼마인가요?"
+    ) == (100_000_000, 5)

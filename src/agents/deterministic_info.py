@@ -82,6 +82,7 @@ from src.rules.withdrawal_limit import (
     SIX_YEAR_EXCEPTION_CUTOFF,
     SIX_YEAR_EXCEPTION_START,
     UNLIMITED_FROM_YEAR,
+    calculate_withdrawal_limit,
 )
 from src.agents.tax_context import personal_tax_response
 
@@ -1507,6 +1508,32 @@ def _in_kind_transfer_judgement_response(question: str) -> tuple[str, list[Retri
     return draft, _context(source, content)
 
 
+_ACCOUNT_VALUE_RE = re.compile(
+    r"(?:평가액|잔고|적립금|계좌)[^\d]{0,6}([0-9,]+(?:\s*(?:천|백|십))?)\s*(억\s*원|만\s*원|억|만|원)"
+)
+_PAYMENT_YEAR_RE = re.compile(r"(?:연금수령|수령)\s*(\d{1,2})\s*년차")
+
+
+def _extract_withdrawal_limit_inputs(question: str) -> tuple[Optional[int], Optional[int]]:
+    """질문에서 (연금계좌 평가액, 연금수령연차)를 뽑는다. 못 읽으면 None.
+
+    ⚠️ "연금수령연차"(한도 산정용, 개시 가능 시점부터 자동 누적)와 "연금실제수령연차"
+    (이연퇴직소득세 감면율용, 실제 인출한 해만 누적)는 서로 다른 값이다 — 감면율 쪽
+    추출기(tax_context._extract_actual_pension_year)를 재사용하면 안 된다.
+    """
+    compact = _compact(question)
+    if "실제수령연차" in compact:
+        return None, None  # 감면율 질문이므로 이 핸들러가 다룰 대상이 아니다
+
+    value_match = _ACCOUNT_VALUE_RE.search(compact)
+    account_value = (
+        _parse_korean_amount(value_match.group(1), value_match.group(2)) if value_match else None
+    )
+    year_match = _PAYMENT_YEAR_RE.search(compact)
+    payment_year = int(year_match.group(1)) if year_match else None
+    return account_value, payment_year
+
+
 def _withdrawal_limit_response(question: str) -> tuple[str, list[RetrievedItem]]:
     source = "doc39 연금수령한도 규칙"
     content = (
@@ -1515,11 +1542,47 @@ def _withdrawal_limit_response(question: str) -> tuple[str, list[RetrievedItem]]
         f"2013.3.1 이전 가입한 연금계좌는 {SIX_YEAR_EXCEPTION_START}년차부터 기산하는 특례가 있습니다. "
         "연금수령 요건은 가입기간 5년 이상, 만 55세 이후, 한도 이내 인출입니다."
     )
+    formula_note = (
+        "다만 연금수령연차 11년차 이상부터는 한도가 없어져 전액 인출해도 연금수령으로 인정될 수 있습니다. "
+        "또 2013.3.1 이전 가입한 연금계좌는 1년차가 아니라 6년차부터 기산하는 특례가 있습니다."
+    )
+
+    # 질문에 평가액과 연차가 모두 있으면 규칙엔진으로 실제 금액을 계산한다.
+    # ⚠️ 예전에는 question을 아예 읽지 않고 항상 공식만 안내해서, 계산에 필요한 값이
+    # 다 주어진 질문에도 "구체적인 금액 계산을 하려면 평가액과 연차가 필요합니다"라고
+    # 되물었다(실측 no.103: 5000만원·3년차 -> 750만원, no.334: 1억·5년차 -> 2000만원).
+    account_value, payment_year = _extract_withdrawal_limit_inputs(question)
+    if account_value is not None and payment_year is not None:
+        result = calculate_withdrawal_limit(
+            account_value=account_value, pension_payment_year=payment_year
+        )
+        if result.is_unlimited:
+            draft = (
+                f"연금수령연차 {payment_year}년차는 {UNLIMITED_FROM_YEAR}년차 이상이라 "
+                "연금수령한도가 적용되지 않습니다. 전액 인출해도 연금수령으로 인정될 수 있습니다.\n\n"
+                f"{formula_note}"
+            )
+        else:
+            draft = (
+                f"입력해주신 조건(평가액 {_won(account_value)}, 연금수령 {payment_year}년차)의 "
+                f"올해 연금수령한도는 **{_won(result.limit_amount)}**입니다.\n\n"
+                f"계산식: {_won(account_value)} ÷ (11 - {payment_year}) × 120% = "
+                f"{_won(result.limit_amount)}\n\n{formula_note}"
+            )
+        content += (
+            f" 입력 조건에서는 평가액 {_won(account_value)}, 연금수령 {payment_year}년차이며 "
+            + (
+                f"{UNLIMITED_FROM_YEAR}년차 이상이라 한도가 없습니다."
+                if result.is_unlimited
+                else f"한도는 {_won(result.limit_amount)}입니다."
+            )
+        )
+        return draft, _context(source, content)
+
     draft = (
         "연금수령한도는 다음 공식으로 계산합니다.\n\n"
         "연금수령한도 = 연금계좌 평가액 ÷ (11 - 연금수령연차) × 120%\n\n"
-        "다만 연금수령연차 11년차 이상부터는 한도가 없어져 전액 인출해도 연금수령으로 인정될 수 있습니다. "
-        "또 2013.3.1 이전 가입한 연금계좌는 1년차가 아니라 6년차부터 기산하는 특례가 있습니다.\n\n"
+        f"{formula_note}\n\n"
         "구체적인 금액 계산을 하려면 연금계좌 평가액과 현재 연금수령연차가 필요합니다."
     )
     return draft, _context(source, content)
