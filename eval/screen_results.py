@@ -83,13 +83,28 @@ _NEGATION_MARKERS = (
 )
 
 
+# enforce_unsupported_numbers()(src/agents/verification.py)가 붙이는 경고문의 시작
+# 마커. 이 마커 뒤는 "④가 확정한 수치를 나열해 경고하는" 문장이지 답변 본문의 사실
+# 주장이 아니므로 검사 대상에서 뺀다.
+#
+# ⚠️ 실측으로 구분한 두 케이스(둘 다 처음엔 unsupported_leak으로 잡혔다):
+#   no.375 "60%"— 경고문을 빼도 본문에 "...평균 임금의 60% 이상으로 설정되어야
+#     한다"고 실제로 서술돼 있었다 — 진짜 결함, 계속 잡혀야 한다.
+#   no.452 "1년/5년"— 경고문을 빼면 본문 어디에도 없었다 — ④가 애초에 잘못 확정한
+#     수치를 ⑤가 경고문에만 나열한 것이고, 그 나열 자체가 검사에 걸린 오탐이었다.
+# 마커 이전만 보면 이 둘이 정확히 갈린다.
+_ENFORCED_WARNING_MARKER = "※ 위 답변에 포함된 다음 수치는"
+
+
 def _is_asserted(answer: str, number: str) -> bool:
-    """답변이 그 수치를 '사실로 주장'하는지 판정한다 (부정 문맥이면 False).
+    """답변이 그 수치를 '사실로 주장'하는지 판정한다 (부정 문맥/경고문이면 False).
 
     수치가 등장한 각 위치에서 뒤쪽 25자를 보고 부정 표현이 있는지 확인한다.
-    한 곳이라도 부정 없이 쓰였으면 주장으로 본다.
+    한 곳이라도 부정 없이, 코드가 붙인 경고문 밖에서 쓰였으면 주장으로 본다.
     """
-    norm_answer = _norm_num(answer)
+    warning_idx = answer.find(_ENFORCED_WARNING_MARKER)
+    body = answer[:warning_idx] if warning_idx != -1 else answer
+    norm_answer = _norm_num(body)
     norm_num = _norm_num(number)
     start = 0
     while True:
