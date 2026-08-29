@@ -408,6 +408,35 @@ def test_age_based_tax_rate_lifetime_annuity_overrides_age():
     assert "연령과 무관" in draft
 
 
+def test_age_based_tax_rate_respects_explicit_lifetime_annuity_negation():
+    """"종신연금 아니고"라고 명시하면 종신연금 세율(3.3%)이 아니라 연령 구간 세율을 답한다.
+
+    실측 사고(no.281): "76세인데 종신연금 아니고 그냥 확정기간형으로 받으면 세율이
+    얼마예요?"에 "만 76세에 종신연금으로 수령하시는 경우 3.3%"라고 정반대로 답했다.
+    "종신연금"이라는 단어가 있다는 이유만으로 is_lifetime=True가 됐기 때문이다.
+    정답은 70~80세 일반수령 구간인 4.4%다.
+    """
+    draft, _ = deterministic_response_for(
+        "연금소득세율_연령별", "제가 76세인데 종신연금 아니고 그냥 확정기간형으로 받으면 세율이 얼마예요?"
+    )
+
+    assert "4.4%" in draft
+    assert "70세 이상 80세 미만" in draft
+    # 종신연금으로 단정하지 않는다 (부가 조건 안내로 언급되는 것은 허용)
+    assert "종신연금으로 수령하시는 경우 연금소득세율은 **3.3%**" not in draft
+
+
+def test_negation_helper_detects_explicit_exclusions():
+    """부정 표현 감지는 활용형을 모두 잡아야 한다 (한글 완성형 음절 특성)."""
+    from src.agents.deterministic_info import _compact, _is_negated
+
+    for phrase in ("종신연금 아니고", "종신연금이 아니라", "종신연금 아닌", "종신연금 말고"):
+        assert _is_negated(_compact(phrase), "종신연금"), phrase
+
+    # 부정이 아닌 경우까지 잡으면 안 된다
+    assert not _is_negated(_compact("종신연금으로 받는데 세율이 몇 %인가요?"), "종신연금")
+
+
 def test_age_based_tax_rate_without_age_shows_all_brackets_and_asks_back():
     """나이가 없으면 하나로 단정하지 말고 구간 전체 + 역질문을 낸다(답변 포기 아님)."""
     draft, _ = deterministic_response_for("연금소득세율_연령별", "연금 받으면 세율이 얼마인가요?")

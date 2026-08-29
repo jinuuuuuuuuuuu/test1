@@ -322,6 +322,26 @@ def _compact(text: str) -> str:
     return re.sub(r"\s+", "", text or "")
 
 
+# "종신연금 아니고", "TDF 아닌"처럼 어떤 조건을 명시적으로 **배제**하는 표현.
+# 한글은 완성형 음절이라 "아니"가 "아닌"의 부분문자열이 아니므로(받침 ㄴ이 붙으면
+# 통째로 다른 음절 "닌"이 된다) 활용형을 나열해야 한다.
+_NEGATION_SUFFIXES = ("아니라", "아니고", "아닌", "아니에요", "아니예요", "아니야", "말고", "빼고")
+
+
+def _is_negated(compact_text: str, keyword: str) -> bool:
+    """질문이 그 키워드를 명시적으로 배제하는지 판정한다.
+
+    ⚠️ 키워드가 있다는 이유만으로 조건을 적용하면 정반대 답이 나간다. 실측:
+      "76세인데 **종신연금 아니고** 그냥 확정기간형으로 받으면 세율이 얼마예요?"
+        -> 종신연금 3.3%로 답변(정답은 70~80세 일반수령 4.4%)
+      "IRP에서 **TDF 아닌** 일반 주식형 펀드로 100% 채울 수 있나요?"
+        -> TDF 특례 100%로 답변(정답은 일반 한도 70%)
+    """
+    escaped = re.escape(keyword)
+    pattern = rf"{escaped}(?:은|는|이|가)?(?:{'|'.join(_NEGATION_SUFFIXES)})"
+    return re.search(pattern, compact_text, re.IGNORECASE) is not None
+
+
 def _asks_alternative_withdrawal_plan_types(compact_text: str) -> bool:
     if "중도인출" not in compact_text:
         return False
@@ -1316,10 +1336,7 @@ def _investment_limit_response(question: str) -> tuple[str, list[RetrievedItem]]
     compact = _compact(question)
     # "TDF 아닌"처럼 TDF를 명시적으로 배제한 질문은 특례 대상이 아니다 — 부정 표현을
     # 무시하고 "TDF" 단어만 보면 정반대로 "TDF에 투자하면 100%"라고 답하게 된다.
-    mentions_tdf_negated = bool(
-        re.search(r"TDF(?:가)?(?:아니라|아니고|아닌|아니에요|아니예요|아니야)", compact, re.IGNORECASE)
-    )
-    mentions_tdf = "TDF" in question.upper() and not mentions_tdf_negated
+    mentions_tdf = "TDF" in question.upper() and not _is_negated(compact, "TDF")
 
     if plan is None:
         draft = (
@@ -1598,7 +1615,12 @@ def _pension_income_tax_rate_response(question: str) -> tuple[str, list[Retrieve
     )
 
     age = _extract_age(question)
-    is_lifetime = any(word in question for word in _LIFETIME_ANNUITY_WORDS)
+    # "종신연금 아니고 확정기간형으로 받으면"처럼 명시적으로 배제한 경우를 제외한다 —
+    # 단어만 보고 종신연금으로 판정하면 3.3%(종신)와 4.4%(70대 일반수령)가 뒤바뀐다.
+    compact_question = _compact(question)
+    is_lifetime = any(word in question for word in _LIFETIME_ANNUITY_WORDS) and not any(
+        _is_negated(compact_question, word) for word in _LIFETIME_ANNUITY_WORDS
+    )
 
     if age is None:
         draft = (
