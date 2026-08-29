@@ -41,17 +41,23 @@ CLARIFICATION_MARKER = "[추가 확인 필요]"
 
 
 def split_clarification_marker(draft: str) -> tuple[str, bool]:
-    """②③ 초안이 역질문 마커로 시작하면 (마커를 뗀 본문, True)를 반환한다.
+    """②③ 초안에 역질문 마커가 있으면 (마커를 뗀 본문, True)를 반환한다.
 
-    ②③은 조건 불충분으로 사용자에게 되물을 때 초안을 CLARIFICATION_MARKER로 시작하라는
+    ②③은 조건 불충분으로 사용자에게 되물을 때 초안에 CLARIFICATION_MARKER를 넣으라는
     지시를 받는다 — 구조화 출력 없이(HCX-005 지원 여부 미확정) 역질문 여부를 결정론적으로
     식별하기 위한 규약이다. 이 플래그가 서면 ③ 스킵 + ④의 요구사항 검증 면제 + ⑤의 답변
     보충 금지가 걸린다 (역질문을 ④⑤가 "요구사항 미충족"으로 교정해 추천을 되살리는 경로 차단).
+
+    ⚠️ 위치를 강제하지 않는다. 예전에는 `startswith`로 "맨 앞"만 인정했는데, 501문항
+    실측에서 마커를 붙인 25건 중 맨 앞에 붙인 건이 **0건**이었다 (대부분 초안 끝에 붙였다).
+    즉 LLM은 지시를 따랐는데 파서가 100% 놓쳐 needs_clarification이 늘 False로 떨어졌고,
+    그 탓에 ④가 역질문을 "추천 누락"으로 판정 → 불필요한 repair → ⑤의 잘못된 한계고지로
+    이어졌다. 서식 순종은 확률적으로 실패하므로, 규약은 "마커의 존재"까지만 요구한다.
     """
-    stripped = (draft or "").lstrip()
-    if stripped.startswith(CLARIFICATION_MARKER):
-        return stripped[len(CLARIFICATION_MARKER):].lstrip(), True
-    return draft or "", False
+    text = draft or ""
+    if CLARIFICATION_MARKER not in text:
+        return text, False
+    return text.replace(CLARIFICATION_MARKER, "").strip(), True
 
 
 def build_repair_note(verification: dict | None) -> str | None:

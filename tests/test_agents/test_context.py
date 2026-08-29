@@ -58,6 +58,31 @@ def test_marker_with_leading_whitespace_is_detected():
     assert body == "계좌유형이 무엇인가요?"
 
 
+def test_marker_at_end_is_detected():
+    """마커가 초안 끝에 붙어도 인식해야 한다.
+
+    회귀 방지: 예전 파서는 startswith로 "맨 앞"만 인정했는데, 501문항 실측에서 마커를
+    붙인 25건 중 맨 앞에 붙인 건이 0건이었다 — 전부 놓쳐 needs_clarification이 항상
+    False가 됐고, ④가 역질문을 "추천 누락"으로 판정해 불필요한 repair가 돌았다.
+    """
+    body, needs = split_clarification_marker(
+        f"추천을 위해 계좌유형을 알려주세요.\n\n{CLARIFICATION_MARKER}"
+    )
+    assert needs is True
+    assert body == "추천을 위해 계좌유형을 알려주세요."
+
+
+def test_marker_in_middle_is_detected_and_removed():
+    """마커가 본문 중간에 껴 있어도 인식하고, 최종 답변에 마커가 남지 않아야 한다."""
+    body, needs = split_clarification_marker(
+        f"무주택자만 인출할 수 있습니다.\n{CLARIFICATION_MARKER}\n가입 연금 종류를 알려주세요."
+    )
+    assert needs is True
+    assert CLARIFICATION_MARKER not in body
+    assert body.startswith("무주택자만")
+    assert body.endswith("알려주세요.")
+
+
 def test_normal_draft_is_not_marked():
     body, needs = split_clarification_marker("세액공제 한도는 900만원입니다.")
     assert needs is False
