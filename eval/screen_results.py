@@ -72,7 +72,10 @@ _REFUSAL_OR_CORRECTION_MARKERS = (
 
 
 def _norm_num(token: str) -> str:
-    return token.replace(",", "").replace(" ", "")
+    # 마크다운 강조를 먼저 벗긴다 — LLM이 "**5.5**%"처럼 숫자와 단위 사이에 강조를
+    # 넣는 일이 잦아, 그대로 비교하면 맞는 답변이 "기대 수치 없음"으로 잡힌다
+    # (실측: expected_number 42건 중 13건이 이 오탐이었다).
+    return re.sub(r"[*`_]", "", token).replace(",", "").replace(" ", "")
 
 
 # 수치 직후에 오는 부정·교정 표현. 이게 붙으면 그 수치를 사실로 주장하는 게 아니라
