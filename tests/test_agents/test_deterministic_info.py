@@ -70,6 +70,38 @@ def test_tax_credit_calculation_runs_when_inputs_are_sufficient():
     assert "입력 조건에서는 세액공제 대상 납입액 900만원 x 16.5% = 148만 5천원" in context[0]["content"]
 
 
+def test_tax_credit_calculation_parses_korean_thousand_notation():
+    """"N천만원" 표기(숫자와 단위 사이에 '천'이 낀 형태)도 정확히 파싱해야 한다.
+
+    실측 사고(500문항 평가): "총급여 6천만원"을 파싱 못 해 대체 패턴이 옆에 있던
+    IRP 납입액(200만원)을 총급여로 잘못 읽었다. 그 결과 공제율이 13.2%가 아니라
+    16.5%로 적용돼 105만 6천원이어야 할 세액공제액이 132만원으로 계산됐다.
+    """
+    question = "연금저축 800만원, IRP 200만원 넣었고 총급여 6천만원인 경우 세액공제액을 정확히 계산해주세요."
+
+    draft, _ = deterministic_response_for("세액공제_계산_입력부족", question)
+
+    assert "총급여 6,000만원" in draft
+    assert "13.2%" in draft
+    assert "105만 6천원" in draft
+    assert "총급여 200만원" not in draft
+    assert "16.5%" not in draft
+
+
+def test_tax_credit_calculation_does_not_bleed_across_labels():
+    """숫자와 단위 사이에 다른 라벨의 금액이 끼면 그 라벨 값으로 읽지 않는다.
+
+    실측 사고: "총급여 4천만원"이 파싱 실패하자 대체 패턴이 앞쪽의 "IRP 700만원"을
+    총급여로 잘못 읽었다(최종 세액공제액은 우연히 맞았지만 표시된 소득이 틀렸다).
+    """
+    question = "연금저축 300만원, IRP 700만원 넣었고 총급여 4천만원이면 세액공제 얼마인가요?"
+
+    draft, _ = deterministic_response_for("세액공제_계산_입력부족", question)
+
+    assert "총급여 4,000만원" in draft
+    assert "총급여 700만원" not in draft
+
+
 def test_tax_credit_limit_answers_pension_savings_only_excess_directly():
     draft, _ = deterministic_response_for("세액공제_한도", "연금저축 900만원 넣었는데 전부 세액공제 되나요?")
 

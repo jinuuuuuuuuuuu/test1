@@ -334,28 +334,64 @@ def _context(source: str, content: str) -> list[RetrievedItem]:
     return [{"source": source, "content": content, "node": "info_agent"}]
 
 
-_AMOUNT_AFTER_LABEL_RE_TEMPLATE = r"{label}[^\d]{{0,12}}([0-9,]+)\s*(만원|만\s*원|원)"
-_AMOUNT_BEFORE_LABEL_RE_TEMPLATE = r"([0-9,]+)\s*(만원|만\s*원|원)[^\n,.;]{{0,12}}{label}"
+# 한글 숫자 단위. "6천만원"처럼 아라비아 숫자와 만원 사이에 "천"이 끼는 표기를
+# 처리하기 위해 "천/백/십" 보조단위까지 인식한다. "만"·"억"은 필수 뒤 단위이고
+# "천/백/십"은 그 앞에 선택적으로 붙는 보조단위다 (예: 6천만 = 6*1000*10000).
+_AMOUNT_NUMBER_RE = (
+    r"(?:[0-9,]+(?:\.[0-9]+)?)"  # 아라비아 숫자, 콤마/소수점 허용
+    r"(?:\s*(?:천|백|십)\s*)?"    # 보조단위 (선택)
+)
+_AMOUNT_UNIT_RE = r"(?:만\s*원|억\s*원|만|억|원)"
+
+# 숫자와 단위 사이에 이 토큰들이 끼면 "라벨 값" 매칭을 무효화한다 — 다른 금액이나
+# 다른 라벨이 사이에 끼어 있으면 그 금액을 엉뚱한 라벨로 잘못 읽는 사고가 난다
+# (실측: "IRP 200만원 넣었고 총급여 6천만원"에서 총급여를 200만원으로 오독).
+_AMOUNT_BOUNDARY_BREAK_RE = re.compile(
+    r"[0-9](?:만원|억원|만|억|원)|연금저축|irp|총급여|급여|연봉|종합소득|사업소득",
+    re.IGNORECASE,
+)
 
 
-def _amount_to_won(raw: str, unit: str) -> int:
-    value = int(raw.replace(",", ""))
-    return value * 10_000 if "만" in unit else value
+def _parse_korean_amount(number_text: str, unit_text: str) -> int:
+    """'6천만', '1,200만', '3억' 같은 숫자+한글단위 조합을 원 단위 정수로 바꾼다."""
+    sub_unit = 1
+    stripped = number_text.strip()
+    for word, mul in (("천", 1_000), ("백", 100), ("십", 10)):
+        if stripped.endswith(word):
+            sub_unit = mul
+            stripped = stripped[: -len(word)].strip()
+            break
+    value = float(stripped.replace(",", "")) * sub_unit
+    if "억" in unit_text:
+        value *= 100_000_000
+    elif "만" in unit_text:
+        value *= 10_000
+    return int(value)
 
 
 def _extract_labeled_amount(question: str, labels: tuple[str, ...]) -> int | None:
+    """질문에서 '라벨 값' 또는 '값 라벨' 형태로 언급된 금액을 원 단위로 추출한다.
+
+    라벨과 숫자 사이에 다른 금액이나 다른 라벨 단어가 끼면 매칭을 버린다 — 그런
+    경우는 대개 그 금액이 이 라벨의 값이 아니라 옆에 있던 다른 항목의 값이다.
+    """
     compact = _compact(question)
+    number_unit = _AMOUNT_NUMBER_RE + r"\s*" + _AMOUNT_UNIT_RE
     for label in labels:
         escaped = re.escape(label)
-        patterns = (
-            _AMOUNT_AFTER_LABEL_RE_TEMPLATE.format(label=escaped),
-            _AMOUNT_BEFORE_LABEL_RE_TEMPLATE.format(label=escaped),
-        )
-        for pattern in patterns:
-            match = re.search(pattern, compact, flags=re.IGNORECASE)
-            if match:
-                return _amount_to_won(match.group(1), match.group(2))
+        after = re.search(rf"{escaped}([^\d]{{0,12}})({number_unit})", compact, re.IGNORECASE)
+        if after and not _AMOUNT_BOUNDARY_BREAK_RE.search(after.group(1)):
+            return _amount_from_match(after.group(2))
+
+        before = re.search(rf"({number_unit})([^\n,.;]{{0,12}}){escaped}", compact, re.IGNORECASE)
+        if before and not _AMOUNT_BOUNDARY_BREAK_RE.search(before.group(2)):
+            return _amount_from_match(before.group(1))
     return None
+
+
+def _amount_from_match(amount_text: str) -> int:
+    m = re.match(rf"({_AMOUNT_NUMBER_RE})\s*({_AMOUNT_UNIT_RE})", amount_text)
+    return _parse_korean_amount(m.group(1), m.group(2))
 
 
 def _extract_tax_credit_inputs(question: str) -> dict[str, int | None]:
