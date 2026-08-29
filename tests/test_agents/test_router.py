@@ -44,6 +44,34 @@ def test_override_does_not_touch_in_scope_decisions():
     assert (scope, note, intent) == ("범위내", None, ["상품형"])
 
 
+def test_override_adds_product_intent_when_fund_matched_but_intent_is_info_only():
+    """DB에 있는 상품을 물었는데 intent가 '정보형'만이면 '상품형'을 보탠다.
+
+    실측 사고(no.202/210/216/221/227): "한국투자 퇴직연금 증권 자투자신탁
+    1호(국공채)의 위험등급이 몇 등급인가요?"처럼 DB에 이름이 정확히 있는 상품을
+    물었는데 intent=['정보형']으로 분류돼 ③상품 Agent가 아예 실행되지 않았다.
+    ②정보 Agent에는 search_funds가 없어 문서 검색만 하다 "제공된 자료에서 확인할
+    수 없습니다"로 답을 포기했다 — 5건 전부 같은 경로로 실패했다.
+
+    예전 구현은 scope="범위외"일 때만 개입해서 이 경우(scope는 이미 범위내)를
+    그냥 통과시켰다.
+    """
+    scope, _, intent = _apply_asset_scope_override(
+        "범위내", None, ["정보형"], ["한국투자 퇴직연금 증권 자투자신탁 1호(국공채)"],
+    )
+
+    assert scope == "범위내"
+    assert "상품형" in intent
+    # 정보형은 유지한다 — 제도 설명이 함께 필요한 복합 질문이면 ②→③ 순차 실행이 맞다
+    assert "정보형" in intent
+
+
+def test_override_does_not_duplicate_existing_product_intent():
+    _, _, intent = _apply_asset_scope_override("범위내", None, ["상품형"], ["어떤펀드"])
+
+    assert intent == ["상품형"]
+
+
 def test_override_keeps_out_of_scope_when_no_fund_matched():
     """조회가 비었으면 범위외 판정을 유지한다 — 게이트를 무력화하면 안 된다.
 

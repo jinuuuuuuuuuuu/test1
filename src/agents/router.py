@@ -271,17 +271,32 @@ def _apply_asset_scope_override(
     범위외 오판은 답할 수 있는 질문을 통째로 거부하게 만들어 요구사항 충족이 0점이 된다
     (실측: 대회 공식 참고 질의 "솔로몬 국공채 3종 비교"가 3/3 거부됨). 반대로 조회가
     비었을 때는 개입하지 않는다 — 게이트를 무력화하면 범위 밖 질문까지 통과한다.
+
+    ⚠️ scope뿐 아니라 intent도 보정한다. 예전에는 scope="범위외"일 때만 개입해서,
+    scope는 범위내로 맞지만 intent가 '정보형'으로만 잡힌 경우를 그냥 통과시켰다.
+    그러면 ③상품 Agent가 아예 실행되지 않아 search_funds를 못 쓰고, ②정보 Agent가
+    문서 검색만 하다 "확인할 수 없다"고 답을 포기한다 — 실측(no.202/210/216/221/227):
+    "한국투자 퇴직연금 증권 자투자신탁 1호(국공채)의 위험등급"처럼 DB에 이름이
+    정확히 있는 상품을 묻는데도 5건이 정보형으로 가서 전부 답변 실패했다.
+    DB 조회가 사실로 확정한 이상, 그 상품 데이터를 읽을 수 있는 ③이 반드시 실행돼야
+    한다.
     """
-    if not matched_funds or scope != "범위외":
+    if not matched_funds:
+        return scope, scope_note, intent
+
+    # 조회된 상품이 있으면 ③이 실행되도록 상품형을 보장한다(정보형은 유지 — 제도
+    # 설명이 함께 필요한 복합 질문일 수 있고, 그때는 ②→③ 순차 실행이 정답이다).
+    if "상품형" not in intent:
+        intent = [*intent, "상품형"]
+
+    if scope != "범위외":
         return scope, scope_note, intent
 
     note = (
         f"질문에 언급된 상품이 보유 DB에 있어 상담 범위로 확정 "
         f"(조회 결과: {', '.join(matched_funds[:3])})"
     )
-    # 상품을 지목한 질문이므로 상품 Agent가 처리해야 한다. 범위외 판정과 함께 intent가
-    # 비어 나오는 경우가 있어(판정을 포기한 상태) 여기서 함께 보정한다.
-    return "범위내", note, (intent or ["상품형"])
+    return "범위내", note, intent
 
 
 def _drop_product_intent_for_deterministic_info(
