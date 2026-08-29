@@ -257,6 +257,54 @@ def test_default_option_optin_one_holding_unclear_target_asks_back():
     assert "같은 상품인지, 다른 상품인지" in draft
 
 
+# ── 투자한도 위험자산 판정 (500문항 실측) ────────────────────────────────
+#
+# investment_limit.py에 위험자산 70%·TDF 특례(DC/IRP만 100%)가 원문 대조까지 끝난
+# 규칙으로 있었는데 카테고리가 없어 관련 질문 14건이 전부 해당없음으로 빠졌다.
+# 그중 "DB형도 위험자산 한도가 70%인가요?"는 실제로 "아니다"라는 정반대 오답까지
+# 나왔다 — 집중투자한도(발행자별 10%/15%)와 위험자산 한도(70%)를 혼동한 것으로
+# 보인다. 위험자산 한도는 DB/DC/IRP 공통 70%이고, TDF 특례로 DC/IRP만 100%까지
+# 늘어나는 것이지 DB의 기본 한도가 다른 게 아니다.
+
+
+def test_investment_limit_db_is_70_percent_not_different():
+    """실측 오답 재현 방지: DB형도 위험자산 한도는 70%이지 '아니다'가 아니다."""
+    question = "DB형도 위험자산 한도가 70%인가요?"
+    assert "투자한도_위험자산" in candidate_categories(question)
+
+    draft, context = deterministic_response_for("투자한도_위험자산", question)
+    assert "70%" in draft
+    assert "아니다" not in draft and "아닙니다" not in draft
+    assert context
+
+
+def test_investment_limit_tdf_qualified_raises_dc_irp_to_100_percent():
+    question = "DC형인데 TDF 조건을 충족하면 위험자산 비중이 얼마까지 늘어나나요?"
+    draft, _ = deterministic_response_for("투자한도_위험자산", question)
+    assert "100%" in draft
+
+
+def test_investment_limit_explicit_non_tdf_does_not_apply_tdf_exception():
+    """'TDF 아닌' 상품을 물으면 TDF 특례(100%)가 아니라 기본 한도(70%)를 답해야 한다.
+
+    "TDF" 단어만 보고 부정 표현을 무시하면 "TDF에 투자하면 100%"라고 정반대로
+    답하게 된다 — "아닌"은 "아니"의 부분문자열이 아니므로("아니"+받침 ㄴ이 하나의
+    음절 "닌"이 됨) 부정 표현 목록에 활용형을 명시적으로 나열해야 한다.
+    """
+    question = "IRP에서 TDF 아닌 일반 주식형 펀드로 100% 채울 수 있나요?"
+    draft, _ = deterministic_response_for("투자한도_위험자산", question)
+    assert "70%" in draft
+    assert "TDF에 전액 투자하면" not in draft
+
+
+def test_investment_limit_without_plan_type_covers_all_three():
+    question = "퇴직연금 계좌에서 위험자산 비중을 100%까지 채울 수 있는 방법이 있나요?"
+    draft, _ = deterministic_response_for("투자한도_위험자산", question)
+    assert "70%" in draft
+    assert "100%" in draft
+    assert "DB" in draft
+
+
 def test_in_kind_transfer_block_candidate_and_response():
     question = "퇴직연금 실물이전이 안 되는 상품은 뭐가 있나요?"
     assert "실물이전_불가사유" in candidate_categories(question)

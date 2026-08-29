@@ -63,8 +63,10 @@ from src.rules.default_option import (
 )
 from src.rules.early_withdrawal import (
     WITHDRAWAL_DEADLINE_RULES,
+    PlanType,
 )
 from src.rules.in_kind_transfer import TRANSFER_BLOCK_CODES
+from src.rules.investment_limit import RISKY_ASSET_LIMIT, TDF_QUALIFIED_LIMIT
 from src.rules.retirement_tax_reduction import get_deferred_retirement_tax_rate
 from src.rules.tax_credit import (
     COMBINED_CREDIT_LIMIT,
@@ -96,6 +98,7 @@ DeterministicCategory = Literal[
     "디폴트옵션_옵트인판정",
     "실물이전_불가사유",
     "실물이전_개별판정",
+    "투자한도_위험자산",
     "연금수령한도",
     "퇴직소득세감면",
     "연금소득세_종합과세",
@@ -117,6 +120,7 @@ DETERMINISTIC_CATEGORIES: tuple[str, ...] = (
     "디폴트옵션_옵트인판정",
     "실물이전_불가사유",
     "실물이전_개별판정",
+    "투자한도_위험자산",
     "연금수령한도",
     "퇴직소득세감면",
     "연금소득세_종합과세",
@@ -235,6 +239,15 @@ def candidate_categories(question: str) -> list[str]:
         # "네, 실물이전 문제없습니다"라는 정반대 답을 낸 실측이 있다.
         candidates.append("실물이전_불가사유")
         candidates.append("실물이전_개별판정")
+    # 투자한도(위험자산 70%·TDF 특례)는 investment_limit.py에 원문 대조 완료된 규칙이
+    # 있는데도 카테고리가 없어 전부 해당없음으로 빠졌다(실측: 14건, 그중 "DB형도
+    # 위험자산 한도가 70%인가요?"에 "아니다"라고 정반대로 답한 오답 1건 확인). "위험자산"·
+    # "TDF"라는 정확한 용어를 쓰지 않는 표현("주식형 펀드로 100% 채울 수 있나요")도
+    # 잡도록 "비중"+"%" 조합까지 포함한다.
+    if any(word in text for word in ("위험자산", "TDF")) or (
+        "비중" in text and any(word in text for word in ("%", "퍼센트", "프로"))
+    ):
+        candidates.append("투자한도_위험자산")
     if "연금수령한도" in text or ("연금" in text and "한도" in text):
         candidates.append("연금수령한도")
     if any(word in text for word in ("퇴직소득세", "이연퇴직소득세")):
@@ -1250,6 +1263,88 @@ def _default_option_optin_response(question: str) -> tuple[str, list[RetrievedIt
     return draft, _context(source, content)
 
 
+_PLAN_TYPE_WORDS: dict[PlanType, tuple[str, ...]] = {
+    PlanType.DB: ("DB형", "DB제도", "확정급여형"),
+    PlanType.DC: ("DC형", "DC제도", "확정기여형"),
+    PlanType.IRP: ("IRP",),
+}
+
+
+def _extract_plan_type(text: str) -> PlanType | None:
+    for plan, words in _PLAN_TYPE_WORDS.items():
+        if any(word in text for word in words):
+            return plan
+    return None
+
+
+def _pct_int(rate: float) -> str:
+    return f"{rate * 100:g}%"
+
+
+def _investment_limit_response(question: str) -> tuple[str, list[RetrievedItem]]:
+    """위험자산 투자한도(70%, TDF 조건충족 시 DC/IRP 100%) — 제도유형이 확정되면 그 제도만,
+    아니면 세 제도를 모두 안내한다.
+
+    ⚠️ investment_limit.py 규칙: 위험자산 한도 70%는 DB/DC/IRP **공통**이다. TDF 특례로
+    DC/IRP만 100%까지 늘어나는 것이지, DB의 기본 한도가 다른 게 아니다. 실측 오답
+    ("DB형도 위험자산 한도가 70%인가요?" -> "아니다"라고 반대로 답함)이 정확히 이
+    지점에서 나왔다 — 집중투자한도(발행자별 10%/15%)와 위험자산 한도(70%)를 혼동하면
+    같은 오답이 재현되므로, 여기서는 위험자산 한도만 다룬다(집중투자한도는 별도 규칙).
+    """
+    source = "doc58 퇴직연금 적립금 운용 및 투자한도 안내"
+    content = (
+        f"위험자산 투자한도는 DB·DC·IRP 공통으로 적립금의 {_pct_int(RISKY_ASSET_LIMIT)}까지입니다. "
+        "다만 감독원장이 정한 조건(주식비중 80%, 예상은퇴시점 이후 40% 이내 등)을 충족한 TDF에 "
+        f"전액 투자하는 경우, DC·IRP는 {_pct_int(TDF_QUALIFIED_LIMIT[PlanType.DC])}까지 허용됩니다. "
+        "이 TDF 특례는 DC·IRP 전용이며, DB는 예상은퇴시점을 특정할 수 없어 특례 대상이 아니고 "
+        f"기본 한도인 {_pct_int(RISKY_ASSET_LIMIT)}가 그대로 적용됩니다. 위험자산 한도와는 별개로 "
+        "발행자·계열기업군 단위 집중투자한도(예: 동일법인 증권 DB 10%/DC·IRP 30%)가 추가로 적용됩니다."
+    )
+
+    plan = _extract_plan_type(question)
+    compact = _compact(question)
+    # "TDF 아닌"처럼 TDF를 명시적으로 배제한 질문은 특례 대상이 아니다 — 부정 표현을
+    # 무시하고 "TDF" 단어만 보면 정반대로 "TDF에 투자하면 100%"라고 답하게 된다.
+    mentions_tdf_negated = bool(
+        re.search(r"TDF(?:가)?(?:아니라|아니고|아닌|아니에요|아니예요|아니야)", compact, re.IGNORECASE)
+    )
+    mentions_tdf = "TDF" in question.upper() and not mentions_tdf_negated
+
+    if plan is None:
+        draft = (
+            f"위험자산 투자한도는 **DB·DC·IRP 공통으로 {_pct_int(RISKY_ASSET_LIMIT)}**까지입니다.\n\n"
+            f"다만 감독원장이 정한 조건을 충족한 TDF에 전액 투자하면 **DC·IRP는 "
+            f"{_pct_int(TDF_QUALIFIED_LIMIT[PlanType.DC])}**까지 허용됩니다. "
+            f"이 특례는 DC·IRP 전용이며, **DB는 조건 충족 여부와 무관하게 {_pct_int(RISKY_ASSET_LIMIT)} "
+            "한도가 그대로 적용**됩니다(예상은퇴시점을 특정할 수 없어 특례 대상이 아닙니다).\n\n"
+            "위험자산 한도와 별개로 발행자·계열기업군 단위 집중투자한도가 추가로 적용된다는 점도 "
+            "참고해 주세요."
+        )
+        return draft, _context(source, content)
+
+    limit = TDF_QUALIFIED_LIMIT[plan] if mentions_tdf else RISKY_ASSET_LIMIT
+    if plan == PlanType.DB:
+        draft = (
+            f"{plan.value}형의 위험자산 투자한도는 **{_pct_int(RISKY_ASSET_LIMIT)}**입니다.\n\n"
+            "TDF 조건충족 특례는 DC·IRP 전용이라 DB에는 적용되지 않으며(예상은퇴시점을 특정할 수 "
+            f"없기 때문), TDF 여부와 무관하게 {_pct_int(RISKY_ASSET_LIMIT)} 한도가 그대로 적용됩니다."
+        )
+    elif mentions_tdf:
+        draft = (
+            f"네, {plan.value}에서 감독원장이 정한 조건(주식비중 80%, 예상은퇴시점 이후 40% 이내 등)을 "
+            f"충족한 TDF에 전액 투자하면 위험자산 비중을 **{_pct_int(limit)}**까지 채울 수 있습니다.\n\n"
+            f"조건을 충족하지 못한 일반 상품이라면 다른 위험자산과 마찬가지로 "
+            f"{_pct_int(RISKY_ASSET_LIMIT)} 한도가 적용됩니다."
+        )
+    else:
+        draft = (
+            f"{plan.value}의 위험자산 투자한도는 **{_pct_int(RISKY_ASSET_LIMIT)}**입니다.\n\n"
+            f"다만 감독원장이 정한 조건을 충족한 TDF에 전액 투자하는 경우에 한해 "
+            f"{_pct_int(TDF_QUALIFIED_LIMIT[plan])}까지 늘어날 수 있습니다."
+        )
+    return draft, _context(source, content)
+
+
 def _in_kind_transfer_block_response(question: str) -> tuple[str, list[RetrievedItem]]:
     source = "doc34 실물이전 불가사유 코드"
     definite_codes = [code for code, info in TRANSFER_BLOCK_CODES.items() if not info.get("directional")]
@@ -1532,6 +1627,7 @@ _CATEGORY_HANDLERS = {
     "중도인출_일반": _early_withdrawal_general_response,
     "디폴트옵션_자동매수": _default_option_auto_purchase_response,
     "디폴트옵션_옵트인판정": _default_option_optin_response,
+    "투자한도_위험자산": _investment_limit_response,
     "실물이전_불가사유": _in_kind_transfer_block_response,
     "실물이전_개별판정": _in_kind_transfer_judgement_response,
     "연금수령한도": _withdrawal_limit_response,
