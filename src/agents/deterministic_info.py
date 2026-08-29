@@ -1417,6 +1417,22 @@ _TRANSFER_CODE_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 
+def _alias_matches(alias: str, text: str) -> bool:
+    """별칭이 텍스트에 나타나는지 본다 — 짧은 영문 약어는 단어 경계를 요구한다.
+
+    ⚠️ 실측 사고: "rp"(환매조건부채권)를 단순 부분문자열로 찾다가 **"IRP"의 뒤 두
+    글자**에 걸려, 상품을 전혀 언급하지 않은 "IRP 계좌를 다른 증권사로 옮기려면?",
+    "연금저축을 IRP로 실물이전할 수 있나요?" 같은 질문에 "RP라서 실물이전 불가"라는
+    정반대 답이 나갔다(no.56/405). IRP는 이 도메인에서 가장 흔한 단어라 영향이 컸다.
+
+    한글 별칭은 그 자체로 충분히 길고 조사가 붙어 경계를 못 쓰므로 부분문자열 매칭을
+    유지하고, 영문 약어(rp 등)만 앞뒤에 다른 영문자가 없을 때 매칭한다.
+    """
+    if alias.isascii() and alias.isalpha():
+        return re.search(rf"(?<![a-z]){re.escape(alias)}(?![a-z])", text) is not None
+    return alias in text
+
+
 def _detect_transfer_codes(question: str) -> list[str]:
     """질문에서 실물이전 불가사유 코드를 인식한다 (코드표 name + 구어 표현)."""
     text = _compact(question).lower()
@@ -1424,7 +1440,7 @@ def _detect_transfer_codes(question: str) -> list[str]:
     for code, info in TRANSFER_BLOCK_CODES.items():
         name_key = _compact(info["name"]).lower()
         aliases = _TRANSFER_CODE_ALIASES.get(code, ())
-        if name_key in text or any(alias in text for alias in aliases):
+        if name_key in text or any(_alias_matches(a, text) for a in aliases):
             detected.append(code)
     return detected
 

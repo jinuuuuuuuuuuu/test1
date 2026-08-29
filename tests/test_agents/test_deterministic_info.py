@@ -465,6 +465,41 @@ def test_transfer_judgement_returns_none_when_product_not_identified():
     assert deterministic_response_for("실물이전_개별판정", "실물이전이 안 되는 경우는?") is None
 
 
+def test_transfer_code_alias_does_not_match_inside_other_words():
+    """짧은 영문 약어는 단어 경계를 요구한다 — "IRP"의 "RP"에 걸리면 안 된다.
+
+    실측 사고(no.56/405): "rp"(환매조건부채권, 코드 11)를 부분문자열로 찾다가
+    **IRP의 뒤 두 글자**에 매칭돼, 상품을 전혀 언급하지 않은 "IRP 계좌를 다른
+    증권사로 옮기려면?"과 "연금저축을 IRP로 실물이전할 수 있나요?"에
+    "RP라서 실물이전 불가"라는 정반대 확정 답변이 나갔다. IRP는 이 도메인에서
+    가장 흔한 단어라 영향이 컸다.
+    """
+    from src.agents.deterministic_info import _detect_transfer_codes
+
+    # IRP가 들어가도 RP(11)로 오인하지 않는다
+    assert _detect_transfer_codes("IRP 계좌를 다른 증권사로 옮기려면 어떻게 해야 하나요?") == []
+    assert _detect_transfer_codes("연금저축을 IRP로 실물이전할 수 있나요?") == []
+    assert _detect_transfer_codes("DC에서 IRP로 옮길 수 있나요?") == []
+
+    # 진짜 RP 질문은 그대로 감지된다 (과잉 차단 방지)
+    assert "11" in _detect_transfer_codes("RP도 실물이전 되나요?")
+    assert "11" in _detect_transfer_codes("환매조건부채권은 실물이전 가능한가요?")
+
+    # 한글 별칭은 부분문자열 매칭을 유지한다(조사가 붙어 경계를 쓸 수 없다)
+    assert "04" in _detect_transfer_codes("MMF도 실물이전 되나요?")
+    assert "03" in _detect_transfer_codes("사모펀드는 옮길 수 있나요?")
+
+
+def test_transfer_judgement_defers_when_only_account_type_mentioned():
+    """계좌 유형만 언급되고 상품이 특정되지 않으면 개별판정하지 않는다."""
+    assert deterministic_response_for(
+        "실물이전_개별판정", "IRP 계좌를 다른 증권사로 옮기려면 어떻게 해야 하나요?"
+    ) is None
+    assert deterministic_response_for(
+        "실물이전_개별판정", "연금저축을 IRP로 실물이전할 수 있나요?"
+    ) is None
+
+
 def test_transfer_judgement_cites_source_code():
     """근거에 코드 번호와 설명이 함께 담겨야 답변이 지어내지 않는다."""
     _, context = deterministic_response_for("실물이전_개별판정", "MMF인데 실물이전 되나요?")
