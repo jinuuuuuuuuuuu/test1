@@ -612,6 +612,42 @@ def _tax_benefit_overview_response(question: str) -> tuple[str, list[RetrievedIt
     return draft, _context(source, content)
 
 
+def _tax_credit_rate_for_income(values: dict[str, int | None]) -> str | None:
+    """납입액 없이 소득만 주어졌을 때 적용 세액공제율을 확정해 답한다. 소득이 없으면 None.
+
+    총급여와 종합소득금액이 함께 주어지면 총급여를 우선한다 — 근로소득자 기준이 우선
+    적용되고, 실무 질문에서도 총급여를 먼저 말한다.
+    """
+    salary = values["total_salary"]
+    comprehensive = values["comprehensive_income"]
+    if salary is not None:
+        threshold, label = INCOME_THRESHOLD_SALARY, "총급여"
+        income = salary
+    elif comprehensive is not None:
+        threshold, label = INCOME_THRESHOLD_COMPREHENSIVE, "종합소득금액"
+        income = comprehensive
+    else:
+        return None
+
+    # 경계값은 "이하"가 낮은 소득 구간(16.5%)에 포함된다 — no.309(5499만원)/no.310(5501만원)
+    # 처럼 경계 근처를 묻는 질문이 실제로 들어온다.
+    within = income <= threshold
+    rate = CREDIT_RATE_LOW if within else CREDIT_RATE_HIGH
+    comparison = "이하" if within else "초과"
+    return (
+        f"{label} {_won(income)}이면 세액공제율은 **{_pct(rate)}**입니다.\n\n"
+        f"- 적용 기준: {label} {_won(threshold)} {comparison} 구간\n"
+        f"- 세액공제율: {label} {_won(threshold)} 이하는 {_pct(CREDIT_RATE_LOW)}, "
+        f"초과는 {_pct(CREDIT_RATE_HIGH)}\n\n"
+        f"세액공제 대상 납입한도는 연금저축 단독 연 {_won(PENSION_SAVINGS_ONLY_LIMIT)}, "
+        f"연금저축+IRP 합산 연 {_won(COMBINED_CREDIT_LIMIT)}입니다. "
+        f"합산 한도를 모두 채웠다면 세액공제액은 "
+        f"{_won(COMBINED_CREDIT_LIMIT)} x {_pct(rate)} = "
+        f"{_won_readable(round(COMBINED_CREDIT_LIMIT * rate))}입니다.\n\n"
+        "실제 납입액을 알려주시면 정확한 세액공제액을 계산해 드릴 수 있습니다."
+    )
+
+
 def _tax_credit_limit_response(question: str) -> tuple[str, list[RetrievedItem]]:
     source = "doc41 세액공제 규칙"
     content = (
@@ -627,6 +663,25 @@ def _tax_credit_limit_response(question: str) -> tuple[str, list[RetrievedItem]]
         f"{_won(COMBINED_CREDIT_LIMIT)} x {_pct(CREDIT_RATE_HIGH)} = 118만 8천원입니다."
     )
     values = _extract_tax_credit_inputs(question)
+
+    # 계산에 필요한 입력(납입액+소득)이 이미 질문에 있으면 일반론이 아니라 계산으로 답한다.
+    # 왜 여기서 다시 판단하나: candidate_categories는 "세액공제"라는 단어만 보고
+    # 세액공제_계산_입력부족과 세액공제_한도를 **항상 같이** 후보로 낸다. 둘 중 무엇이
+    # 확정되는지는 라우터 LLM이 정하는데, 실측에서 같은 형태의 질문이 갈렸다 —
+    # no.74/322(납입액+소득)는 계산 카테고리로 가서 정확히 계산됐지만,
+    # no.323("종합소득금액 6천만원, 연금저축 600만원")은 한도 카테고리로 가서
+    # 79.2만원 대신 일반론이 나갔다. 어느 쪽으로 분류되든 답이 같아야 하므로,
+    # 분류에 답을 맡기지 않고 입력값을 기준으로 코드가 판단한다.
+    if _has_sufficient_tax_credit_inputs(values):
+        return _tax_credit_calculation_missing_response(question)
+
+    # 소득만 주어진 경우("총급여 5499만원이면 세액공제율이 몇 %인가요?")는 납입액이 없어도
+    # 세율을 확정할 수 있다. 실측 no.309/310은 5499/5501만원으로 경계를 물었는데도
+    # 두 답변이 글자까지 동일한 일반론이었다 — 질문한 값이 답에 반영되지 않았다.
+    income_rate_draft = _tax_credit_rate_for_income(values)
+    if income_rate_draft is not None:
+        return income_rate_draft, _context(source, content)
+
     pension_savings_paid = values["pension_savings_paid"]
     asks_all_credited = any(word in _compact(question) for word in ("전부", "모두", "다세액공제", "전체"))
     if pension_savings_paid and values["irp_paid"] is None and asks_all_credited:

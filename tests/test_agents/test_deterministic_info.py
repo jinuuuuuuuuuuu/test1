@@ -127,6 +127,35 @@ def test_tax_credit_limit_answers_pension_savings_only_excess_directly():
     assert "연금저축 단독 한도를 넘는 금액: 300만원" in draft
 
 
+def test_tax_credit_limit_answers_rate_when_only_income_given():
+    """납입액 없이 소득만 있어도 세율은 확정할 수 있다 — 경계값 양쪽을 함께 검증한다.
+
+    회귀 방지: no.309(5499만원)/no.310(5501만원)은 경계를 사이에 두고 물었는데도
+    답변이 글자까지 동일한 일반론이었다(질문한 값이 답에 전혀 반영되지 않음).
+    """
+    low, _ = deterministic_response_for("세액공제_한도", "총급여 5499만원이면 세액공제율이 몇 %인가요?")
+    assert "16.5%" in low
+    assert "총급여 5,500만원 이하 구간" in low
+
+    high, _ = deterministic_response_for("세액공제_한도", "총급여 5501만원이면 세액공제율이 몇 %인가요?")
+    assert "13.2%" in high
+    assert "총급여 5,500만원 초과 구간" in high
+
+
+def test_tax_credit_limit_calculates_when_inputs_are_sufficient():
+    """분류가 한도/계산 중 어느 쪽으로 떨어지든 계산 가능한 입력이면 계산해야 한다.
+
+    회귀 방지: candidate_categories가 세액공제_계산_입력부족과 세액공제_한도를 항상 함께
+    후보로 내므로 확정은 라우터 LLM 몫이었고, 실측에서 no.74/322는 계산됐지만
+    no.323은 한도로 분류돼 79만 2천원 대신 일반론이 나갔다.
+    """
+    question = "종합소득금액 6천만원 개인사업자가 연금저축에 600만원 넣으면 세액공제가 얼마인가요?"
+    for category in ("세액공제_한도", "세액공제_계산_입력부족"):
+        draft, _ = deterministic_response_for(category, question)
+        assert "79만 2천원" in draft, category
+        assert "13.2%" in draft, category
+
+
 def test_personal_tax_question_uses_input_sufficiency_gate_before_general_tax_rules():
     question = "나 74세인데 세금 어떻게 내?"
     assert "개인세금_입력충분성" in candidate_categories(question)
