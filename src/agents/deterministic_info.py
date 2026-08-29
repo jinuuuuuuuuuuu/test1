@@ -160,8 +160,21 @@ CODE_OVERRIDABLE_CATEGORIES: frozenset[str] = frozenset({
 })
 
 
-# 나이 표현 — "74세", "만 74세", "제 나이가 74" 등. 연령별 세율 판정의 신호다.
-_AGE_MENTION_RE = re.compile(r"(?:만)?\d{1,3}세|나이가?\d{1,3}")
+# 한글로 나이를 말하는 표현 — "일흔 넘었는데", "칠순인데"처럼 숫자·'세' 없이 묻는 질문이
+# 실제로 들어온다(실측 no.279 "일흔 넘었는데 연금소득세율이 어떻게 되나요?": 후보
+# 카테고리가 0건이라 결정론 경로를 아예 못 타고 LLM 답변에 맡겨졌다).
+# 값은 그 나이대의 하한이다 — "일흔 넘었다"는 70세 이상이므로 70으로 잡으면
+# 70~80세 구간(4.4%)이 정확히 걸린다.
+_KOREAN_AGE_WORDS = {
+    "쉰": 50, "예순": 60, "일흔": 70, "여든": 80, "아흔": 90,
+    "환갑": 60, "회갑": 60, "칠순": 70, "팔순": 80, "구순": 90,
+}
+_KOREAN_AGE_RE = re.compile("|".join(sorted(_KOREAN_AGE_WORDS, key=len, reverse=True)))
+
+# 나이 표현 — "74세", "만 74세", "제 나이가 74", "일흔" 등. 연령별 세율 판정의 신호다.
+_AGE_MENTION_RE = re.compile(
+    rf"(?:만)?\d{{1,3}}세|나이가?\d{{1,3}}|{_KOREAN_AGE_RE.pattern}"
+)
 
 # 세금 관련 표현 — "세율/세금/얼마 떼나" 류를 폭넓게 잡는다. 정확한 제도명("연금소득세")을
 # 쓰는 사용자는 소수라, 어휘 목록을 좁게 잡으면 같은 의도의 질문을 놓친다.
@@ -1695,7 +1708,12 @@ def _extract_age(question: str) -> Optional[int]:
 70세 이상 80세 미만" 같은 제도 설명 인용이 섞이면 오탐이 나므로, 나이가 여러 개
     등장하면 특정하지 않는다(None) — 하나로 단정하는 것보다 조건 부족으로 처리하는 편이 안전하다.
     """
-    ages = [int(m.group(1)) for m in _AGE_RE.finditer(question or "")]
+    text = question or ""
+    ages = [int(m.group(1)) for m in _AGE_RE.finditer(text)]
+    if not ages:
+        # 숫자 표기가 없을 때만 한글 나이를 본다 — 숫자가 이미 있으면 그쪽이 더 정확하고,
+        # "일흔이면 4.4%인데 저는 76세예요" 같은 문장에서 둘을 섞으면 오히려 오탐이 난다.
+        ages = [_KOREAN_AGE_WORDS[m.group()] for m in _KOREAN_AGE_RE.finditer(text)]
     valid = [a for a in ages if 55 <= a <= 120]
     if len(valid) != 1:
         return None

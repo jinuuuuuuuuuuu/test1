@@ -156,6 +156,28 @@ def test_tax_credit_limit_calculates_when_inputs_are_sufficient():
         assert "13.2%" in draft, category
 
 
+def test_korean_age_word_is_recognized_for_age_based_rate():
+    """"일흔"처럼 한글로 말한 나이도 연령별 세율 판정에 잡혀야 한다.
+
+    회귀 방지: no.279("일흔 넘었는데 연금소득세율이 어떻게 되나요?")는 후보 카테고리가
+    0건이라 결정론 경로를 아예 타지 못하고 LLM 답변에 맡겨졌다.
+    """
+    question = "일흔 넘었는데 연금소득세율이 어떻게 되나요?"
+    assert "연금소득세율_연령별" in candidate_categories(question)
+
+    draft, _ = deterministic_response_for("연금소득세율_연령별", question)
+    assert "4.4%" in draft
+    assert "만 70세 이상 80세 미만" in draft
+
+
+def test_institutional_age_range_quote_is_not_read_as_user_age():
+    """"70세 이상 80세 미만" 같은 제도 설명 인용을 사용자 나이로 오인하면 안 된다."""
+    draft, _ = deterministic_response_for(
+        "연금소득세율_연령별", "연금은 70세 이상 80세 미만이면 세율이 어떻게 되나요?"
+    )
+    assert "만 70세는" not in draft
+
+
 def test_personal_tax_question_uses_input_sufficiency_gate_before_general_tax_rules():
     question = "나 74세인데 세금 어떻게 내?"
     assert "개인세금_입력충분성" in candidate_categories(question)
