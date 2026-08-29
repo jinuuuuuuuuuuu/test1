@@ -56,7 +56,11 @@ from src.rules.comprehensive_tax import (
     SEPARATE_TAXATION_RATE_OVER_THRESHOLD,
     get_pension_income_tax_rate,
 )
-from src.rules.default_option import NOTICE_DELAY_DAYS_EXISTING, WAIT_DAYS_AFTER_NOTICE
+from src.rules.default_option import (
+    NOTICE_DELAY_DAYS_EXISTING,
+    WAIT_DAYS_AFTER_NOTICE,
+    check_optin_eligibility,
+)
 from src.rules.early_withdrawal import (
     WITHDRAWAL_DEADLINE_RULES,
 )
@@ -89,6 +93,7 @@ DeterministicCategory = Literal[
     "중도인출_요건판정",
     "중도인출_일반",
     "디폴트옵션_자동매수",
+    "디폴트옵션_옵트인판정",
     "실물이전_불가사유",
     "실물이전_개별판정",
     "연금수령한도",
@@ -109,6 +114,7 @@ DETERMINISTIC_CATEGORIES: tuple[str, ...] = (
     "중도인출_요건판정",
     "중도인출_일반",
     "디폴트옵션_자동매수",
+    "디폴트옵션_옵트인판정",
     "실물이전_불가사유",
     "실물이전_개별판정",
     "연금수령한도",
@@ -145,6 +151,7 @@ CODE_OVERRIDABLE_CATEGORIES: frozenset[str] = frozenset({
     "중도인출_기한판정",
     "중도인출_요건판정",
     "실물이전_개별판정",
+    "디폴트옵션_옵트인판정",
 })
 
 
@@ -206,8 +213,20 @@ def candidate_categories(question: str) -> list[str]:
         candidates.append("중도인출_요건판정")
     # 제도명을 그대로 쓰지 않는 표현도 잡는다 — "디폴트옵션"이라는 단어 없이
     # "기존가입자인데 언제 자동매수되나요?"처럼 묻는 경우가 많다.
+    #
+    # ⚠️ "자동매수 일정"(언제 되는가)과 "옵트인 가능 여부"(지금 살 수 있는가)는
+    # 규칙 엔진에 서로 다른 판정 함수(get_auto_purchase_schedule / check_optin_
+    # eligibility)로 이미 분리돼 있는데, 카테고리는 자동매수 하나뿐이었다(실측:
+    # "1개 보유 중 같은 상품 추가매수 가능한가요?" 같은 옵트인 질문이 트리거 자체가
+    # 없어 얼버무리거나 포기하는 답변만 나갔다). 두 작업을 모두 후보로 내고
+    # 라우터가 질문 의도로 고르게 한다.
     if any(word in text for word in ("디폴트옵션", "사전지정운용", "자동매수")):
         candidates.append("디폴트옵션_자동매수")
+    if "옵트인" in text or (
+        any(word in text for word in ("디폴트옵션", "사전지정운용"))
+        and any(word in text for word in ("보유", "가지고", "가진", "매수", "추가로"))
+    ):
+        candidates.append("디폴트옵션_옵트인판정")
     # 마찬가지로 "실물이전"을 "옮기다/이관/이체"로 말하는 경우를 포함한다.
     if any(word in text for word in ("실물이전", "이전되", "이전가능", "옮길", "옮기", "이관", "이체")):
         # 같은 도메인이라도 "목록 나열"과 "내 상품 판정"은 다른 작업이다. 둘 다 후보로
@@ -1166,6 +1185,71 @@ def _default_option_auto_purchase_response(question: str) -> tuple[str, list[Ret
     return draft, _context(source, content)
 
 
+_ZERO_HOLDING_WORDS = ("보유하지않", "보유중인상품이없", "가입하지않", "없는상태")
+_MULTIPLE_HOLDING_WORDS = ("2개이상", "2개 이상", "복수", "여러개", "여러 개", "둘다", "두개다")
+_SAME_PRODUCT_WORDS = ("같은상품", "같은 상품", "동일상품", "동일 상품", "동일한상품", "그상품", "그 상품")
+_DIFFERENT_PRODUCT_WORDS = (
+    "다른상품", "다른 상품", "다른유형", "다른 유형", "새상품", "새 상품", "새로운상품", "새로운 상품",
+)
+
+
+def _extract_optin_holding_count(text: str) -> int | None:
+    """질문에서 '현재 실제 보유 중인 디폴트옵션 개수'를 읽는다. 못 읽으면 None."""
+    if any(word in text for word in _ZERO_HOLDING_WORDS):
+        return 0
+    if any(word in text for word in _MULTIPLE_HOLDING_WORDS):
+        return 2  # 정확한 개수는 몰라도 check_optin_eligibility는 2 이상을 전부 동일하게 판정한다
+    if re.search(r"1개|한개|한 개|하나", text):
+        return 1
+    return None
+
+
+def _default_option_optin_response(question: str) -> tuple[str, list[RetrievedItem]] | None:
+    """디폴트옵션 옵트인(가입자 직접매수) 가능 여부 — 보유 개수 + 동일상품 여부로 판정한다.
+
+    자동매수(_default_option_auto_purchase_response)와 다른 축이다: 저건 "언제
+    자동으로 사지는가", 이건 "지금 내가 직접 살 수 있는가". 규칙 엔진에는 이미
+    check_optin_eligibility로 분리돼 있었는데 카테고리가 없어 트리거되지 못했다.
+    """
+    text = _compact(question)
+    holdings = _extract_optin_holding_count(text)
+    if holdings is None:
+        return None  # 보유 개수를 읽을 수 없으면 임의로 가정하지 않고 LLM+툴 경로로 넘긴다
+
+    is_same_product = any(word in text for word in _SAME_PRODUCT_WORDS)
+    is_different_product = any(word in text for word in _DIFFERENT_PRODUCT_WORDS)
+
+    source = "doc29 디폴트옵션 옵트인 규칙"
+    content = (
+        "실제 보유 중인 디폴트옵션이 0개면 1개 상품을 직접 매수(옵트인)할 수 있습니다. "
+        "1개 보유 중이고 매수하려는 상품이 그 보유 상품과 동일하면 추가 매수가 예외적으로 "
+        "허용됩니다. 1개 보유 중인데 다른 유형으로 옵트인하려면 기존 상품을 전량 매도해야 "
+        "합니다. 디폴트옵션을 2개 이상(복수) 보유 중이면 먼저 1개 상품만 남도록 전량 정리해야 "
+        "추가 옵트인이 가능합니다(일부 매도로는 해소되지 않습니다)."
+    )
+
+    result = check_optin_eligibility(
+        current_holdings_count=holdings,
+        target_is_same_as_only_holding=is_same_product and not is_different_product,
+    )
+
+    if holdings == 1 and not is_same_product and not is_different_product:
+        # 1개 보유 상태에서 매수하려는 상품이 기존 것과 같은지 다른지가 불명확하면
+        # 결과가 정반대로 갈리므로(허용 vs 전량매도 필요) 임의로 단정하지 않고 되묻는다.
+        draft = (
+            "디폴트옵션을 1개 보유 중이시군요. 다만 매수하려는 상품이 **지금 보유 중인 상품과 "
+            "같은 상품인지, 다른 상품인지**에 따라 결과가 달라집니다.\n\n"
+            "- 같은 상품 추가 매수: 예외적으로 허용됩니다.\n"
+            "- 다른 상품으로 옵트인: 기존 상품을 전량 매도해야 가능합니다.\n\n"
+            "어느 쪽에 해당하는지 알려주시면 정확히 안내드리겠습니다."
+        )
+        return draft, _context(source, content)
+
+    verdict = "네, 가능합니다." if result.eligible else "아니요, 지금은 불가능합니다."
+    draft = f"{verdict}\n\n{result.reason}"
+    return draft, _context(source, content)
+
+
 def _in_kind_transfer_block_response(question: str) -> tuple[str, list[RetrievedItem]]:
     source = "doc34 실물이전 불가사유 코드"
     definite_codes = [code for code, info in TRANSFER_BLOCK_CODES.items() if not info.get("directional")]
@@ -1447,6 +1531,7 @@ _CATEGORY_HANDLERS = {
     "중도인출_요건판정": _early_withdrawal_eligibility_response,
     "중도인출_일반": _early_withdrawal_general_response,
     "디폴트옵션_자동매수": _default_option_auto_purchase_response,
+    "디폴트옵션_옵트인판정": _default_option_optin_response,
     "실물이전_불가사유": _in_kind_transfer_block_response,
     "실물이전_개별판정": _in_kind_transfer_judgement_response,
     "연금수령한도": _withdrawal_limit_response,

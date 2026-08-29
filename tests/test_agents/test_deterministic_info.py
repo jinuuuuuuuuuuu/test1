@@ -212,6 +212,51 @@ def test_default_option_unspecified_asks_back_and_shows_both():
     assert "기존가입자" in draft and "신규가입자" in draft
 
 
+# ── 디폴트옵션 옵트인 가능여부 (500문항 실측) ──────────────────────────
+#
+# 자동매수 "시점"과 옵트인 "가능 여부"는 규칙 엔진에 서로 다른 판정 함수로
+# 이미 분리돼 있었는데(get_auto_purchase_schedule / check_optin_eligibility),
+# 카테고리는 자동매수 하나뿐이라 옵트인 질문을 판정할 트리거 자체가 없었다.
+# 501문항 평가에서 실측한 3건 전부 얼버무리거나 포기하는 답변만 나갔다.
+
+
+def test_default_option_optin_candidate_for_same_product_addition():
+    question = "제가 지금 디폴트옵션 상품 1개를 보유 중인데, 같은 상품을 추가로 매수할 수 있나요?"
+    assert "디폴트옵션_옵트인판정" in candidate_categories(question)
+
+    draft, context = deterministic_response_for("디폴트옵션_옵트인판정", question)
+    assert "네, 가능합니다" in draft
+    assert "예외적으로 허용" in draft
+    assert context
+
+
+def test_default_option_optin_multiple_holdings_not_eligible():
+    question = "디폴트옵션 상품을 2개 이상 보유 중인데 옵트인이 가능한가요?"
+    assert "디폴트옵션_옵트인판정" in candidate_categories(question)
+
+    draft, _ = deterministic_response_for("디폴트옵션_옵트인판정", question)
+    assert "아니요" in draft
+    assert "1개 상품만 남도록 전량 정리" in draft
+
+
+def test_default_option_optin_ambiguous_holding_count_returns_none():
+    """'다른 상품'이라고만 하고 현재 보유 개수를 명시하지 않으면 임의로 가정하지 않는다.
+
+    1개 보유+다른상품과 2개 이상+다른상품은 결론(불가)은 같아도 안내할 사유(전량매도
+    vs 1개로 정리)가 다르므로, 개수를 모르는 채로 하나를 임의 선택하면 안 된다.
+    """
+    question = "보유 중인 디폴트옵션 상품과 다른 새 상품을 옵트인으로 매수할 수 있나요?"
+    assert deterministic_response_for("디폴트옵션_옵트인판정", question) is None
+
+
+def test_default_option_optin_one_holding_unclear_target_asks_back():
+    """1개 보유 중임은 명확하지만 같은 상품인지 다른 상품인지 불명확하면 되묻는다."""
+    draft, _ = deterministic_response_for(
+        "디폴트옵션_옵트인판정", "디폴트옵션 1개 보유 중인데 옵트인 가능한가요?"
+    )
+    assert "같은 상품인지, 다른 상품인지" in draft
+
+
 def test_in_kind_transfer_block_candidate_and_response():
     question = "퇴직연금 실물이전이 안 되는 상품은 뭐가 있나요?"
     assert "실물이전_불가사유" in candidate_categories(question)
