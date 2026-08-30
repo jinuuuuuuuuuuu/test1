@@ -26,6 +26,18 @@ def test_extracts_numbers_with_units():
     assert "10년" in tokens
 
 
+def test_extracts_fraction_notation():
+    """"1/12"처럼 분수로 사실을 주장하는 경우도 숫자 토큰으로 잡아야 한다.
+
+    회귀 방지: DC형 회사 부담금 "연간 임금총액의 1/12 이상"이 대표적인 실사용
+    표현인데, 단위 목록(원/%/세/년/개월/등급)에 분수가 없어 통째로 안 잡혔다.
+    L0 근거대조가 이 수치를 검사하지 못하고, enforce_missing_requirements도
+    답변 본문에 이미 있는 값을 "빠졌다"고 오판했다(실측 no.6).
+    """
+    tokens = extract_number_tokens("회사는 매년 연간 임금총액의 1/12 이상을 납입합니다.")
+    assert "1/12" in tokens
+
+
 def test_ignores_bare_list_markers():
     # 단위 없는 맨 숫자(목록 번호 등)는 오탐을 만들므로 L0에서 잡지 않는다.
     text = "확인이 필요합니다: 1. 계좌유형 2. 투자기간 3. 위험선호"
@@ -250,6 +262,43 @@ def test_missing_requirements_skips_when_already_disclosed():
 
     answer = "그 부분은 제공된 자료로는 확인이 어렵습니다."
     assert enforce_missing_requirements(answer, ["무언가"]) == answer
+
+
+def test_missing_requirements_skips_item_already_covered_in_body():
+    """missing_requirements 항목의 수치가 답변 본문에 이미 있으면 덧붙이지 않는다.
+
+    회귀 방지: 실측 no.6("DC형은 회사가 매년 얼마를 넣어주는지 알 수 있나요?")에서
+    답변 본문에 "매년 연간 임금총액의 **1/12** 이상"이 이미 정확히 있는데도
+    missing_requirements에 같은 내용이 올라와, 무조건 붙이면 "1/12 이상이라는 점은
+    확인이 어려워 포함하지 못했습니다"라는 자기모순 문장이 뒤따랐다.
+    """
+    from src.agents.verification import enforce_missing_requirements
+
+    answer = "회사는 매년 연간 임금총액의 **1/12** 이상을 근로자의 계좌에 입금해야 합니다."
+    missing = ["DC형 퇴직연금의 연간 적립 금액이 연간 임금총액의 1/12 이상이라는 점"]
+
+    out = enforce_missing_requirements(answer, missing)
+
+    assert out == answer
+    assert "확인이 어려워" not in out
+
+
+def test_missing_requirements_keeps_judgement_sentences_even_with_matching_numbers():
+    """④의 판정 서술문(질문 인용문)은 숫자가 우연히 겹쳐도 걸러내지 않는다.
+
+    회귀 방지: 실측 no.85에서 missing_requirements 항목이 "질문은 '74세'라는 특정
+    나이에서의 세율을 묻고 있으나, 초안은 이를 다루지 않고..."였는데, 답변 본문에도
+    "만 74세"가 있어 숫자만 보면 "이미 다뤘다"고 오판할 뻔했다. 실제로는 ④가 지적한
+    결함(질문이 요구한 특정 나이 기준 답변 누락)이 그대로 남아있었다.
+    """
+    from src.agents.verification import enforce_missing_requirements
+
+    answer = "만 74세는 '만 70세 이상 80세 미만' 구간에 해당하며 세율은 4.4%입니다."
+    missing = ["질문은 '74세'라는 특정 나이에서의 세율을 묻고 있으나, 초안은 이를 다루지 않고 일반적인 정보만 제공함"]
+
+    out = enforce_missing_requirements(answer, missing)
+
+    assert "확인이 어려워" in out
 
 
 def test_missing_requirements_noop_when_empty():

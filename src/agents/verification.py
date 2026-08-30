@@ -28,9 +28,16 @@ _NUMBER_TOKEN_RE = re.compile(
     r"|원|%|퍼센트|프로"
     r"|세(?![금율액대])|년|개월|등급"
     r")"
+    # "1/12", "12분의 1"처럼 분수로 사실을 주장하는 경우 — DC형 회사 부담금
+    # "연간 임금총액의 1/12 이상"이 대표적이다. 이 형태를 단위 목록에서 빠뜨리면
+    # extract_number_tokens/find_unsupported_numbers 양쪽에서 통째로 안 잡혀, L0
+    # 근거대조는 그 수치를 검사하지 못하고 enforce_missing_requirements는 답변에
+    # 이미 있는 값을 "빠졌다"고 오판해 자기모순 문장을 덧붙인다(실측 no.6).
+    r"|\d[\d,]*\s?/\s?\d[\d,]*"
+    r"|\d[\d,]*분의\s?\d[\d,]*"
 )
 
-_NUMERIC_CORE_RE = re.compile(r"[\d,\.]+")
+_NUMERIC_CORE_RE = re.compile(r"[\d,\.]+(?:\s?/\s?[\d,\.]+)?")
 
 # 인라인 마크다운 서식 문자. LLM이 수치를 강조할 때 숫자만 감싸고 단위를 밖에 두는 일이
 # 잦은데(**16.5**%), 그러면 "숫자+단위" 패턴이 서식 문자로 갈라져 L0가 토큰을 아예
@@ -217,6 +224,38 @@ def has_premise_correction(answer: str) -> bool:
     return any(marker in (answer or "") for marker in _PREMISE_CORRECTION_MARKERS)
 
 
+def _requirement_already_covered(answer: str, requirement: str) -> bool:
+    """missing_requirements 항목이 실제로는 답변 본문에 이미 서술돼 있는지 확인한다.
+
+    ④(LLM)는 같은 결함을 requirements_met과 grounded 양쪽에 겹쳐서 반영하는 경우가
+    있다 — 완결성 부족을 grounded=False의 issues에도 함께 적는 식이다. 그런데 더 심각한
+    건 이 방향의 자기모순이다: missing_requirements에 적은 항목의 숫자가 답변 본문에
+    이미 정확히 들어있는 경우(실측 no.6 "DC형은 회사가 매년 얼마를 넣어주는지 알 수
+    있나요?" — 답변 본문에 "매년 연간 임금총액의 **1/12** 이상"이 이미 있는데도
+    missing_requirements에 같은 내용이 올라와, 무조건 붙이면 "1/12 이상이라는 점은
+    확인이 어려워 포함하지 못했습니다"라는 자기모순 문장이 뒤에 따라붙는다).
+
+    완전한 의미 판정은 불가능하므로, 항목에 등장하는 숫자 토큰이 답변 본문에 그대로
+    있으면 "이미 다뤘다"고 본다 — 애매하면 그냥 붙이는 쪽(기존 동작)을 유지해, 실제로
+    빠진 항목을 숨기는 반대 방향 실패는 만들지 않는다.
+
+    ⚠️ 단, 항목 텍스트가 "④의 판정 서술문"(예: "질문은 '74세'라는 특정 나이에서의
+    세율을 묻고 있으나, 초안은 이를 다루지 않고...")이면 이 필터를 적용하지 않는다.
+    이런 서술문은 질문에 나온 숫자를 그대로 인용하는 경우가 많아, 그 숫자가 답변
+    본문에도 우연히 있으면 "이미 다뤘다"고 오판한다(실측 no.85: missing 항목이
+    "질문은 '74세'..."였는데 답변 본문에도 "만 74세"가 있어 오판 — 실제로는 ④가
+    지적한 결함이 그대로 남아있는 채였다). 판정 서술문은 "~하지만/하나", "묻고
+    있으나", "질문은" 같은 대조·인용 표현으로 사실 항목 나열과 구분된다.
+    """
+    if any(marker in requirement for marker in ("질문은", "하지만", "하나,", "있으나", "묻고 있")):
+        return False
+    requirement_numbers = extract_number_tokens(requirement)
+    if not requirement_numbers:
+        return False
+    answer_core = strip_inline_markup(answer).replace(",", "")
+    return all(_numeric_core(token) in answer_core for token in requirement_numbers)
+
+
 def enforce_missing_requirements(answer: str, missing: list[str]) -> str:
     """④가 '질문이 요구했는데 빠졌다'고 지적한 항목을 답변이 다루지 않았으면 한계를 명시한다.
 
@@ -224,8 +263,12 @@ def enforce_missing_requirements(answer: str, missing: list[str]) -> str:
     목적이다 (대회 평가지표 "정보한계 대응": 무리한 답변 대신 한계 고지 또는 역질문).
 
     이미 한계를 고지한 답변에는 덧붙이지 않는다 — 중복 고지는 답변 품질을 떨어뜨린다.
+    항목별로도 답변 본문에 이미 서술된 것은 걸러낸다(자기모순 방지, _requirement_already_covered).
     """
     if not missing or has_limit_disclosure(answer):
+        return answer
+    missing = [item for item in missing if not _requirement_already_covered(answer, item)]
+    if not missing:
         return answer
     items = "".join(f"\n- {m}" for m in missing)
     return (
