@@ -247,7 +247,14 @@ def candidate_categories(question: str) -> list[str]:
     ):
         candidates.append("디폴트옵션_옵트인판정")
     # 마찬가지로 "실물이전"을 "옮기다/이관/이체"로 말하는 경우를 포함한다.
-    if any(word in text for word in ("실물이전", "이전되", "이전가능", "옮길", "옮기", "이관", "이체")):
+    # ⚠️ 단, 계좌 단위 이전(계좌이전 제도)은 상품 단위 실물이전과 다른 제도다.
+    # 실측 no.367("연금저축 계좌를 해지하지 않고 다른 금융사로 옮기는 방법이 있나요?")은
+    # "옮기" 하나로 실물이전 카테고리가 붙어, 계좌이전 방법 대신 상품 실물이전
+    # **불가사유 목록**을 나열하는 동문서답이 나갔다. 보유 DB에는 계좌이전 제도 문서가
+    # 없으므로, 이런 질문은 결정론 경로로 답하지 말고 일반 경로에서 한계를 고지하게 둔다.
+    if any(word in text for word in ("실물이전", "이전되", "이전가능", "옮길", "옮기", "이관", "이체")) and not (
+        _asks_account_level_transfer(text)
+    ):
         # 같은 도메인이라도 "목록 나열"과 "내 상품 판정"은 다른 작업이다. 둘 다 후보로
         # 넣고 라우터가 고르게 한다 — 개별판정 경로가 없던 동안 라우터가 이런 질문을
         # 기각했고, LLM이 자유롭게 툴을 고르다 엉뚱한 툴(투자 가능 여부)을 불러
@@ -1196,6 +1203,20 @@ def _early_withdrawal_general_response(question: str) -> tuple[str, list[Retriev
         "신청 요건이 문제될 수 있습니다."
     )
     return draft, _context(source, content)
+
+
+def _asks_account_level_transfer(compact_text: str) -> bool:
+    """상품이 아니라 **계좌 자체**를 다른 금융사로 옮기는 방법을 묻는 질문인지.
+
+    계좌이전 제도는 상품 단위 실물이전과 다른 제도이고, 보유 DB에는 관련 문서가 없다.
+    "계좌"를 옮긴다고 명시했고 실물이전이라는 용어를 쓰지 않은 경우만 잡는다 —
+    "실물이전으로 계좌를 옮길 수 있나요?"처럼 용어를 쓴 질문은 실물이전이 맞다.
+    """
+    if "실물이전" in compact_text:
+        return False
+    if "계좌" not in compact_text:
+        return False
+    return any(w in compact_text for w in ("금융사", "금융기관", "증권사", "은행", "회사로", "타사"))
 
 
 _MEDICAL_EXPENSE_RATIO_LABEL = f"{MEDICAL_EXPENSE_RATIO_THRESHOLD * 100:g}%"

@@ -190,6 +190,25 @@ def test_personal_tax_question_uses_input_sufficiency_gate_before_general_tax_ru
     assert context
 
 
+def test_account_level_transfer_is_not_in_kind_transfer():
+    """계좌 단위 이전(계좌이전 제도)은 상품 단위 실물이전 카테고리로 가면 안 된다.
+
+    회귀 방지: 실측 no.367("연금저축 계좌를 해지하지 않고 다른 금융사로 옮기는 방법이
+    있나요?")은 "옮기" 하나로 실물이전 카테고리가 붙어, 계좌이전 방법 대신 상품
+    실물이전 **불가사유 목록**을 나열하는 동문서답이 나갔다.
+    """
+    assert candidate_categories("연금저축 계좌를 해지하지 않고 다른 금융사로 옮기는 방법이 있나요?") == []
+    assert candidate_categories("IRP 계좌를 다른 증권사로 옮기고 싶어요") == []
+
+    # 상품 단위 실물이전 질문과 "실물이전" 용어를 쓴 질문은 그대로 유지된다.
+    for question in (
+        "MMF도 실물이전 되나요?",
+        "실물이전이 안 되는 상품은 뭐가 있나요?",
+        "실물이전으로 계좌를 통째로 옮길 수 있나요?",
+    ):
+        assert "실물이전_불가사유" in candidate_categories(question), question
+
+
 def test_medical_expense_ratio_applies_to_dc_only():
     """의료비 비율 기준(12.5%)은 DC 전용이고 IRP에는 적용되지 않는다.
 
