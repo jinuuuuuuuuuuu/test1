@@ -1141,3 +1141,42 @@ def test_withdrawal_limit_does_not_hijack_actual_receipt_year_question():
     assert _extract_withdrawal_limit_inputs(
         "연금계좌 평가액 1억이고 연금수령 5년차인데 한도가 얼마인가요?"
     ) == (100_000_000, 5)
+
+
+def test_monthly_contribution_is_converted_to_annual():
+    """"매달 50만원"처럼 월 단위로 말한 납입액은 연 환산해야 한다.
+
+    세액공제 한도·납입한도는 전부 연간 기준이라, 월액을 그대로 쓰면 12배 틀린 답이
+    나간다. 실측 재현: "연금저축에 매달 50만원씩 넣는데 세액공제 얼마?"에 연 50만원
+    으로 계산해 82,500원을 답했다(연 600만원 기준 99만원이 정답).
+    """
+    from src.agents.deterministic_info import _extract_tax_credit_inputs
+
+    monthly = _extract_tax_credit_inputs("연금저축에 매달 50만원씩 넣는데 세액공제 얼마 받나요?")
+    assert monthly["pension_savings_paid"] == 6_000_000
+
+    for question, expected in (
+        ("연금저축 매월 30만원 납입 중입니다", 3_600_000),
+        ("IRP에 한 달에 20만원씩 넣어요", 2_400_000),
+    ):
+        values = _extract_tax_credit_inputs(question)
+        actual = values["pension_savings_paid"] or values["irp_paid"]
+        assert actual == expected, question
+
+    draft, _ = deterministic_response_for(
+        "세액공제_계산_입력부족",
+        "연금저축에 매달 50만원씩 넣는데 세액공제 얼마 받나요? 총급여는 5천만원이에요.",
+    )
+    assert "600만원" in draft
+    assert "99만원" in draft
+
+
+def test_annual_contribution_is_not_multiplied():
+    """연 단위로 말한 금액은 그대로 써야 한다(과잉 환산 방지)."""
+    from src.agents.deterministic_info import _extract_tax_credit_inputs
+
+    values = _extract_tax_credit_inputs("연금저축 600만원, IRP 300만원 넣었고 총급여 5000만원")
+
+    assert values["pension_savings_paid"] == 6_000_000
+    assert values["irp_paid"] == 3_000_000
+    assert values["total_salary"] == 50_000_000

@@ -482,11 +482,27 @@ def _parse_korean_amount(number_text: str, unit_text: str) -> int:
     return int(value)
 
 
+# 금액 바로 앞에 붙는 "월 단위" 표현. 세액공제·납입한도는 모두 **연간** 기준이라,
+# 월 납입액을 연액으로 그대로 쓰면 12배 틀린 답이 나간다(실측 재현: "연금저축에 매달
+# 50만원씩 넣는데 세액공제 얼마?"에 연 50만원으로 계산해 82,500원을 답했다 —
+# 연 600만원 기준 99만원이 정답).
+_MONTHLY_PREFIX_RE = re.compile(r"(?:매\s*달|매\s*월|월\s*납|달\s*마다|한\s*달\s*에|월)$")
+
+
+def _is_monthly_amount(compact: str, amount_start: int) -> bool:
+    """금액 바로 앞 구간에 월 단위 표현이 있는지 확인한다."""
+    head = compact[max(0, amount_start - 8): amount_start]
+    return _MONTHLY_PREFIX_RE.search(head) is not None
+
+
 def _extract_labeled_amount(question: str, labels: tuple[str, ...]) -> int | None:
-    """질문에서 '라벨 값' 또는 '값 라벨' 형태로 언급된 금액을 원 단위로 추출한다.
+    """질문에서 '라벨 값' 또는 '값 라벨' 형태로 언급된 금액을 **연 단위**로 추출한다.
 
     라벨과 숫자 사이에 다른 금액이나 다른 라벨 단어가 끼면 매칭을 버린다 — 그런
     경우는 대개 그 금액이 이 라벨의 값이 아니라 옆에 있던 다른 항목의 값이다.
+
+    "매달 50만원"처럼 월 단위로 말한 금액은 12를 곱해 연 환산한다 — 이 함수의
+    결과는 전부 연간 기준(세액공제 한도·납입한도)으로 쓰이기 때문이다.
     """
     compact = _compact(question)
     number_unit = _AMOUNT_NUMBER_RE + r"\s*" + _AMOUNT_UNIT_RE
@@ -494,11 +510,13 @@ def _extract_labeled_amount(question: str, labels: tuple[str, ...]) -> int | Non
         escaped = re.escape(label)
         after = re.search(rf"{escaped}([^\d]{{0,12}})({number_unit})", compact, re.IGNORECASE)
         if after and not _AMOUNT_BOUNDARY_BREAK_RE.search(after.group(1)):
-            return _amount_from_match(after.group(2))
+            amount = _amount_from_match(after.group(2))
+            return amount * 12 if _is_monthly_amount(compact, after.start(2)) else amount
 
         before = re.search(rf"({number_unit})([^\n,.;]{{0,12}}){escaped}", compact, re.IGNORECASE)
         if before and not _AMOUNT_BOUNDARY_BREAK_RE.search(before.group(2)):
-            return _amount_from_match(before.group(1))
+            amount = _amount_from_match(before.group(1))
+            return amount * 12 if _is_monthly_amount(compact, before.start(1)) else amount
     return None
 
 
