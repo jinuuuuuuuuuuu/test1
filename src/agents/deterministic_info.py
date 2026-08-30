@@ -62,6 +62,7 @@ from src.rules.default_option import (
     check_optin_eligibility,
 )
 from src.rules.early_withdrawal import (
+    MEDICAL_EXPENSE_RATIO_THRESHOLD,
     WITHDRAWAL_DEADLINE_RULES,
     PlanType,
 )
@@ -1197,11 +1198,35 @@ def _early_withdrawal_general_response(question: str) -> tuple[str, list[Retriev
     return draft, _context(source, content)
 
 
+_MEDICAL_EXPENSE_RATIO_LABEL = f"{MEDICAL_EXPENSE_RATIO_THRESHOLD * 100:g}%"
+
+
+def _asks_medical_expense_ratio(compact_text: str) -> bool:
+    """요양 사유의 "의료비가 임금총액의 몇 % 이상이어야 하나"를 묻는 질문인지."""
+    if not any(w in compact_text for w in ("의료비", "치료비", "요양")):
+        return False
+    return any(
+        w in compact_text
+        for w in ("몇%", "몇퍼센트", "몇프로", "비율", "12.5", "임금총액", "연봉의", "연봉대비")
+    )
+
+
+def _mentions_irp_not_dc(compact_text: str) -> bool:
+    """IRP만 언급하고 DC는 언급하지 않은 질문인지 (제도가 특정되면 그 제도만 답한다)."""
+    has_irp = re.search(r"(?<![a-z])irp(?![a-z])", compact_text, flags=re.IGNORECASE) is not None
+    has_dc = re.search(r"(?<![a-z])dc(?![a-z])", compact_text, flags=re.IGNORECASE) is not None
+    return has_irp and not has_dc
+
+
 def _early_withdrawal_eligibility_response(question: str) -> tuple[str, list[RetrievedItem]] | None:
     text = _compact(question)
     if "중도인출" not in text:
         return None
-    if not any(word in text for word in ("가능", "되나요", "할수", "되냐", "되는지", "가능한가", "하려", "할래", "하고싶")):
+    # "가능한가"를 묻는 어휘가 없어도, 요건 수치(의료비 비율)를 묻는 질문은 답할 수 있다 —
+    # "몇 퍼센트 이상이어야 하나요?"에는 아래 어휘가 하나도 없다.
+    if not any(
+        word in text for word in ("가능", "되나요", "할수", "되냐", "되는지", "가능한가", "하려", "할래", "하고싶")
+    ) and not _asks_medical_expense_ratio(text):
         return None
 
     source = "doc46~doc50 중도인출 요건판정 규칙"
@@ -1239,6 +1264,46 @@ def _early_withdrawal_eligibility_response(question: str) -> tuple[str, list[Ret
             "개인회생절차개시 결정 또는 파산선고는 중도인출 사유가 될 수 있지만, 개인워크아웃·신용회복은 그 사유와 구분됩니다."
         )
         return draft, _context(source, content)
+
+    # 요양 사유의 의료비 비율(12.5%) 적용 여부 — 제도별로 답이 갈리는데, 근거 문서에서는
+    # 그 구분이 "(개인형IRP는 불필요)"라는 괄호 한 줄에만 묻혀 있다. 실측 no.146에서 LLM은
+    # 그 괄호를 놓쳐 "IRP도 12.5%를 초과해야 한다"고 답한 뒤, 바로 다음 문장에서
+    # "개인형 IRP는 12.5%와 상관없이 가능하다"고 스스로 뒤집는 자기모순 답변을 냈다.
+    # 규칙(check_medical_treatment_eligibility)은 이미 DC에만 비율을 적용하므로 그대로 따른다.
+    if _asks_medical_expense_ratio(text):
+        r = _MEDICAL_EXPENSE_RATIO_LABEL
+        ratio_content = (
+            f"6개월 이상 요양 사유의 의료비 비율 기준({r})은 DC형에만 적용됩니다. "
+            "IRP는 이 비율 기준이 적용되지 않아 요양 사유와 신청기한 요건만 충족하면 됩니다. "
+            "DC형은 직전 1년간 본인 부담 의료비 총액이 직전년도 연간임금총액의 "
+            f"{r}를 초과해야 신청할 수 있습니다."
+        )
+        if _mentions_irp_not_dc(text):
+            draft = (
+                f"IRP는 의료비 비율 기준({r})이 적용되지 않습니다.\n\n"
+                "- IRP: 6개월 이상 요양 사유에 해당하면 의료비가 연간임금총액에서 차지하는 "
+                "비율과 무관하게 중도인출을 신청할 수 있습니다. 연간임금총액 확인서류도 "
+                "제출 대상이 아닙니다.\n"
+                "- DC형: 직전 1년간 본인이 부담한 의료비 총액이 직전년도 연간임금총액의 "
+                f"{r}를 **초과**해야 신청할 수 있습니다.\n\n"
+                "다만 요양 사유 자체(본인·배우자·부양가족의 6개월 이상 요양)와 "
+                "신청기한(요양종료일로부터 1개월 이내)은 IRP에도 그대로 적용됩니다."
+            )
+        else:
+            # 제도를 특정하지 않은 질문에만 되묻는다 — DC를 명시했는데 "어느 제도인지
+            # 알려주세요"라고 답하면 이미 준 정보를 다시 묻는 꼴이 된다.
+            mentions_plan = re.search(r"(?<![a-z])(?:dc|db)(?![a-z])", text, flags=re.IGNORECASE)
+            draft = (
+                f"의료비 비율 기준({r})은 제도에 따라 다릅니다.\n\n"
+                "- DC형: 직전 1년간 본인이 부담한 의료비 총액이 직전년도 연간임금총액의 "
+                f"{r}를 **초과**해야 신청할 수 있습니다.\n"
+                "- IRP: 이 비율 기준이 적용되지 않습니다. 요양 사유에 해당하면 비율과 "
+                "무관하게 신청할 수 있습니다.\n"
+                "- DB형: 중도인출이 허용되지 않습니다."
+            )
+            if not mentions_plan:
+                draft += "\n\n어느 제도인지 알려주시면 더 정확히 안내드릴 수 있습니다."
+        return draft, _context(source, ratio_content)
 
     return None
 

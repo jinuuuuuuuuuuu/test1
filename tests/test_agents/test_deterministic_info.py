@@ -190,6 +190,35 @@ def test_personal_tax_question_uses_input_sufficiency_gate_before_general_tax_ru
     assert context
 
 
+def test_medical_expense_ratio_applies_to_dc_only():
+    """의료비 비율 기준(12.5%)은 DC 전용이고 IRP에는 적용되지 않는다.
+
+    회귀 방지: 실측 no.146("IRP인데 요양 때문에 중도인출하려면 의료비가 연봉의 몇 %
+    이상이어야 하나요?")에서 결정론 핸들러가 None을 반환해 LLM 경로로 빠졌고,
+    LLM은 근거의 "(개인형IRP는 불필요)" 괄호를 놓쳐 "IRP도 12.5%를 초과해야 한다"고
+    답한 뒤 다음 문장에서 스스로 뒤집는 자기모순 답변을 냈다.
+    """
+    irp, _ = deterministic_response_for(
+        "중도인출_요건판정", "IRP인데 요양 때문에 중도인출하려면 의료비가 연봉의 몇 % 이상이어야 하나요?"
+    )
+    assert "IRP는 의료비 비율 기준(12.5%)이 적용되지 않습니다" in irp
+    # 자기모순 방지: IRP에 비율 기준이 "적용된다"는 서술이 함께 나오면 안 된다.
+    assert "IRP도" not in irp
+
+    # "가능한가"류 어휘가 없어도(순수 수치 질문) 답해야 한다.
+    generic, _ = deterministic_response_for(
+        "중도인출_요건판정", "요양 중도인출은 의료비가 임금총액의 몇 퍼센트 이상이어야 하나요?"
+    )
+    assert "DC형" in generic and "12.5%" in generic
+    assert "IRP: 이 비율 기준이 적용되지 않습니다" in generic
+
+    # 제도를 명시한 질문에는 되묻지 않는다.
+    dc, _ = deterministic_response_for(
+        "중도인출_요건판정", "DC형인데 요양으로 중도인출하려면 의료비 비율 기준이 어떻게 되나요?"
+    )
+    assert "어느 제도인지 알려주시면" not in dc
+
+
 def test_early_withdrawal_general_candidate_and_response():
     question = "IRP에서 중도인출은 어떤 경우에 가능한가요?"
     assert "중도인출_일반" in candidate_categories(question)
