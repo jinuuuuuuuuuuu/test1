@@ -107,6 +107,21 @@ _CLARIFICATION_BLOCKED_MARKERS = (
     "금리가 상승하면",
 )
 
+# 거시 지표를 근거로 특정 자산유형이 유리/불리하다고 단정하는 문장 — 조건이 아직
+# 부족한 clarification 상태에서는 나올 수 없는 종류의 주장이다(계좌유형·위험성향도
+# 모르는데 "지금이 매수 적기"라고 말할 근거가 없다).
+#
+# ⚠️ _CLARIFICATION_BLOCKED_MARKERS는 죽은 코드였던 _what_if_scenario_block이 만들던
+# 정확한 문구("시장 상황이 바뀐다면?", "미국·해외 증시" 등)에만 맞춰져 있어, 같은 뜻의
+# 다른 표현("요즘 증시가 좋아서 주식형이 유리합니다", "금리 인하 기조라 채권형이
+# 매력적입니다")은 전혀 못 걸렀다(직접 재현 확인: 5개 paraphrase 전부 통과). 어휘
+# 하드코딩이 아니라 "거시 지표 명사 + 조건부 유리·전망 서술"이라는 문장 구조로 잡는다.
+_MACRO_INDICATOR_RE = re.compile(r"시장|경기|증시|금리|환율|주가|달러|인플레이션|물가")
+_FAVORABLE_OUTLOOK_RE = re.compile(
+    r"유리|불리|매력적|적기|좋을|좋은|좋다|긍정적|부정적|호재|악재|상승세|하락세|"
+    r"기대됩니다|추천됩니다|늘리는게|늘리는 게|줄이는게|줄이는 게"
+)
+
 _INVESTMENT_LIMIT_SOURCE = "doc56~doc58 적립금 운용 및 투자한도 규칙"
 _INVESTMENT_LIMIT_CONTENT = (
     "위험자산은 DB/DC/IRP 공통으로 적립금의 70%까지만 투자 가능하며, "
@@ -421,6 +436,15 @@ def _grounded_account_constraint(profile: dict) -> tuple[str, list[RetrievedItem
     ]
 
 
+def _is_unfounded_market_outlook_line(line: str) -> bool:
+    """거시 지표를 근거로 특정 자산유형이 유리하다고 단정하는 문장인지 판정한다.
+
+    clarification 상태(계좌유형·위험성향도 아직 모름)에서는 이런 조건부 시장 전망을
+    말할 근거가 없다 — RAG 문서에도 없는 미래 예측이라 grounding 위반이다.
+    """
+    return bool(_MACRO_INDICATOR_RE.search(line)) and bool(_FAVORABLE_OUTLOOK_RE.search(line))
+
+
 def _apply_clarification_policy(answer: str) -> str:
     """clarification 답변에서 근거 없는 시장/what-if 블록이 남으면 최종 조립 전에 제거한다."""
     lines = answer.splitlines()
@@ -438,6 +462,8 @@ def _apply_clarification_policy(answer: str) -> str:
         if skipping_section:
             continue
         if any(marker in line for marker in _CLARIFICATION_BLOCKED_MARKERS):
+            continue
+        if _is_unfounded_market_outlook_line(line):
             continue
         kept.append(line)
     return "\n".join(kept).strip()

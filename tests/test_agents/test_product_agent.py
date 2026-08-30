@@ -598,3 +598,48 @@ def test_account_type_reaches_search_and_limit_note_end_to_end():
     draft, _ = _specific_product_recommendation(profile, {"question": "주식형 펀드 추천해줘"})
 
     assert "위험자산으로 분류됩니다" in draft
+
+
+# ── _apply_clarification_policy (근거 없는 시장 전망 차단) ──────────────
+
+
+def test_clarification_policy_blocks_market_outlook_paraphrases():
+    """정확한 문구가 아니라 같은 뜻의 다른 표현으로 쓴 시장 전망도 차단해야 한다.
+
+    회귀 방지: _CLARIFICATION_BLOCKED_MARKERS는 죽은 코드였던 _what_if_scenario_block이
+    만들던 정확한 문구("시장 상황이 바뀐다면?" 등)에만 맞춰져 있어, 같은 뜻의 다른
+    표현은 전혀 못 걸렀다. 직접 재현: "요즘 증시가 좋아서 주식형이 유리합니다" 등
+    5개 paraphrase가 전부 필터를 통과했다. clarification 상태(계좌유형·위험성향도
+    아직 모름)에서 이런 조건부 시장 전망은 근거 없는 주장이다.
+    """
+    from src.agents.product_agent import _apply_clarification_policy
+
+    paraphrases = [
+        "요즘 증시가 좋아서 주식형 상품이 유리할 수 있습니다.",
+        "최근 금리 인하 기조라 채권형이 매력적입니다.",
+        "달러 강세가 이어지면 환노출 상품에 유리합니다.",
+        "경기 침체 우려가 있어 안전자산 비중을 늘리는 게 좋습니다.",
+        "주가지수가 상승세라 지금이 매수 적기일 수 있습니다.",
+        "금리가 오르면 채권형이 불리해질 수 있습니다.",
+    ]
+    for outlook in paraphrases:
+        answer = f"조건을 확인 후 답변드리겠습니다.\n\n{outlook}\n\n[추가 확인 필요]"
+        out = _apply_clarification_policy(answer)
+        assert outlook not in out, outlook
+
+
+def test_clarification_policy_does_not_over_block_normal_text():
+    """정상적인 조건 안내·제도 설명 문장은 차단되면 안 된다(과잉 차단 방지)."""
+    from src.agents.product_agent import _apply_clarification_policy
+
+    safe_lines = [
+        "계좌유형은 IRP, DC, DB 중에서 알려주세요.",
+        "위험성향은 안정형, 중립형, 공격형 중 어디에 가까우신가요?",
+        "IRP/DC에는 위험자산 투자 제한이 있으므로 실제 상품 선정 전 계좌 내 투자 가능 범위를 확인해야 합니다.",
+        "투자기간이 길고 공격적인 성향이라면 주식 등 성장자산 비중이 상대적으로 높은 상품이나 TDF를 검토할 수 있습니다.",
+        "원리금보장형 상품은 안정적인 수익을 제공합니다.",
+    ]
+    answer = "\n".join(safe_lines)
+    out = _apply_clarification_policy(answer)
+    for line in safe_lines:
+        assert line in out, line
