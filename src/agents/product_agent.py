@@ -693,6 +693,34 @@ def _recommendation_flow_response(state: PensionAgentState) -> tuple[str, list[R
     return _product_type_recommendation_answer(profile), [], profile, False
 
 
+# 펀드명에 해외 투자대상을 드러내는 표시가 있는지 판정한다. search_funds가 돌려주는
+# FundSearchResult에는 benchmark 필드가 없어(DB 스키마 자체가 그 필드를 반환하지
+# 않음), 펀드명이 사실상 유일하게 확인 가능한 신호다.
+_OVERSEAS_FUND_NAME_MARKERS = (
+    "미국", "나스닥", "S&P", "글로벌", "해외", "아시아", "유럽", "신흥국", "중국",
+    "일본", "베트남", "인도", "선진국",
+)
+
+
+def _is_overseas_fund(fund_name: str | None) -> bool:
+    return any(marker in (fund_name or "") for marker in _OVERSEAS_FUND_NAME_MARKERS)
+
+
+def _requested_overseas_but_candidates_are_domestic(profile: dict, candidates: list[dict]) -> bool:
+    """해외주식형을 요청했는데 후보가 실제로는 국내 상품인지 확인한다.
+
+    ⚠️ search_funds의 keyword 매칭은 "주식"처럼 넓은 문자열만 보고 국내/해외를
+    구분하지 못한다. 실측: DB 100개 펀드 중 해외 투자대상이 이름에 드러나는 펀드는
+    2개뿐이고(그중 1개는 채권형), keyword="주식"으로 검색하면 KOSPI 추종 국내주식형
+    펀드가 대량으로 섞여 나온다. "미국 주식 투자하는 상품 추천해줘"에 삼성퇴직연금
+    KOSPI200(국내 지수)을 "이 조건에서는 이 상품을" 이라고 제시하면, 사용자는 국내
+    자산을 해외 자산으로 오인해 원치 않는 국가·통화 노출을 갖게 된다.
+    """
+    if "해외" not in (profile.get("preferred_product_type") or ""):
+        return False
+    return candidates and not any(_is_overseas_fund(c.get("fund_name")) for c in candidates)
+
+
 def _search_args_from_profile(profile: dict) -> dict:
     risk = profile.get("risk_profile")
     product_type = profile.get("preferred_product_type") or ""
@@ -731,11 +759,20 @@ def _specific_product_recommendation(profile: dict, state: PensionAgentState) ->
     primary = _select_primary_candidate(candidates, _combined_user_text(state))
     summary = _format_profile_summary(profile)
 
-    lines = [
-        f"현재 조건은\n{summary}\n\n으로 정리됩니다.",
-        f"이 조건에서는 **{primary.get('fund_name')} ({primary.get('class_name')})**를 우선 후보로 보겠습니다.",
-        "아래는 투자설명서 DB의 구조화 수치로 비교한 후보입니다.",
-    ]
+    overseas_mismatch = _requested_overseas_but_candidates_are_domestic(profile, candidates)
+    lines = [f"현재 조건은\n{summary}\n\n으로 정리됩니다."]
+    if overseas_mismatch:
+        lines.append(
+            "다만 해외주식형 상품을 요청하셨는데, 투자설명서 DB에서 해외 투자대상이 "
+            "확인되는 후보를 찾지 못했습니다. 아래 후보는 참고용으로 국내 상품 위주의 "
+            "결과이며, 실제로는 해외주식형이 아닐 수 있습니다. 해외 상품이 꼭 필요하시면 "
+            "가입 금융기관에 별도로 문의해 주세요."
+        )
+    else:
+        lines.append(
+            f"이 조건에서는 **{primary.get('fund_name')} ({primary.get('class_name')})**를 우선 후보로 보겠습니다."
+        )
+    lines.append("아래는 투자설명서 DB의 구조화 수치로 비교한 후보입니다.")
     for i, item in enumerate(candidates, start=1):
         lines.append(
             f"{i}. {item.get('fund_name')} ({item.get('class_name')})\n"
@@ -877,15 +914,23 @@ def _fallback_product_recommendation(state: PensionAgentState) -> tuple[str, lis
     unique_results = _unique_fund_candidates(results, limit=3)
     context = _fund_candidates_to_context(unique_results)
 
+    profile = _extract_recommendation_profile(state)
     primary = _select_primary_candidate(unique_results, text)
-    lines = [
-        "확인된 조건을 기준으로 투자설명서 DB에서 후보를 비교했습니다.",
-        (
+    overseas_mismatch = _requested_overseas_but_candidates_are_domestic(profile, unique_results)
+    lines = ["확인된 조건을 기준으로 투자설명서 DB에서 후보를 비교했습니다."]
+    if overseas_mismatch:
+        lines.append(
+            "다만 해외주식형 상품을 요청하셨는데, 투자설명서 DB에서 해외 투자대상이 "
+            "확인되는 후보를 찾지 못했습니다. 아래 후보는 참고용으로 국내 상품 위주의 "
+            "결과이며, 실제로는 해외주식형이 아닐 수 있습니다. 해외 상품이 꼭 필요하시면 "
+            "가입 금융기관에 별도로 문의해 주세요."
+        )
+    else:
+        lines.append(
             f"이 조건에서는 **{primary.get('fund_name')} ({primary.get('class_name')})**를 "
             "우선 후보로 보겠습니다."
-        ),
-        "아래는 투자설명서 DB의 구조화 수치로 비교한 후보입니다.",
-    ]
+        )
+    lines.append("아래는 투자설명서 DB의 구조화 수치로 비교한 후보입니다.")
     for i, item in enumerate(unique_results, start=1):
         lines.append(
             f"{i}. {item.get('fund_name')} ({item.get('class_name')})\n"
@@ -900,7 +945,7 @@ def _fallback_product_recommendation(state: PensionAgentState) -> tuple[str, lis
         "금융기관에서 최종 확인이 필요합니다."
     )
 
-    limit_note, limit_context = _risk_asset_limit_note(unique_results, _extract_recommendation_profile(state))
+    limit_note, limit_context = _risk_asset_limit_note(unique_results, profile)
     if limit_note:
         lines.append(limit_note)
         context.extend(limit_context)

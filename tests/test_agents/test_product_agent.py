@@ -169,6 +169,48 @@ def test_overseas_equity_follow_up_uses_fund_db_and_rule_based_scenario():
     assert needs_clarification is False
 
 
+def test_overseas_equity_request_does_not_present_domestic_fund_as_match():
+    """해외주식형을 요청했는데 실제 후보가 국내 상품이면, 그 사실을 확정 어조로 숨기면 안 된다.
+
+    회귀 방지: search_funds의 keyword 매칭은 "주식"처럼 넓은 문자열만 보고 국내/해외를
+    구분하지 못한다. 실측: DB 100개 펀드 중 해외 투자대상이 이름에 드러나는 펀드는
+    2개뿐이라(1개는 채권형), "미국 주식 투자하는 상품 추천해줘"에 keyword="주식"으로
+    검색하면 삼성퇴직연금KOSPI200(국내 지수 추종) 같은 국내 상품이 섞여 나온다.
+    "이 조건에서는 이 상품을 우선 후보로 보겠습니다"처럼 확정 어조로 제시하면, 사용자는
+    국내 자산을 해외 자산으로 오인해 원치 않는 국가·통화 노출을 갖게 된다.
+    """
+    from src.agents.product_agent import _specific_product_recommendation
+
+    profile = {
+        "account_type": "IRP",
+        "risk_profile": "공격형",
+        "preferred_product_type": "해외주식형 펀드",
+        "investment_horizon": "장기",
+    }
+    draft, _ = _specific_product_recommendation(profile, {"question": "미국 주식 투자하는 상품 추천해줘"})
+
+    assert "해외 투자대상이 확인되는 후보를 찾지 못했습니다" in draft
+    # 확정 어조로 특정 상품을 "이 조건에서는 이 상품을" 이라고 못 박지 않는다.
+    assert "이 조건에서는" not in draft
+    assert "가입 금융기관에 별도로 문의" in draft
+
+
+def test_domestic_equity_request_is_unaffected_by_overseas_check():
+    """국내주식형 요청은 해외 불일치 검사의 영향을 받지 않아야 한다(과잉 차단 방지)."""
+    from src.agents.product_agent import _specific_product_recommendation
+
+    profile = {
+        "account_type": "IRP",
+        "risk_profile": "공격형",
+        "preferred_product_type": "국내주식형 펀드",
+        "investment_horizon": "장기",
+    }
+    draft, _ = _specific_product_recommendation(profile, {"question": "국내 주식 투자하는 상품 추천해줘"})
+
+    assert "우선 후보로 보겠습니다" in draft
+    assert "해외 투자대상이 확인되는 후보를 찾지 못했습니다" not in draft
+
+
 def test_sp500_recommendation_does_not_reuse_previous_safe_profile():
     state = {
         "question": "IRP에서 S&P500 ETF 같은 상품 추천해줘.",
