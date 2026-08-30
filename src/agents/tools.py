@@ -529,6 +529,8 @@ def search_funds(
     keyword: Optional[str] = None,
     risk_grade_min: Optional[int] = None,
     risk_grade_max: Optional[int] = None,
+    risk_grade_at_most_risky_as: Optional[int] = None,
+    risk_grade_at_least_risky_as: Optional[int] = None,
     max_expense_ratio: Optional[float] = None,
     min_return_1y: Optional[float] = None,
     min_aum_krw_million: Optional[float] = None,
@@ -539,9 +541,19 @@ def search_funds(
 
     keyword: 펀드명·상품분류·운용사명에 포함될 키워드(예: "배당", "채권", "솔로몬 국공채").
       띄어쓰기로 여러 토큰을 주면 전부 포함된 상품만 매치된다 (펀드명 붙여쓰기 차이는 무시).
-    risk_grade_min/max: 위험등급 숫자 범위 — 1등급이 가장 위험, 6등급이 가장 안전
+
+    ★ 사용자가 "위험등급 N등급 이하/이상"이라고 **등급 표기 그대로** 말하면 아래 두 개를
+      쓴다. 등급은 숫자가 작을수록 위험하므로(1등급=매우 높은 위험, 6등급=매우 낮은 위험)
+      "2등급 이하"는 숫자로는 2 **이상**이라 min/max에 그대로 옮기면 정반대가 된다.
+    risk_grade_at_most_risky_as: "N등급 이하"(= N등급보다 위험하지 않은 것만). 예: "2등급
+      이하인 상품" -> 2. 1등급처럼 더 위험한 상품은 제외된다.
+    risk_grade_at_least_risky_as: "N등급 이상"(= N등급보다 안전하지 않은 것만, 더 공격적).
+      예: "3등급 이상 위험한 상품" -> 3.
+
+    risk_grade_min/max: 위험등급 **숫자** 범위 — 1등급이 가장 위험, 6등급이 가장 안전
       (숫자가 클수록 안전). "안전한 상품"을 원하면 risk_grade_min을 크게(예: 4), "공격적 투자"를
-      원하면 risk_grade_max를 작게(예: 2) 설정한다.
+      원하면 risk_grade_max를 작게(예: 2) 설정한다. 위험 성향을 말로 표현한 경우에만 쓰고,
+      사용자가 등급 숫자를 직접 말했다면 위의 at_most/at_least 쪽을 쓴다.
     max_expense_ratio: 총보수·비용(%) 상한.
     min_return_1y: 최근 1년 수익률(%) 하한.
     min_aum_krw_million: 시장잔고(AUM, 백만원 단위) 하한 — "규모가 큰 펀드"를 원하면 설정
@@ -550,6 +562,24 @@ def search_funds(
     sales_channel: "온라인"/"오프라인" 등 판매방식 필터.
     반환 결과는 최근 1년 수익률 내림차순이며, 상세 정보가 필요하면 get_fund_detail을 이어서 호출한다.
     """
+    # 등급 표기("N등급 이하/이상")를 숫자 범위로 뒤집어 준다. 등급은 숫자가 작을수록
+    # 위험하므로 "2등급 이하"(= 2등급보다 위험하지 않은 것)는 숫자로는 2 이상이다.
+    # ⚠️ 이 변환을 프롬프트에 맡기면 확률적으로 실패한다 — 실측 no.211("위험등급 2등급
+    # 이하이면서 1년 수익률 10% 이상")에서 LLM이 risk_grade_max=2로 그대로 옮겨,
+    # 정반대인 1등급(매우 높은 위험) 상품을 "조건에 맞는 상품"으로 답했다.
+    if risk_grade_at_most_risky_as is not None:
+        risk_grade_min = (
+            risk_grade_at_most_risky_as
+            if risk_grade_min is None
+            else max(risk_grade_min, risk_grade_at_most_risky_as)
+        )
+    if risk_grade_at_least_risky_as is not None:
+        risk_grade_max = (
+            risk_grade_at_least_risky_as
+            if risk_grade_max is None
+            else min(risk_grade_max, risk_grade_at_least_risky_as)
+        )
+
     results = _search_funds(
         keyword=keyword,
         risk_grade_min=risk_grade_min,

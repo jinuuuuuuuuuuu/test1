@@ -206,6 +206,29 @@ def test_search_funds_tool_returns_list():
 
 
 @pytest.mark.skipif(not _HAS_PROSPECTUS_DB, reason="data/processed/prospectus.db가 아직 없습니다")
+def test_search_funds_grade_notation_is_inverted_from_numeric_range():
+    """"N등급 이하"는 숫자로는 N 이상이다 — 등급 표기 파라미터가 방향을 뒤집어야 한다.
+
+    회귀 방지: 실측 no.211("위험등급 2등급 이하이면서 1년 수익률 10% 이상")에서
+    LLM이 표기를 risk_grade_max=2로 그대로 옮겨, 정반대인 1등급(매우 높은 위험)
+    상품을 "조건에 맞는 상품"으로 답했다.
+    """
+    def grades(rows):
+        return {int(r["risk_grade"].split("등급")[0]) for r in rows}
+
+    at_most = search_funds.invoke({"risk_grade_at_most_risky_as": 2, "limit": 50})
+    assert at_most, "2등급 이하 후보가 있어야 한다"
+    assert all(g >= 2 for g in grades(at_most)), grades(at_most)
+
+    at_least = search_funds.invoke({"risk_grade_at_least_risky_as": 3, "limit": 50})
+    assert all(g <= 3 for g in grades(at_least)), grades(at_least)
+
+    # 위험 성향용 숫자 파라미터는 기존 의미(숫자 범위)를 그대로 유지한다.
+    numeric = search_funds.invoke({"risk_grade_max": 2, "limit": 50})
+    assert all(g <= 2 for g in grades(numeric)), grades(numeric)
+
+
+@pytest.mark.skipif(not _HAS_PROSPECTUS_DB, reason="data/processed/prospectus.db가 아직 없습니다")
 def test_get_fund_detail_tool_known_and_unknown_code():
     known = search_funds.invoke({"limit": 1})[0]["product_code"]
     out = get_fund_detail.invoke({"product_code": known})
