@@ -190,6 +190,66 @@ def test_personal_tax_question_uses_input_sufficiency_gate_before_general_tax_ru
     assert context
 
 
+def test_forbidden_product_type_is_answered_not_asked_back():
+    """제도에서 금지된 상품은 조건을 되묻지 말고 금지 사실을 답해야 한다.
+
+    회귀 방지: 실측 no.459("IRP로 국내 상장 개별주식 몇 개 담고 싶은데 추천해주세요")는
+    근거 0건으로 투자금지 사실을 말하지 못하고 위험성향·투자기간만 되물었다.
+    PRODUCT_RISK_TIER에는 국내상장주식이 DC/IRP 투자금지로 이미 등록돼 있었다.
+    """
+    question = "IRP로 국내 상장 개별주식 몇 개 담고 싶은데 추천해주세요."
+    assert "투자가능여부_상품유형" in candidate_categories(question)
+
+    draft, _ = deterministic_response_for("투자가능여부_상품유형", question)
+    assert "투자할 수 없습니다" in draft
+    assert "DB" in draft  # 같은 상품이라도 가능한 제도는 알려준다
+
+    # DB형에서는 같은 상품이 위험자산으로 투자 가능하다.
+    db_draft, _ = deterministic_response_for("투자가능여부_상품유형", "DB형에서 국내주식 직접 살 수 있나요?")
+    assert "투자할 수 있습니다" in db_draft
+
+    # 기존 한도 질문이 새 카테고리에 잠식되지 않는다.
+    assert "투자한도_위험자산" in candidate_categories("IRP 위험자산 한도가 70%인가요?")
+
+
+def test_medical_treatment_covers_family_members():
+    """요양 사유 대상자는 본인뿐 아니라 배우자·부양가족을 포함한다.
+
+    회귀 방지: 실측 no.390("본인 아닌 가족의 의료비도 포함되나요?")에서 LLM은
+    해당 근거 문서를 검색하지 않고 기한 툴만 호출한 뒤 "포함되지 않습니다"라고
+    정반대로 지어냈다.
+    """
+    question = "요양 사유로 중도인출할 때 본인 아닌 가족의 의료비도 포함되나요?"
+    draft, _ = deterministic_response_for("중도인출_요건판정", question)
+    assert "포함됩니다" in draft
+    assert "배우자" in draft and "부양가족" in draft
+    assert "포함되지 않습니다" not in draft
+
+
+def test_severance_goes_to_irp_with_exceptions_stated():
+    """퇴직급여 IRP 이전은 원칙과 예외를 함께 답해야 한다.
+
+    회귀 방지: no.361("이직할 때마다 DC 계좌가 새로 생기나요?")은 "네"라고 답해
+    이전 구조 자체를 뒤집었고, no.17("퇴사하면 IRP를 반드시 만들어야 하나요?")은
+    "나이와 상관없이 반드시 IRP로"라며 55세 이후 퇴직 예외를 빠뜨렸다.
+    """
+    new_account, _ = deterministic_response_for(
+        "퇴직시_IRP의무이전", "DC형 퇴직연금 계좌는 이직할 때마다 새로 생기나요?"
+    )
+    assert new_account.startswith("아니요")
+    assert "IRP 계좌로 이전" in new_account
+    assert "55세 이후에 퇴직하는 경우" in new_account
+
+    must_open, _ = deterministic_response_for(
+        "퇴직시_IRP의무이전", "퇴사하면 IRP 계좌를 반드시 만들어야 하나요?"
+    )
+    assert "원칙적으로 IRP 계좌로 이전" in must_open
+    assert "의무는 아닙니다" in must_open
+
+    # 퇴직 "세금" 질문은 이 카테고리가 아니다.
+    assert "퇴직시_IRP의무이전" not in candidate_categories("퇴직할 때 세금이 어떻게 되나요?")
+
+
 def test_withdrawal_basis_event_term_alone_routes_deterministically():
     """"요양종료일" 같은 기준일 용어는 "중도인출"이라는 단어 없이도 후보를 만들어야 한다.
 

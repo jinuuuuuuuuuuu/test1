@@ -63,11 +63,22 @@ from src.rules.default_option import (
 )
 from src.rules.early_withdrawal import (
     MEDICAL_EXPENSE_RATIO_THRESHOLD,
+    MEDICAL_TREATMENT_ELIGIBLE_PERSONS,
+    MEDICAL_TREATMENT_MIN_MONTHS,
     WITHDRAWAL_DEADLINE_RULES,
     PlanType,
 )
 from src.rules.in_kind_transfer import TRANSFER_BLOCK_CODES
-from src.rules.investment_limit import RISKY_ASSET_LIMIT, TDF_QUALIFIED_LIMIT
+from src.rules.irp_mandatory_transfer import (
+    IRP_MANDATORY_TRANSFER_EXCEPTIONS,
+    IRP_POST_RECEIPT_DEPOSIT_DAYS,
+)
+from src.rules.investment_limit import (
+    PRODUCT_RISK_TIER,
+    RISKY_ASSET_LIMIT,
+    TDF_QUALIFIED_LIMIT,
+    RiskTier,
+)
 from src.rules.retirement_tax_reduction import get_deferred_retirement_tax_rate
 from src.rules.tax_credit import (
     COMBINED_CREDIT_LIMIT,
@@ -101,6 +112,8 @@ DeterministicCategory = Literal[
     "실물이전_불가사유",
     "실물이전_개별판정",
     "투자한도_위험자산",
+    "투자가능여부_상품유형",
+    "퇴직시_IRP의무이전",
     "연금수령한도",
     "퇴직소득세감면",
     "연금소득세_종합과세",
@@ -123,6 +136,8 @@ DETERMINISTIC_CATEGORIES: tuple[str, ...] = (
     "실물이전_불가사유",
     "실물이전_개별판정",
     "투자한도_위험자산",
+    "투자가능여부_상품유형",
+    "퇴직시_IRP의무이전",
     "연금수령한도",
     "퇴직소득세감면",
     "연금소득세_종합과세",
@@ -158,6 +173,12 @@ CODE_OVERRIDABLE_CATEGORIES: frozenset[str] = frozenset({
     "중도인출_요건판정",
     "실물이전_개별판정",
     "디폴트옵션_옵트인판정",
+    # 둘 다 핸들러가 상품유형/질문유형을 못 찾으면 None을 내므로 위 기준을 충족한다.
+    # 특히 투자가능여부_상품유형은 "추천해주세요" 형태로 오는 일이 많아 라우터가
+    # 상품형으로 볼 여지가 크다 — 금지 상품인데 조건만 되묻는 실측 오답(no.459)이
+    # 재현되지 않도록 코드가 되살릴 수 있어야 한다.
+    "투자가능여부_상품유형",
+    "퇴직시_IRP의무이전",
 })
 
 
@@ -274,6 +295,20 @@ def candidate_categories(question: str) -> list[str]:
         "비중" in text and any(word in text for word in ("%", "퍼센트", "프로"))
     ):
         candidates.append("투자한도_위험자산")
+    # 같은 도메인(투자한도)이라도 "비중 한도가 몇 %인가"와 "이 상품을 담을 수 있는가"는
+    # 다른 작업이다. investment_limit.py의 PRODUCT_RISK_TIER에는 제도별 투자금지
+    # 판정(국내상장주식은 DC/IRP 금지 등)이 이미 원문 대조까지 끝나 있는데, 후보
+    # 카테고리가 한도 질문만 겨냥해 가부 질문은 전부 해당없음으로 빠졌다.
+    # 실측 no.459("IRP로 국내 상장 개별주식 몇 개 담고 싶은데 추천해주세요"):
+    # 근거 0건으로 투자금지 사실을 말하지 못하고 위험성향만 되물었다.
+    if _detect_investment_product_type(text) is not None:
+        candidates.append("투자가능여부_상품유형")
+    # 퇴직·이직 시 퇴직급여가 어디로 가는지(IRP 의무이전)는 원칙과 예외를 함께 말해야
+    # 하는데 규칙이 없어 LLM 판단에 맡겨졌다. 실측 no.361은 "이직할 때마다 DC 계좌가
+    # 새로 생긴다"고 이전 구조 자체를 뒤집었고, no.17은 "DC 퇴직금은 나이와 상관없이
+    # 반드시 IRP로"라며 55세 이후 퇴직 예외를 빠뜨렸다.
+    if _asks_irp_mandatory_transfer(text):
+        candidates.append("퇴직시_IRP의무이전")
     if "연금수령한도" in text or ("연금" in text and "한도" in text):
         candidates.append("연금수령한도")
     if any(word in text for word in ("퇴직소득세", "이연퇴직소득세")):
@@ -1238,6 +1273,16 @@ def _asks_account_level_transfer(compact_text: str) -> bool:
 _MEDICAL_EXPENSE_RATIO_LABEL = f"{MEDICAL_EXPENSE_RATIO_THRESHOLD * 100:g}%"
 
 
+def _asks_medical_eligible_persons(compact_text: str) -> bool:
+    """요양 사유의 **대상자 범위**(본인 외 가족도 되는지)를 묻는 질문인지."""
+    if "요양" not in compact_text and "질병" not in compact_text and "치료" not in compact_text:
+        return False
+    return any(
+        w in compact_text
+        for w in ("가족", "배우자", "부모", "자녀", "본인아닌", "본인외", "남편", "아내", "부양")
+    )
+
+
 def _asks_medical_expense_ratio(compact_text: str) -> bool:
     """요양 사유의 "의료비가 임금총액의 몇 % 이상이어야 하나"를 묻는 질문인지."""
     if not any(w in compact_text for w in ("의료비", "치료비", "요양")):
@@ -1263,7 +1308,7 @@ def _early_withdrawal_eligibility_response(question: str) -> tuple[str, list[Ret
     # "몇 퍼센트 이상이어야 하나요?"에는 아래 어휘가 하나도 없다.
     if not any(
         word in text for word in ("가능", "되나요", "할수", "되냐", "되는지", "가능한가", "하려", "할래", "하고싶")
-    ) and not _asks_medical_expense_ratio(text):
+    ) and not _asks_medical_expense_ratio(text) and not _asks_medical_eligible_persons(text):
         return None
 
     source = "doc46~doc50 중도인출 요건판정 규칙"
@@ -1301,6 +1346,28 @@ def _early_withdrawal_eligibility_response(question: str) -> tuple[str, list[Ret
             "개인회생절차개시 결정 또는 파산선고는 중도인출 사유가 될 수 있지만, 개인워크아웃·신용회복은 그 사유와 구분됩니다."
         )
         return draft, _context(source, content)
+
+    # 요양 사유의 대상자 범위 — 본인만이 아니라 배우자·부양가족의 요양도 사유가 된다.
+    # 실측 no.390("본인 아닌 가족의 의료비도 포함되나요?")에서 LLM은 이 내용이 담긴
+    # 문서를 검색하지 않고 check_early_withdrawal(기한 정보만 반환)만 호출한 뒤,
+    # 근거 없이 "본인 외 가족의 의료비는 포함되지 않습니다"라고 정반대로 지어냈다.
+    if _asks_medical_eligible_persons(text):
+        persons = " · ".join(MEDICAL_TREATMENT_ELIGIBLE_PERSONS)
+        persons_content = (
+            f"6개월 이상 요양 사유의 대상자는 {persons}입니다 — 근로자 본인뿐 아니라 "
+            "배우자와 부양가족의 요양도 중도인출 사유에 해당합니다. 부양가족의 요양으로 "
+            "신청할 때는 가족관계증명서 또는 주민등록등본으로 관계를 증빙해야 합니다."
+        )
+        draft = (
+            f"네, 포함됩니다. 요양 사유의 대상자는 **{persons}**입니다.\n\n"
+            f"- 본인뿐 아니라 **배우자·부양가족**이 {MEDICAL_TREATMENT_MIN_MONTHS}개월 이상 "
+            "질병 또는 부상으로 요양을 필요로 하는 경우도 중도인출 사유가 됩니다.\n"
+            "- 부양가족의 요양으로 신청할 때는 가족관계증명서 또는 주민등록등본으로 "
+            "관계를 증빙해야 합니다.\n"
+            f"- 요양 사실은 병명과 {MEDICAL_TREATMENT_MIN_MONTHS}개월 이상 치료 필요가 "
+            "명시된 진단서(소견서) 또는 장기요양확인서로 증빙합니다."
+        )
+        return draft, _context(source, persons_content)
 
     # 요양 사유의 의료비 비율(12.5%) 적용 여부 — 제도별로 답이 갈리는데, 근거 문서에서는
     # 그 구분이 "(개인형IRP는 불필요)"라는 괄호 한 줄에만 묻혀 있다. 실측 no.146에서 LLM은
@@ -1481,6 +1548,162 @@ def _extract_plan_type(text: str) -> PlanType | None:
 
 def _pct_int(rate: float) -> str:
     return f"{rate * 100:g}%"
+
+
+# 사용자가 쓰는 표현 -> PRODUCT_RISK_TIER의 상품유형 키.
+# 규칙 테이블의 키는 원문 용어("국내상장주식")라 실제 질문 표현("개별주식", "삼성전자
+# 주식", "국내 주식 직접")과 그대로는 매칭되지 않는다. 이 매핑이 그 간극만 메운다 —
+# 판정 자체는 전부 investment_limit.py가 한다.
+_INVESTMENT_PRODUCT_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("비상장주식", ("비상장주식", "비상장주", "장외주식")),
+    ("국내상장주식", ("개별주식", "개별종목", "국내주식", "상장주식", "직접투자", "종목투자", "주식직접")),
+    ("사모펀드", ("사모펀드", "사모펀")),
+    ("증권예탁증권(DR)", ("증권예탁증권", "dr", "예탁증권")),
+    ("전환사채·신주인수권부사채·교환사채·후순위채권", ("전환사채", "신주인수권부사채", "교환사채", "후순위채")),
+    ("적격 해외상장주식", ("해외주식", "해외상장주식", "미국주식")),
+)
+
+
+def _detect_investment_product_type(compact_text: str) -> str | None:
+    """질문에서 투자 가부를 판정할 상품유형을 찾는다. 없으면 None.
+
+    앞에 놓인 항목이 우선한다 — "비상장주식"이 "상장주식"을 부분문자열로 포함하므로
+    더 구체적인 쪽을 먼저 본다.
+    """
+    for product_type, aliases in _INVESTMENT_PRODUCT_ALIASES:
+        for alias in aliases:
+            if _alias_matches(alias, compact_text):
+                return product_type
+    return None
+
+
+def _investment_eligibility_response(question: str) -> tuple[str, list[RetrievedItem]] | None:
+    """특정 상품유형을 그 제도에서 담을 수 있는지 판정한다 (한도가 아니라 가부).
+
+    ⚠️ 판정은 전적으로 investment_limit.PRODUCT_RISK_TIER를 따른다. 여기서 사실을
+    새로 쓰지 않는다 — 대표적으로 국내상장주식은 DB만 직접투자 가능하고 DC/IRP는
+    투자금지인데, 이 구분이 답변에서 빠지면 "IRP로 개별주식 추천해달라"는 요청에
+    금지 사실을 말하지 못한 채 조건만 되묻게 된다(실측 no.459).
+    """
+    compact = _compact(question)
+    product_type = _detect_investment_product_type(compact)
+    if product_type is None:
+        return None
+
+    source = "doc56·doc58 퇴직연금 투자가능 상품유형"
+    tiers = PRODUCT_RISK_TIER[product_type]
+    tier_label = {
+        RiskTier.SAFE: "안전자산(투자 가능)",
+        RiskTier.RISKY: "위험자산(투자 가능, 한도 적용)",
+        RiskTier.FORBIDDEN: "투자금지",
+    }
+    content = f"{product_type}의 제도별 투자 가능 여부: " + ", ".join(
+        f"{plan.value} {tier_label[tiers[plan]]}" for plan in (PlanType.DB, PlanType.DC, PlanType.IRP)
+    ) + f". 위험자산은 적립금의 {_pct_int(RISKY_ASSET_LIMIT)} 한도가 적용됩니다."
+
+    plan = _extract_plan_type(question)
+    if plan is not None:
+        tier = tiers[plan]
+        if tier == RiskTier.FORBIDDEN:
+            allowed = [p.value for p in (PlanType.DB, PlanType.DC, PlanType.IRP) if tiers[p] != RiskTier.FORBIDDEN]
+            allowed_note = (
+                f"\n\n같은 상품이라도 {' · '.join(allowed)}에서는 투자할 수 있습니다."
+                if allowed
+                else "\n\n이 상품은 DB·DC·IRP 어느 제도에서도 투자할 수 없습니다."
+            )
+            draft = (
+                f"{plan.value}에서는 **{product_type}에 투자할 수 없습니다**(투자금지 상품).\n\n"
+                f"따라서 {plan.value} 계좌로는 해당 상품을 담거나 추천드릴 수 없습니다."
+                f"{allowed_note}"
+            )
+            return draft, _context(source, content)
+        if tier == RiskTier.SAFE:
+            draft = (
+                f"{plan.value}에서 **{product_type}은 안전자산으로 투자할 수 있습니다**.\n\n"
+                f"안전자산이므로 위험자산 한도({_pct_int(RISKY_ASSET_LIMIT)})의 적용을 받지 않습니다."
+            )
+            return draft, _context(source, content)
+        draft = (
+            f"{plan.value}에서 **{product_type}은 위험자산으로 투자할 수 있습니다**.\n\n"
+            f"다만 위험자산은 적립금의 {_pct_int(RISKY_ASSET_LIMIT)}까지만 담을 수 있어, "
+            "이 한도 안에서 비중을 조절해야 합니다."
+        )
+        return draft, _context(source, content)
+
+    lines = [f"**{product_type}**의 제도별 투자 가능 여부는 다음과 같습니다.", ""]
+    for p in (PlanType.DB, PlanType.DC, PlanType.IRP):
+        lines.append(f"- {p.value}: {tier_label[tiers[p]]}")
+    lines.append("")
+    lines.append("어느 제도인지 알려주시면 더 정확히 안내드릴 수 있습니다.")
+    return "\n".join(lines), _context(source, content)
+
+
+def _asks_irp_mandatory_transfer(compact_text: str) -> bool:
+    """퇴직·이직 시 퇴직급여가 어디로 가는지(IRP 의무이전)를 묻는 질문인지."""
+    if not any(w in compact_text for w in ("퇴직", "퇴사", "이직", "회사를옮", "직장을옮")):
+        return False
+    # 세금 질문은 이 카테고리가 아니다 — "퇴직할 때 세금이 어떻게 되나요?"의
+    # "어떻게되"에 걸려 IRP 이전 안내가 나가면 묻지 않은 답을 하게 된다.
+    if any(w in compact_text for w in ("세금", "세율", "소득세", "과세", "세액")):
+        return False
+    return any(
+        w in compact_text
+        for w in (
+            "irp", "IRP", "계좌", "이전", "옮겨", "새로생", "새로만", "만들어야", "개설",
+            "통장", "어떻게되", "수령", "받을수", "받나요",
+        )
+    )
+
+
+def _irp_mandatory_transfer_response(question: str) -> tuple[str, list[RetrievedItem]] | None:
+    """퇴직 시 IRP 의무이전 — 원칙과 예외를 함께 답한다.
+
+    ⚠️ 원칙(의무이전)과 예외(직접수령) 중 한쪽만 말하면 실측 오답이 그대로 재현된다:
+    no.17은 "DC 퇴직금은 나이와 상관없이 반드시 IRP로"라고 예외를 빠뜨렸고,
+    no.361은 "이직할 때마다 DC 계좌가 새로 생긴다"고 이전 구조 자체를 뒤집었다.
+    """
+    text = _compact(question)
+    if not _asks_irp_mandatory_transfer(text):
+        return None
+
+    source = "퇴직연금제도 기본 · 사무담당자 업무 매뉴얼 (IRP 의무이전)"
+    exceptions = "; ".join(IRP_MANDATORY_TRANSFER_EXCEPTIONS)
+    content = (
+        "근로자 퇴직 시 법정 예외사유를 제외하고 퇴직급여 전액을 IRP로 이전해야 합니다. "
+        f"의무이전 예외사유: {exceptions}. 예외사유에 해당하면 퇴직급여를 개인(예금)계좌 "
+        "등으로 직접 지급받을 수 있으며, 이 경우에도 퇴직급여 수령일부터 "
+        f"{IRP_POST_RECEIPT_DEPOSIT_DAYS}일 이내에 IRP를 개설해 전부 또는 일부를 납입할 수 "
+        "있습니다. DC 적립금도 퇴직 시 이 경로를 따라 IRP로 이전되며, 이직할 때마다 DC "
+        "계좌가 새로 생기는 구조가 아닙니다."
+    )
+
+    exception_lines = "\n".join(f"  - {item}" for item in IRP_MANDATORY_TRANSFER_EXCEPTIONS)
+
+    # "새로 생기나" 유형은 이전 구조 자체를 오해한 질문이라 그 전제부터 바로잡는다.
+    if any(w in text for w in ("새로생", "새로만", "매번", "때마다")):
+        draft = (
+            "아니요. 이직할 때마다 DC 계좌가 새로 생기는 구조가 아닙니다.\n\n"
+            "퇴직하면 그 회사의 DC 적립금은 **원칙적으로 IRP 계좌로 이전**됩니다. "
+            "새 직장에서 DC에 가입하면 그 회사의 부담금을 받을 계좌가 새로 설정되지만, "
+            "이전 직장의 적립금이 거기로 따라오는 것이 아니라 IRP로 옮겨져 이어집니다.\n\n"
+            "다만 아래 법정 예외사유에 해당하면 퇴직급여를 개인(예금)계좌로 직접 받을 수 "
+            "있습니다.\n"
+            f"{exception_lines}\n\n"
+            f"예외로 직접 받은 경우에도 수령일부터 {IRP_POST_RECEIPT_DEPOSIT_DAYS}일 이내에 "
+            "IRP에 납입하면 과세이연을 이어갈 수 있습니다."
+        )
+        return draft, _context(source, content)
+
+    draft = (
+        "퇴직 시 퇴직급여는 **원칙적으로 IRP 계좌로 이전**됩니다. 따라서 대부분의 경우 "
+        "IRP 계좌가 필요합니다.\n\n"
+        "다만 아래 법정 예외사유에 해당하면 개인(예금)계좌 등으로 직접 지급받을 수 있어, "
+        "IRP 개설이 의무는 아닙니다.\n"
+        f"{exception_lines}\n\n"
+        f"예외사유로 직접 받았더라도 수령일부터 {IRP_POST_RECEIPT_DEPOSIT_DAYS}일 이내에 "
+        "IRP를 개설해 전부 또는 일부를 납입할 수 있습니다(과세이연 유지)."
+    )
+    return draft, _context(source, content)
 
 
 def _investment_limit_response(question: str) -> tuple[str, list[RetrievedItem]]:
@@ -1915,6 +2138,8 @@ _CATEGORY_HANDLERS = {
     "디폴트옵션_자동매수": _default_option_auto_purchase_response,
     "디폴트옵션_옵트인판정": _default_option_optin_response,
     "투자한도_위험자산": _investment_limit_response,
+    "투자가능여부_상품유형": _investment_eligibility_response,
+    "퇴직시_IRP의무이전": _irp_mandatory_transfer_response,
     "실물이전_불가사유": _in_kind_transfer_block_response,
     "실물이전_개별판정": _in_kind_transfer_judgement_response,
     "연금수령한도": _withdrawal_limit_response,

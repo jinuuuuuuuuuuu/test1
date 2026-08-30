@@ -119,6 +119,16 @@ def check_plan_type_eligible(plan_type: PlanType) -> WithdrawalEligibilityResult
 # ── doc46: 6개월 이상 요양 ──────────────────────────────────────────────
 MEDICAL_EXPENSE_RATIO_THRESHOLD = 0.125  # 직전년도 연간임금총액 대비 의료비 비율 기준 (DC만 적용)
 
+# 요양 사유의 대상자 범위 — 본인만이 아니라 배우자·부양가족의 요양도 사유가 된다.
+# doc46("근로자 본인 또는 배우자 등 부양가족의 6개월이상 요양이 필요한 경우"),
+# 개인형 IRP 중도인출 사유 3번("본인, 배우자, 부양가족이 6개월 이상 질병 또는 부상으로
+# 요양"), 징구서류 안내("[본인 및 배우자 등 부양가족의 6개월 이상 요양]", 부양가족
+# 요양 시 가족관계증명서 요구)에서 교차 확인.
+MEDICAL_TREATMENT_ELIGIBLE_PERSONS: tuple[str, ...] = ("본인", "배우자", "부양가족")
+
+# 요양으로 인정되는 최소 기간 (근로자퇴직급여보장법 시행령상 중도인출 사유 기준).
+MEDICAL_TREATMENT_MIN_MONTHS = 6
+
 
 def check_medical_treatment_eligibility(
     plan_type: PlanType,
