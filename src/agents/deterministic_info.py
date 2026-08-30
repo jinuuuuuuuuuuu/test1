@@ -923,6 +923,10 @@ def _build_composite_info_tasks(question: str) -> list[str]:
             for task in tasks
             if task not in {"early_withdrawal_eligibility", "early_withdrawal_tax"}
         ]
+    if tasks == ["early_withdrawal_documents"] and _detect_withdrawal_reason(text) in _WITHDRAWAL_DOCUMENT_RULES:
+        # Guardian MVP의 ON 케이스다. 서류-only 질문도 LLM 자유 생성으로 보내면
+        # Core Answer가 흔들리므로, 근거가 있는 전세보증금/주택구입 서류는 정형 경로로 처리한다.
+        return tasks
     return tasks if len(tasks) >= 2 else []
 
 
@@ -1134,7 +1138,7 @@ def _composite_info_task_plan_response(question: str) -> tuple[str, list[Retriev
             sections.append(split_sections[2])
         context.extend(ctx)
 
-    if len(sections) < 2:
+    if len(sections) < 2 and tasks != ["early_withdrawal_documents"]:
         return None
 
     draft = "\n\n".join(sections)

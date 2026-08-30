@@ -230,3 +230,100 @@ def test_no_unsupported_numbers_line_when_list_is_empty(monkeypatch):
     )
 
     assert "근거에 없는 것으로 확정된 수치" not in prompt
+
+
+# ── Guardian 최종 조립: Core 불변 + 근거 격리 ─────────────────────────────
+
+
+def test_enforce_can_skip_reference_append_for_finalizer():
+    from src.agents.generator import _enforce_verification
+
+    answer = "연금저축과 IRP 합산 세액공제 한도는 900만원입니다."
+    out = _enforce_verification(
+        answer,
+        {"missing_requirements": [], "premise_issues": []},
+        _ctx("doc41"),
+        append_reference=False,
+    )
+
+    assert out == answer
+
+
+def test_finalize_answer_keeps_core_unchanged_when_guardian_off():
+    from src.agents.generator import _finalize_answer
+
+    core = "추천을 위해 투자성향을 알려주세요."
+    out = _finalize_answer(
+        core,
+        {"guardian_result": {"enabled": False}, "guardian_evidence": []},
+        [],
+    )
+
+    assert out == core
+
+
+def test_finalize_answer_appends_single_guardian_block_and_reference():
+    from src.agents.generator import _finalize_answer
+
+    out = _finalize_answer(
+        "필요서류는 다음과 같습니다.",
+        {
+            "guardian_result": {
+                "enabled": True,
+                "message": "🛡️ 파수꾼 체크\n재원 구분도 함께 확인해야 합니다.",
+            },
+            "guardian_evidence": [
+                {"source": "guard-doc", "content": "세금 주의", "node": "guardian"}
+            ],
+        },
+        [{"source": "core-doc", "content": "서류", "node": "info_agent"}],
+    )
+
+    assert "필요서류는 다음과 같습니다." in out
+    assert out.count("🛡️ 파수꾼 체크") == 1
+    assert "참고 근거: core-doc; guard-doc" in out
+
+
+def test_generator_prompt_excludes_guardian_evidence_but_final_references_include_it(monkeypatch):
+    import src.agents.generator as gen
+
+    captured = {}
+
+    class FakeLLM:
+        pass
+
+    def fake_invoke(_llm, messages):
+        captured["prompt"] = messages[-1]["content"]
+
+        class R:
+            content = "핵심 답변입니다."
+
+        return R()
+
+    monkeypatch.setattr(gen, "get_llm", lambda *a, **k: FakeLLM())
+    monkeypatch.setattr(gen, "invoke_with_retry", fake_invoke)
+
+    node = gen.build_generator_node()
+    result = node({
+        "question": "전세보증금 중도인출 필요서류 알려줘",
+        "is_safe": True,
+        "scope": "범위내",
+        "response_mode": "complete",
+        "info_draft": "필요서류는 다음과 같습니다.",
+        "retrieved_context": [{"source": "core-doc", "content": "서류", "node": "info_agent"}],
+        "guardian_result": {
+            "enabled": True,
+            "message": "🛡️ 파수꾼 체크\n재원 구분도 함께 확인해야 합니다.",
+        },
+        "guardian_evidence": [{"source": "guard-doc", "content": "세금 주의", "node": "guardian"}],
+        "verification": {
+            "grounded": True,
+            "requirements_met": True,
+            "missing_requirements": [],
+            "premise_issues": [],
+        },
+    })
+
+    assert "guard-doc" not in captured["prompt"]
+    assert "세금 주의" not in captured["prompt"]
+    assert "참고 근거: core-doc; guard-doc" in result["answer"]

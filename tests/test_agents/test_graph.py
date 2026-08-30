@@ -95,8 +95,31 @@ def test_route_after_info_clarification_skips_product_agent():
 
 
 def test_route_after_grounding_pass_goes_to_generator():
+    # scope/response_mode가 아직 없으면 Guardian gate를 통과하지 않고 기존처럼 ⑤로 간다.
     state = {"verification": {"grounded": True, "requirements_met": True}, "intent": ["정보형"]}
     assert _route_after_grounding(state) == "generator"
+
+
+def test_route_after_grounding_complete_pass_goes_to_guardian():
+    state = {
+        "scope": "범위내",
+        "response_mode": "complete",
+        "verification": {"grounded": True, "requirements_met": True},
+        "intent": ["정보형"],
+    }
+    assert _route_after_grounding(state) == "guardian"
+
+
+def test_route_after_grounding_repair_success_can_go_to_guardian():
+    # repair_attempted는 실패 재실행만 막는다. 재실행 후 검증에 통과했다면 Guardian 후보가 될 수 있다.
+    state = {
+        "scope": "범위내",
+        "response_mode": "complete",
+        "verification": {"grounded": True, "requirements_met": True},
+        "intent": ["정보형"],
+        "repair_attempted": True,
+    }
+    assert _route_after_grounding(state) == "guardian"
 
 
 def test_route_after_grounding_failure_repairs_info_agent():
