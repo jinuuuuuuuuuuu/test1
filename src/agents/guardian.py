@@ -10,12 +10,14 @@ from __future__ import annotations
 from typing import Literal, TypedDict
 
 from src.agents.context import merge_drafts
+from src.agents.deterministic_info import extract_tax_credit_inputs
 from src.agents.state import PensionAgentState, RetrievedItem
 from src.agents.tax_context import (
     TAX_TOPIC_WORDS,
     determine_tax_branch,
     extract_tax_context,
 )
+from src.rules.tax_credit import COMBINED_CREDIT_LIMIT, PENSION_SAVINGS_ONLY_LIMIT
 
 GUARD_HEADING = "🛡️ 파수꾼 체크"
 
@@ -281,8 +283,63 @@ def _select_in_kind_transfer_rule(question: str) -> GuardianRule | None:
     return _RULES_BY_ID.get("in_kind_transfer_procedure")
 
 
+def _select_unused_tax_credit_capacity_rule(question: str) -> GuardianRule | None:
+    """O1 — 제공된 납입정보로 확정 가능한 세액공제 미사용 한도를 탐지한다.
+
+    ⚠️ '추가 납입 추천'이 아니라 '미사용 혜택 탐지'다. "○○만원 남아 있습니다"까지만
+    말하고 "더 넣으세요"는 말하지 않는다. 세액공제율·예상 절세액은 소득 정보가 없으면
+    계산하지 않는다 — 잔여 한도(연금저축+IRP 합산 900만원 기준)는 소득과 무관하게
+    확정할 수 있어 분리한다.
+
+    필수 입력은 Rule 계산에 실제 필요한 값만 요구한다 — 납입액(연금저축 또는 IRP
+    중 하나라도)만 있으면 잔여 한도를 계산할 수 있다. 소득이 없어도 계산 자체는
+    막지 않는다(세율만 못 붙일 뿐).
+    """
+    values = extract_tax_credit_inputs(question)
+    pension_savings_paid = values["pension_savings_paid"] or 0
+    irp_paid = values["irp_paid"] or 0
+    total_paid = pension_savings_paid + irp_paid
+    if total_paid <= 0:
+        return None
+
+    remaining = COMBINED_CREDIT_LIMIT - total_paid
+    if remaining <= 0:
+        # 이미 한도를 채웠거나 넘겼다 — 미사용 혜택이 없으므로 탐지할 것이 없다.
+        return None
+
+    remaining_label = f"{remaining // 10_000:,}만원"
+    guard_fact = (
+        f"제공한 올해 납입정보 기준으로 세액공제 대상 납입한도가 {remaining_label} "
+        "남아 있습니다."
+    )
+    evidence: RetrievedItem = {
+        "source": "doc41 세액공제 규칙",
+        "content": (
+            f"연금저축+IRP 합산 세액공제 대상 납입한도는 연 {COMBINED_CREDIT_LIMIT // 10_000:,}만원"
+            f"(연금저축 단독은 {PENSION_SAVINGS_ONLY_LIMIT // 10_000:,}만원)입니다. "
+            f"현재까지 확인된 납입액은 {total_paid // 10_000:,}만원이므로, "
+            f"합산 한도 기준으로 {remaining_label}이 남아 있습니다."
+        ),
+        "node": "guardian",
+    }
+    return {
+        "candidate_id": "unused_tax_credit_capacity",
+        "guard_type": "OPPORTUNITY",
+        "trigger": "unused_tax_credit_capacity",
+        "topic": "tax_credit_capacity",
+        "priority": 80,
+        "question_markers": (),
+        "guard_fact": guard_fact,
+        "required_evidence": (evidence,),
+    }
+
+
 def _select_rule(question: str) -> GuardianRule | None:
-    """규칙별 트리거를 우선순위 순으로 확인해 하나만 고른다 (LLM에 맡기지 않는다)."""
+    """규칙별 트리거를 우선순위 순으로 확인해 하나만 고른다 (LLM에 맡기지 않는다).
+
+    순서는 명세의 priority 정책을 그대로 따른다: 확정적인 세금상 손실(A2, 100) >
+    행동/이전 제약(A1, 95) > 중도인출 재원별 과세(90) > 확정적인 미사용 혜택(O1, 80).
+    """
     retirement = _select_retirement_non_pension_rule(question)
     if retirement is not None:
         return retirement
@@ -292,16 +349,16 @@ def _select_rule(question: str) -> GuardianRule | None:
         return transfer
 
     text = _compact(question)
-    if "중도인출" not in text or not _is_documents_only_withdrawal_question(question):
-        return None
-    for rule in GUARDIAN_RULES:
-        if rule["guard_type"] != "ACTION" or not rule["question_markers"]:
-            continue
-        if rule["candidate_id"] == "in_kind_transfer_procedure":
-            continue
-        if _contains_any(text, rule["question_markers"]):
-            return rule
-    return None
+    if "중도인출" in text and _is_documents_only_withdrawal_question(question):
+        for rule in GUARDIAN_RULES:
+            if rule["guard_type"] != "ACTION" or not rule["question_markers"]:
+                continue
+            if rule["candidate_id"] == "in_kind_transfer_procedure":
+                continue
+            if _contains_any(text, rule["question_markers"]):
+                return rule
+
+    return _select_unused_tax_credit_capacity_rule(question)
 
 
 def _has_guard_domain_marker(question: str) -> bool:
@@ -332,6 +389,9 @@ def _core_covers_topic(core: str, topic: str) -> bool:
         return _contains_any(
             text, ("실물이전이제한", "실물이전불가", "실물이전대상", "이전가능한상품", "이전이제외")
         )
+    if topic == "tax_credit_capacity":
+        # Core가 이미 세액공제 한도(남은 금액·합산 900만원 기준)를 언급했으면 중복이다.
+        return _contains_any(text, ("남아있습니다", "한도가남", "합산900만원", "합산9백만원"))
     return False
 
 
@@ -351,8 +411,10 @@ def evaluate_guardian(state: PensionAgentState) -> tuple[dict, list[RetrievedIte
 
     # 사용자가 그 주제를 직접 물었으면 Core Answer가 답할 몫이다. 특히 A2는 Core의
     # retirement_benefit_non_pension 브랜치가 이미 "감면이 적용되지 않고 전액 납부
-    # 대상"이라고 거의 같은 문장으로 답하므로, 여기서 막지 않으면 중복이 된다.
-    if rule["topic"] == "retirement_tax_reduction" and _asks_tax_topic(question):
+    # 대상"이라고 거의 같은 문장으로 답하므로, 여기서 막지 않으면 중복이 된다. O1도
+    # "세액공제 한도 얼마 남았어?"처럼 직접 물으면 Core(세액공제_한도/계산 카테고리)가
+    # 이미 답하므로 같은 원칙을 적용한다.
+    if rule["topic"] in ("retirement_tax_reduction", "tax_credit_capacity") and _asks_tax_topic(question):
         return _disabled("EXPLICIT_USER_TOPIC"), []
 
     evidence = list(rule["required_evidence"])

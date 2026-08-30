@@ -28,6 +28,8 @@ from src.rules.retirement_tax_reduction import get_deferred_retirement_tax_rate
 TAX_TOPIC_WORDS: tuple[str, ...] = (
     "세금",
     "세율",
+    "세액공제",
+    "공제한도",
     "연금소득세",
     "종합과세",
     "분리과세",

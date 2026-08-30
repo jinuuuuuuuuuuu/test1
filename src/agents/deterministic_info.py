@@ -525,7 +525,7 @@ def _amount_from_match(amount_text: str) -> int:
     return _parse_korean_amount(m.group(1), m.group(2))
 
 
-def _extract_tax_credit_inputs(question: str) -> dict[str, int | None]:
+def extract_tax_credit_inputs(question: str) -> dict[str, int | None]:
     return {
         "pension_savings_paid": _extract_labeled_amount(question, ("연금저축", "연저")),
         "irp_paid": _extract_labeled_amount(question, ("IRP", "irp", "개인형IRP", "개인형퇴직연금")),
@@ -542,7 +542,7 @@ def _has_sufficient_tax_credit_inputs(values: dict[str, int | None]) -> bool:
 
 def _tax_credit_calculation_missing_response(question: str) -> tuple[str, list[RetrievedItem]]:
     source = "doc41 세액공제 계산 입력값 규칙"
-    values = _extract_tax_credit_inputs(question)
+    values = extract_tax_credit_inputs(question)
     if _has_sufficient_tax_credit_inputs(values):
         pension_savings_paid = values["pension_savings_paid"] or 0
         irp_paid = values["irp_paid"] or 0
@@ -740,7 +740,7 @@ def _tax_credit_limit_response(question: str) -> tuple[str, list[RetrievedItem]]
         f"최대 세액공제액은 {_won(COMBINED_CREDIT_LIMIT)} x {_pct(CREDIT_RATE_LOW)} = 148만 5천원, "
         f"{_won(COMBINED_CREDIT_LIMIT)} x {_pct(CREDIT_RATE_HIGH)} = 118만 8천원입니다."
     )
-    values = _extract_tax_credit_inputs(question)
+    values = extract_tax_credit_inputs(question)
 
     # 계산에 필요한 입력(납입액+소득)이 이미 질문에 있으면 일반론이 아니라 계산으로 답한다.
     # 왜 여기서 다시 판단하나: candidate_categories는 "세액공제"라는 단어만 보고

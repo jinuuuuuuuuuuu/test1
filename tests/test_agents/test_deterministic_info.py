@@ -1150,16 +1150,16 @@ def test_monthly_contribution_is_converted_to_annual():
     나간다. 실측 재현: "연금저축에 매달 50만원씩 넣는데 세액공제 얼마?"에 연 50만원
     으로 계산해 82,500원을 답했다(연 600만원 기준 99만원이 정답).
     """
-    from src.agents.deterministic_info import _extract_tax_credit_inputs
+    from src.agents.deterministic_info import extract_tax_credit_inputs
 
-    monthly = _extract_tax_credit_inputs("연금저축에 매달 50만원씩 넣는데 세액공제 얼마 받나요?")
+    monthly = extract_tax_credit_inputs("연금저축에 매달 50만원씩 넣는데 세액공제 얼마 받나요?")
     assert monthly["pension_savings_paid"] == 6_000_000
 
     for question, expected in (
         ("연금저축 매월 30만원 납입 중입니다", 3_600_000),
         ("IRP에 한 달에 20만원씩 넣어요", 2_400_000),
     ):
-        values = _extract_tax_credit_inputs(question)
+        values = extract_tax_credit_inputs(question)
         actual = values["pension_savings_paid"] or values["irp_paid"]
         assert actual == expected, question
 
@@ -1173,9 +1173,9 @@ def test_monthly_contribution_is_converted_to_annual():
 
 def test_annual_contribution_is_not_multiplied():
     """연 단위로 말한 금액은 그대로 써야 한다(과잉 환산 방지)."""
-    from src.agents.deterministic_info import _extract_tax_credit_inputs
+    from src.agents.deterministic_info import extract_tax_credit_inputs
 
-    values = _extract_tax_credit_inputs("연금저축 600만원, IRP 300만원 넣었고 총급여 5000만원")
+    values = extract_tax_credit_inputs("연금저축 600만원, IRP 300만원 넣었고 총급여 5000만원")
 
     assert values["pension_savings_paid"] == 6_000_000
     assert values["irp_paid"] == 3_000_000

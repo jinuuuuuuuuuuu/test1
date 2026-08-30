@@ -236,3 +236,69 @@ def test_guardian_stays_off_when_core_already_lists_transfer_eligible_products()
     assert result["enabled"] is False
     assert result["disabled_reason"] == "CORE_ALREADY_COVERS_TOPIC"
     assert evidence == []
+
+
+# ── O1: 세액공제 미사용 한도 Opportunity Guard ──────────────────────────
+
+
+def test_guardian_turns_on_for_unused_tax_credit_capacity():
+    """납입정보로 확정 가능한 세액공제 미사용 한도를 짚어준다.
+
+    핵심은 '추가 납입 추천'이 아니라 '미사용 혜택 탐지'다 — "○○만원 남아 있습니다"
+    까지만 말하고 "더 넣으세요"는 말하지 않는다.
+    """
+    for question in (
+        "올해 IRP에 600만원 넣었는데 납입내역은 어디서 봐?",
+        "올해 연금저축이랑 IRP에 400만원 납입한 금액 확인하고 싶어",
+    ):
+        result, evidence = evaluate_guardian(_verified_state(question))
+
+        assert result["enabled"] is True, question
+        assert result["candidate_id"] == "unused_tax_credit_capacity", question
+        assert "남아 있습니다" in result["message"], question
+        # 추천 문구를 절대 쓰지 않는다.
+        assert "더 넣으세요" not in result["message"], question
+        assert "추가로 납입" not in result["message"], question
+        assert evidence, question
+        assert evidence[0]["node"] == "guardian", question
+
+
+def test_guardian_computes_correct_remaining_amount():
+    """잔여 한도는 합산 900만원 - 확인된 납입액으로 정확히 계산해야 한다."""
+    result, _ = evaluate_guardian(
+        _verified_state("올해 IRP에 600만원 넣었는데 납입내역은 어디서 봐?")
+    )
+    assert "300만원" in result["message"]
+
+
+def test_guardian_stays_off_when_limit_already_used_up():
+    """한도를 이미 채웠거나 초과했으면 미사용 혜택이 없으므로 침묵한다."""
+    result, evidence = evaluate_guardian(
+        _verified_state("연금저축 900만원 넣었는데 확인 좀 해줘")
+    )
+
+    assert result["enabled"] is False
+    assert result["disabled_reason"] == "NO_CANDIDATE"
+    assert evidence == []
+
+
+def test_guardian_stays_off_when_user_already_asked_tax_credit():
+    """세액공제 한도를 직접 물었으면 Core가 답할 몫이라 파수꾼은 침묵한다."""
+    for question in (
+        "연금저축 600만원 넣었는데 세액공제 한도 얼마 남았어?",
+        "IRP 500만원 넣었는데 세액공제 받으려면 얼마 더 넣어야 해?",
+    ):
+        result, evidence = evaluate_guardian(_verified_state(question))
+
+        assert result["enabled"] is False, question
+        assert result["disabled_reason"] == "EXPLICIT_USER_TOPIC", question
+        assert evidence == [], question
+
+
+def test_guardian_stays_off_without_contribution_amount():
+    """납입액이 확인되지 않으면 잔여 한도를 계산할 근거가 없으므로 침묵한다."""
+    for question in ("IRP가 뭐야?", "연금저축 세액공제 한도가 궁금해요"):
+        result, evidence = evaluate_guardian(_verified_state(question))
+
+        assert result["enabled"] is False, question
+        assert evidence == [], question
