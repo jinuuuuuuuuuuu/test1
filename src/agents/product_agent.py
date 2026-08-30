@@ -29,6 +29,8 @@ from src.agents.context import (
 from src.agents.llm import get_llm, invoke_with_retry
 from src.agents.state import PensionAgentState, RetrievedItem
 from src.agents.tools import PRODUCT_AGENT_TOOLS, search_funds
+from src.rules.early_withdrawal import PlanType
+from src.rules.investment_limit import RISKY_ASSET_LIMIT, RiskTier, classify_fund_category_risk_tier
 
 PRODUCT_AGENT_MODEL = "HCX-005"
 
@@ -749,7 +751,59 @@ def _specific_product_recommendation(profile: dict, state: PensionAgentState) ->
     if scenario_section:
         lines.append(scenario_section)
         context.extend(scenario_context)
+
+    limit_note, limit_context = _risk_asset_limit_note(candidates, profile)
+    if limit_note:
+        lines.append(limit_note)
+        context.extend(limit_context)
+
     return "\n\n".join(lines), context
+
+
+def _risk_asset_limit_note(candidates: list[dict], profile: dict) -> tuple[str, list[RetrievedItem]]:
+    """추천 후보 전부를 매수하면 위험자산 70%(TDF 조건충족 시 DC/IRP 100%) 한도를 넘는지 확인한다.
+
+    ⚠️ check_product_pension_eligibility 툴은 존재하지만 이 결정론 추천 경로에서는 호출되지
+    않는다 — 프롬프트로만 "먼저 확인하라"고 지시했는데, 실측(501문항)에서 상품형 62건 중
+    이 툴이 실제로 호출된 건 2건(3%)뿐이었다. search_funds가 반환하는 100개 펀드는 전부
+    공모펀드라 PRODUCT_RISK_TIER의 FORBIDDEN 상품(사모펀드·개별주식 직접투자)은 애초에
+    이 DB에 없으므로 투자금지 상품 추천 사고는 나지 않지만, 후보 3개가 전부 위험자산이면
+    그 자체로 위험자산 100% 추천이 되는 경로는 이 결정론 경로 어디에도 막는 코드가 없었다.
+
+    후보를 임의로 바꾸지는 않는다 — 사용자가 명시한 위험성향(예: 공격형)을 무시하고
+    안전자산으로 바꿔치기하면 다른 방향의 오답이 된다. 대신 한도 초과 사실과 안전자산
+    비중 확대 필요성을 답변에 명시해, 사용자가 판단할 수 있게 한다.
+    """
+    account_type = profile.get("account_type")
+    if account_type not in ("DB", "DC", "IRP"):
+        return "", []
+
+    plan = PlanType(account_type)
+    tiers = [classify_fund_category_risk_tier(c.get("fund_category"), c.get("fund_name")) for c in candidates]
+    if not tiers or any(t == RiskTier.SAFE for t in tiers):
+        return "", []
+
+    # TDF 조건충족(감독원장 기준)을 실측으로 확인할 방법이 이 경로엔 없으므로, "TDF"를
+    # 선호 상품유형으로 명시한 경우에만 완화된 한도(DC/IRP 100%)를 적용한다.
+    is_tdf_preference = "TDF" in (profile.get("preferred_product_type") or "")
+    limit_ratio = (
+        1.00 if is_tdf_preference and plan in (PlanType.DC, PlanType.IRP) else RISKY_ASSET_LIMIT
+    )
+    if limit_ratio >= 1.00:
+        return "", []
+
+    content = (
+        f"{plan.value} 제도의 위험자산 투자한도는 적립금의 {limit_ratio:.0%}까지입니다. "
+        "추천 후보 전부가 위험자산으로 분류되어, 이 후보들만으로 포트폴리오를 구성하면 "
+        "한도를 초과할 수 있습니다."
+    )
+    note = (
+        f"⚠️ 위 후보는 모두 위험자산으로 분류됩니다. {plan.value} 제도는 위험자산 투자한도가 "
+        f"적립금의 **{limit_ratio:.0%}**까지이므로, 이 후보들만으로 포트폴리오를 채우면 한도를 "
+        "초과할 수 있습니다. 안전자산(예금·국공채 펀드 등)을 일부 포함해 비중을 조절하는 것을 "
+        "권장합니다."
+    )
+    return note, [{"source": "doc58 퇴직연금 적립금 운용 및 투자한도 안내", "content": content, "node": "product_agent"}]
 
 
 def _unique_fund_candidates(results: list[dict], limit: int = 3) -> list[dict]:

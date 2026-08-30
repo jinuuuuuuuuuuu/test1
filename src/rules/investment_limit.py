@@ -190,3 +190,37 @@ def check_product_eligibility(
 
     reasons.append(f"'{product_type}'은(는) {plan_type.value} 제도에서 투자 가능합니다 ({tier.value}).")
     return ProductEligibilityResult(eligible=True, risk_tier=tier, reasons=reasons)
+
+
+# ── search_funds(투자설명서 DB) 검색 결과의 자유서술형 fund_category를 위험자산
+# 비중 판정에 쓸 RiskTier로 분류한다. PRODUCT_RISK_TIER는 "국내상장주식" 같은
+# 정형 상품유형 키를 쓰는데, DB의 fund_category는 "투자신탁, 증권(채권형), 개방형..."
+# 같은 자유텍스트라 그 키와 직접 매칭되지 않는다 — 여기서만 쓰는 별도 분류다.
+#
+# 국공채 벤치마크를 쓰는 채권형 펀드는 안전자산이지만, fund_category 텍스트만으로는
+# 크레딧(회사채) 펀드와 구분되지 않는다(예: "미래에셋퇴직플랜단기증권자투자신탁1호(채권)"는
+# 회사채 포함 크레딧물, "한국투자 퇴직연금 증권 자투자신탁 1호(국공채)"는 국공채 전용 —
+# 둘 다 fund_category는 "증권(채권형)"으로 동일하다). 판정이 불확실하면 안전 쪽으로
+# 실패한다(RISKY로 간주) — 안전자산을 위험자산으로 오분류해 한도를 더 엄격히 적용하는
+# 부작용은 있어도, 위험자산을 안전자산으로 오분류해 70% 한도 초과 추천을 놓치는 사고는
+# 만들지 않는다.
+_SAFE_FUND_MARKERS = ("국공채", "MMF", "머니마켓")
+_RISKY_FUND_MARKERS = ("주식형", "주식파생형", "주식-파생형", "주식혼합", "혼합채권형", "파생형", "리츠", "인프라")
+
+
+def classify_fund_category_risk_tier(fund_category: str | None, fund_name: str | None = None) -> RiskTier:
+    """search_funds 결과 한 건의 fund_category(+fund_name)를 SAFE/RISKY로 분류한다.
+
+    투자금지(FORBIDDEN) 판정은 여기서 하지 않는다 — search_funds가 검색하는 투자설명서
+    DB는 전부 공모펀드이고, PRODUCT_RISK_TIER에서 DC/IRP FORBIDDEN인 상품(사모펀드·
+    국내상장주식 직접투자 등)은 애초에 이 DB에 없다.
+    """
+    haystack = f"{fund_name or ''} {fund_category or ''}"
+    if any(marker in haystack for marker in _SAFE_FUND_MARKERS):
+        return RiskTier.SAFE
+    if any(marker in haystack for marker in _RISKY_FUND_MARKERS):
+        return RiskTier.RISKY
+    # 채권형인데 국공채 표시가 없으면 크레딧물일 가능성을 배제할 수 없어 위험자산으로 본다.
+    if "채권형" in haystack:
+        return RiskTier.RISKY
+    return RiskTier.RISKY

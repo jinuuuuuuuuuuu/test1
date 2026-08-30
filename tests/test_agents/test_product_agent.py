@@ -1,8 +1,17 @@
+import os
+
+import pytest
+
 from src.agents.product_agent import (
     _fallback_product_recommendation,
     _recommendation_flow_response,
+    _risk_asset_limit_note,
+    _specific_product_recommendation,
     build_product_agent_node,
 )
+from src.storage.queries import DEFAULT_DB_PATH
+
+_HAS_PROSPECTUS_DB = os.path.exists(DEFAULT_DB_PATH)
 
 
 def test_recommendation_flow_starts_with_one_question():
@@ -464,3 +473,79 @@ def test_product_agent_never_raises_when_llm_and_fallback_both_fail(monkeypatch)
     assert result["product_fallback_used"] is True
     assert result["clarification_questions"]
     assert "계좌" in result["product_draft"]
+
+
+# ── _risk_asset_limit_note (위험자산 70%/TDF 100% 한도 검증) ────────────
+
+
+def test_risk_asset_limit_note_warns_when_all_candidates_are_risky():
+    """추천 후보 전부가 위험자산이면 계좌유형별 한도 초과 가능성을 답변에 명시해야 한다.
+
+    회귀 방지: check_product_pension_eligibility 툴은 존재했지만 결정론 추천 경로에서는
+    호출되지 않았다(실측: 상품형 62건 중 실제 호출 2건, 3%). _search_args_from_profile도
+    account_type을 전혀 쓰지 않아 DB/DC/IRP가 완전히 동일한 검색 인자를 냈다 — 위험자산
+    70%(또는 TDF 100%) 한도를 검증하는 코드가 결정론 경로 어디에도 없었다.
+    """
+    candidates = [
+        {"fund_name": "삼성퇴직연금KOSPI200증권자투자신탁 제1호[주식]", "fund_category": "증권(주식형)"},
+        {"fund_name": "KB 그로스 포커스 증권 자투자신탁(주식)", "fund_category": "증권(주식형)"},
+    ]
+    note, context = _risk_asset_limit_note(candidates, {"account_type": "IRP"})
+
+    assert "위험자산으로 분류됩니다" in note
+    assert "70%" in note
+    assert context
+
+
+def test_risk_asset_limit_note_silent_when_safe_asset_included():
+    candidates = [
+        {"fund_name": "한국투자 퇴직연금 증권 자투자신탁 1호(국공채)", "fund_category": "증권(채권형)"},
+        {"fund_name": "삼성퇴직연금KOSPI200증권자투자신탁 제1호[주식]", "fund_category": "증권(주식형)"},
+    ]
+    note, context = _risk_asset_limit_note(candidates, {"account_type": "IRP"})
+
+    assert note == ""
+    assert context == []
+
+
+def test_risk_asset_limit_note_silent_without_account_type():
+    """계좌유형을 모르면 한도 자체를 특정할 수 없으므로 과잉 경고하지 않는다."""
+    candidates = [{"fund_name": "주식형 펀드", "fund_category": "증권(주식형)"}]
+    note, _ = _risk_asset_limit_note(candidates, {})
+
+    assert note == ""
+
+
+def test_risk_asset_limit_note_relaxed_for_tdf_preference():
+    """TDF를 선호 상품유형으로 명시하면 DC/IRP는 100% 한도가 적용되어 경고하지 않는다."""
+    candidates = [{"fund_name": "TDF2050 증권투자신탁", "fund_category": "증권(주식혼합-재간접형)"}]
+    note, _ = _risk_asset_limit_note(
+        candidates, {"account_type": "IRP", "preferred_product_type": "TDF"}
+    )
+
+    assert note == ""
+
+
+def test_risk_asset_limit_note_still_applies_to_db_even_with_tdf_preference():
+    """TDF 100% 특례는 DC/IRP 전용이다 — DB는 TDF를 선호해도 여전히 70% 한도가 적용된다."""
+    candidates = [{"fund_name": "TDF2050 증권투자신탁", "fund_category": "증권(주식혼합-재간접형)"}]
+    note, _ = _risk_asset_limit_note(
+        candidates, {"account_type": "DB", "preferred_product_type": "TDF"}
+    )
+
+    assert "위험자산으로 분류됩니다" in note
+    assert "70%" in note
+
+
+@pytest.mark.skipif(not _HAS_PROSPECTUS_DB, reason="data/processed/prospectus.db가 아직 없습니다")
+def test_account_type_reaches_search_and_limit_note_end_to_end():
+    """account_type이 프로필에 있으면 실제 추천 답변에 한도 경고가 붙는지 종단 확인한다."""
+    profile = {
+        "account_type": "IRP",
+        "risk_profile": "공격형",
+        "preferred_product_type": "주식형",
+        "investment_horizon": "장기",
+    }
+    draft, _ = _specific_product_recommendation(profile, {"question": "주식형 펀드 추천해줘"})
+
+    assert "위험자산으로 분류됩니다" in draft
