@@ -204,7 +204,9 @@ def test_withdrawal_basis_event_term_alone_routes_deterministically():
     assert "요양종료일" in draft
     assert "1개월" in draft
     # 묻지도 않은 제도를 가정해 가부를 단정하지 않는다.
-    assert "DB" not in draft
+    # ("제공 DB" 같은 문서DB 언급은 무관하므로 제도 판정 문구로 확인한다.)
+    assert "중도인출이 허용되지 않습니다" not in draft
+    assert "DB형" not in draft
 
 
 def test_account_level_transfer_is_not_in_kind_transfer():
