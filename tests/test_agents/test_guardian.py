@@ -181,3 +181,58 @@ def test_guardian_stays_off_when_core_already_explains_reduction():
     assert result["enabled"] is False
     assert result["disabled_reason"] == "CORE_ALREADY_COVERS_TOPIC"
     assert evidence == []
+
+
+# ── A1: 실물이전 절차 Action Guard ───────────────────────────────────────
+
+
+def test_guardian_turns_on_for_in_kind_transfer_procedure_question():
+    """실물이전 절차·방법만 묻고 상품을 특정하지 않으면 이전 제한 가능성을 짚어준다.
+
+    회귀 방지의 진짜 원인은 라우팅이 아니라 response_mode 누락이었다 — 실측에서
+    "IRP 실물이전 절차 알려줘"는 라우터가 정확히 "해당없음"으로 분류하고 grounded=True/
+    requirements_met=True까지 통과했는데도 response_mode가 None으로 남아
+    _guardian_route_possible이 항상 실패했다(guardian 노드 자체를 못 탐). info_agent/
+    product_agent의 LLM 자유 응답 경로가 이 키를 채운 적이 없었기 때문이다.
+    """
+    result, evidence = evaluate_guardian(
+        _verified_state("IRP 실물이전 절차 알려줘", draft="실물이전 신청은 영업점 또는 앱에서 가능합니다.")
+    )
+
+    assert result["enabled"] is True
+    assert result["candidate_id"] == "in_kind_transfer_procedure"
+    assert "실물이전 가능 대상인지" in result["message"]
+    assert evidence
+    assert evidence[0]["node"] == "guardian"
+
+
+def test_guardian_stays_off_for_product_specified_or_list_questions():
+    """상품을 특정했거나 불가사유 목록 자체를 물으면 Core(개별판정/목록)가 답할 몫이다."""
+    for question in (
+        "이 펀드 실물이전 가능해?",
+        "실물이전 안 되는 상품 알려줘",
+        "매도 없이 옮길 수 있어?",
+        "실물이전 절차랑 안 되는 상품도 알려줘",
+    ):
+        result, evidence = evaluate_guardian(_verified_state(question))
+
+        assert result["enabled"] is False, question
+        assert evidence == [], question
+
+
+def test_guardian_stays_off_when_core_already_lists_transfer_eligible_products():
+    """Core가 이미 실물이전 대상/제외 상품을 설명했으면 중복이므로 침묵한다.
+
+    실측: LLM이 실물이전 절차를 답할 때 근거 문서의 "가능·제외 상품" 섹션을 함께
+    검색해 대상/제외 목록까지 자연스럽게 포함시키는 경우가 있었다. 이럴 때 파수꾼이
+    또 "이전 가능 대상인지 확인해야 한다"고 덧붙이면 중복이다.
+    """
+    draft = (
+        "실물이전 신청은 영업점 또는 앱에서 가능합니다. 예금, GIC 등은 실물이전 대상이지만 "
+        "디폴트옵션 상품, 사모펀드, MMF 등은 이전이 제외됩니다."
+    )
+    result, evidence = evaluate_guardian(_verified_state("IRP 실물이전 절차 알려줘", draft=draft))
+
+    assert result["enabled"] is False
+    assert result["disabled_reason"] == "CORE_ALREADY_COVERS_TOPIC"
+    assert evidence == []

@@ -55,6 +55,17 @@ _WITHDRAWAL_HOUSING_TAX_EVIDENCE: RetrievedItem = {
 }
 
 
+_IN_KIND_TRANSFER_RESTRICTION_EVIDENCE: RetrievedItem = {
+    "source": "doc34 실물이전 불가사유 코드",
+    "content": (
+        "모든 보유 상품을 실물이전할 수 있는 것은 아닙니다. 사모펀드·MMF·소규모 펀드"
+        "(잔고 50억 미만)·환매수수료 부과 상품·지분증권·리츠 등은 실물이전이 제한되거나 "
+        "상대 금융기관 확인이 필요합니다."
+    ),
+    "node": "guardian",
+}
+
+
 _RETIREMENT_NON_PENSION_EVIDENCE: RetrievedItem = {
     "source": "doc39~doc40 이연퇴직소득세 감면 규칙",
     "content": (
@@ -112,6 +123,25 @@ GUARDIAN_RULES: tuple[GuardianRule, ...] = (
             "(연금실제수령연차에 따라 30~50%)을 적용받지 못합니다."
         ),
         "required_evidence": (_RETIREMENT_NON_PENSION_EVIDENCE,),
+    },
+    {
+        # A1 — 실물이전 절차·방법을 묻는 질문(상품이 특정되지 않음)에는 라우터가 이미
+        # "해당없음"으로 정확히 분류해 LLM이 절차를 답한다(실측 확인: candidate_categories
+        # 단계에서는 실물이전_불가사유가 후보에 오르지만, 라우터 프롬프트에 "절차 자체를
+        # 묻는 질문은 해당없음"이라는 지시가 있고 실제로 그렇게 분류된다). 다만 그 답변은
+        # "이 상품이 이전 가능한지"는 확인 안 된 채 절차만 말하므로, 옮기려는 상품이
+        # 실물이전 제한 대상일 수 있다는 점을 짚어준다.
+        "candidate_id": "in_kind_transfer_procedure",
+        "guard_type": "ACTION",
+        "trigger": "in_kind_transfer_procedure_without_product",
+        "topic": "in_kind_transfer_eligibility",
+        "priority": 95,
+        "question_markers": ("실물이전", "이전신청", "이관신청"),
+        "guard_fact": (
+            "모든 상품을 그대로 실물이전할 수 있는 것은 아닙니다. 이전하려는 상품이 실물이전 "
+            "가능 대상인지도 함께 확인해야 합니다."
+        ),
+        "required_evidence": (_IN_KIND_TRANSFER_RESTRICTION_EVIDENCE,),
     },
 )
 
@@ -214,17 +244,60 @@ def _select_retirement_non_pension_rule(question: str) -> GuardianRule | None:
     return _RULES_BY_ID.get("retirement_non_pension_tax_loss")
 
 
+# 실물이전 "절차·방법"을 묻는 표현 — 이 신호가 있어야 A1 후보가 된다.
+_IN_KIND_TRANSFER_PROCEDURE_MARKERS = ("절차", "방법", "신청", "어떻게", "옮기려면", "이관하려면")
+
+# 상품을 특정해 가능/불가를 물었거나(개별판정), 불가사유 목록 자체를 물은 경우 —
+# 이런 질문은 Core(실물이전_개별판정/실물이전_불가사유)가 이미 답할 몫이라 A1은 침묵한다.
+_IN_KIND_TRANSFER_EXCLUDED_MARKERS = (
+    "가능해", "가능한가", "되나요", "되는지", "안되는", "안 되는", "불가능한",
+    "안되나요", "제한되는", "제한사유", "불가사유", "매도없이", "매도 없이",
+)
+
+
+def _asks_in_kind_transfer_procedure_only(question: str) -> bool:
+    """A1 — 실물이전 절차/방법을 묻고, 특정 상품의 가부나 불가사유 목록은 묻지 않았는지.
+
+    이 판정을 통과해도 라우터가 실제로 "해당없음"으로 분류해야 Core Answer가 절차를
+    말하고, 그래야 Guardian이 얹을 자리가 생긴다(candidate_categories 단계에서는
+    실물이전_불가사유가 항상 후보에 오르지만, 라우터가 "절차 자체를 묻는 질문은
+    해당없음"이라는 프롬프트 지시를 실제로 따르는 것을 실측으로 확인했다). 라우터가
+    다르게 분류하면 Core가 이미 목록/판정을 답하므로 CORE_ALREADY_COVERS_TOPIC이나
+    다른 게이트에서 자연히 걸러진다.
+    """
+    text = _compact(question)
+    if "실물이전" not in text and "이전신청" not in text and "이관신청" not in text:
+        return False
+    if not _contains_any(text, _IN_KIND_TRANSFER_PROCEDURE_MARKERS):
+        return False
+    if _contains_any(text, _IN_KIND_TRANSFER_EXCLUDED_MARKERS):
+        return False
+    return True
+
+
+def _select_in_kind_transfer_rule(question: str) -> GuardianRule | None:
+    if not _asks_in_kind_transfer_procedure_only(question):
+        return None
+    return _RULES_BY_ID.get("in_kind_transfer_procedure")
+
+
 def _select_rule(question: str) -> GuardianRule | None:
     """규칙별 트리거를 우선순위 순으로 확인해 하나만 고른다 (LLM에 맡기지 않는다)."""
     retirement = _select_retirement_non_pension_rule(question)
     if retirement is not None:
         return retirement
 
+    transfer = _select_in_kind_transfer_rule(question)
+    if transfer is not None:
+        return transfer
+
     text = _compact(question)
     if "중도인출" not in text or not _is_documents_only_withdrawal_question(question):
         return None
     for rule in GUARDIAN_RULES:
         if rule["guard_type"] != "ACTION" or not rule["question_markers"]:
+            continue
+        if rule["candidate_id"] == "in_kind_transfer_procedure":
             continue
         if _contains_any(text, rule["question_markers"]):
             return rule
@@ -253,6 +326,11 @@ def _core_covers_topic(core: str, topic: str) -> bool:
         return _contains_any(
             text,
             ("이연퇴직소득세", "감면이적용되지", "감면이없", "전액납부", "연금실제수령연차"),
+        )
+    if topic == "in_kind_transfer_eligibility":
+        # Core가 이미 "이 상품은/모든 상품이" 실물이전 가능 여부를 언급했으면 중복이다.
+        return _contains_any(
+            text, ("실물이전이제한", "실물이전불가", "실물이전대상", "이전가능한상품", "이전이제외")
         )
     return False
 

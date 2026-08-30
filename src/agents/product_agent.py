@@ -1074,11 +1074,16 @@ def build_product_agent_node():
                 retrieved_context = fallback_context
                 fallback_used = True
 
+        # ⚠️ response_mode를 안 채우면 Guardian이 이 경로를 절대 못 탄다 — 같은 결함이
+        # info_agent.py의 LLM 자유 응답 경로에도 있었다(실측: response_mode=None이라
+        # grounded=True/requirements_met=True를 다 통과해도 Guardian 노드 자체에
+        # 못 갔다). 같은 원인이므로 같은 방식으로 고친다.
         return {
             "product_draft": draft,
             "retrieved_context": retrieved_context,
             "tool_trace": build_tool_trace(messages, node="product_agent"),
             "needs_clarification": needs_clarification,
+            "response_mode": "clarification_included" if needs_clarification else "complete",
             "recommendation_stage": "clarification" if needs_clarification else None,
             "repair_attempted": state.get("verification") is not None,
             "product_fallback_used": fallback_used,

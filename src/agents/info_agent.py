@@ -241,11 +241,18 @@ def build_info_agent_node():
             retrieved_context = forced_context
             tool_trace = [*tool_trace, *forced_trace]
 
+        # ⚠️ response_mode를 안 채우면 Guardian(파수꾼)이 절대 작동하지 않는다 —
+        # _guardian_route_possible이 response_mode=="complete"를 요구하는데, 이 LLM
+        # 자유 응답 경로(결정론도 clarification도 아닌 일반 답변)는 이 키를 아예 채운
+        # 적이 없었다. 실측: "IRP 실물이전 절차 알려줘"는 grounded=True/
+        # requirements_met=True까지 통과하고도 response_mode=None이라 Guardian 노드
+        # 자체를 못 탔다(guardian_result가 아예 None으로 남음, NO_CANDIDATE조차 아님).
         return {
             "info_draft": draft,
             "retrieved_context": retrieved_context,
             "tool_trace": tool_trace,
             "needs_clarification": needs_clarification,
+            "response_mode": "clarification_included" if needs_clarification else "complete",
             "repair_attempted": state.get("verification") is not None,
             "deterministic_info": False,
         }
