@@ -923,7 +923,12 @@ def _build_composite_info_tasks(question: str) -> list[str]:
             for task in tasks
             if task not in {"early_withdrawal_eligibility", "early_withdrawal_tax"}
         ]
-    if tasks == ["early_withdrawal_documents"] and _detect_withdrawal_reason(text) in _WITHDRAWAL_DOCUMENT_RULES:
+    reason = _detect_withdrawal_reason(text)
+    if tasks == ["early_withdrawal_tax"] and reason in {"무주택전월세", "무주택주택구입"}:
+        # 중도인출 세금 단일 질문은 개인 연금세금 gate보다 이 전용 재원별 과세 경로가 우선이다.
+        # 이미 "중도인출"이라고 했으므로 수령방식(연금/연금외)을 다시 묻지 않는다.
+        return tasks
+    if tasks == ["early_withdrawal_documents"] and reason in _WITHDRAWAL_DOCUMENT_RULES:
         # Guardian MVP의 ON 케이스다. 서류-only 질문도 LLM 자유 생성으로 보내면
         # Core Answer가 흔들리므로, 근거가 있는 전세보증금/주택구입 서류는 정형 경로로 처리한다.
         return tasks
@@ -1119,7 +1124,12 @@ def _composite_info_task_plan_response(question: str) -> tuple[str, list[Retriev
             sections.append(section)
             context.extend(ctx)
         else:
-            sections.append("**필요서류**\n- 중도인출 필요서류는 사유별로 달라서, 먼저 중도인출 사유를 확정해야 합니다.")
+            sections.append(
+                "**필요서류**\n"
+                "현재 질문만으로는 필요한 서류 목록을 확정할 수 없습니다. 중도인출 필요서류는 사유별로 다릅니다.\n\n"
+                "추가로 필요한 정보는 다음과 같습니다.\n"
+                "- 중도인출 사유가 6개월 이상 요양, 개인회생·파산, 무주택 전월세보증금, 무주택 주택구입, 재난피해 중 무엇인가요?"
+            )
 
     if "early_withdrawal_tax" in tasks:
         section, ctx = _early_withdrawal_tax_section(reason)
@@ -1138,7 +1148,7 @@ def _composite_info_task_plan_response(question: str) -> tuple[str, list[Retriev
             sections.append(split_sections[2])
         context.extend(ctx)
 
-    if len(sections) < 2 and tasks != ["early_withdrawal_documents"]:
+    if len(sections) < 2 and tasks not in (["early_withdrawal_documents"], ["early_withdrawal_tax"]):
         return None
 
     draft = "\n\n".join(sections)

@@ -241,6 +241,35 @@ def test_unsupported_documents_only_reason_is_not_forced_into_taskplan():
     assert "복합정보_태스크플랜" not in candidate_categories("재난피해 중도인출 필요서류 알려줘")
 
 
+def test_generic_withdrawal_documents_question_asks_for_reason():
+    question = "IRP 중도인출 필요서류 알려줘"
+
+    assert "복합정보_태스크플랜" in candidate_categories(question)
+    draft, context = deterministic_response_for("복합정보_태스크플랜", question)
+
+    assert "현재 질문만으로는 필요한 서류 목록을 확정할 수 없습니다" in draft
+    assert "추가로 필요한 정보는 다음과 같습니다" in draft
+    assert "전월세보증금" in draft
+    assert "주택구입" in draft
+    assert context
+    assert context[0]["source"] == "doc46~doc50 중도인출 요건판정 규칙"
+
+
+def test_housing_deposit_tax_only_question_uses_withdrawal_tax_section():
+    question = "전세보증금 중도인출 세금 알려줘"
+
+    assert "복합정보_태스크플랜" in candidate_categories(question)
+    draft, context = deterministic_response_for("복합정보_태스크플랜", question)
+
+    assert "**세금**" in draft
+    assert "수령 방식" not in draft
+    assert "세법상 부득이한 사유" in draft
+    assert "퇴직금 재원" in draft
+    assert "세액공제 받지 않은 납입원금" in draft
+    assert context
+    assert context[0]["source"] == "doc38~doc40 중도인출 재원별 과세 규칙"
+
+
 def test_medical_treatment_covers_family_members():
     """요양 사유 대상자는 본인뿐 아니라 배우자·부양가족을 포함한다.
 

@@ -149,7 +149,7 @@ def test_narrative_flags_agent_that_called_no_tools():
     trace = _format_think_trace(state)
     assert "툴 호출 없이 답변 작성 (근거 미확보)" in trace
     assert "L1 근거 부합: 불합격" in trace
-    assert "사용한 근거 없음" in trace
+    assert "Core 근거 없음" in trace
     assert "개인사업자의 연금계좌 세액공제 관점" in trace
 
 
@@ -227,6 +227,37 @@ def test_deterministic_info_trace_states_mapped_evidence_origin():
     assert "정형 규칙 핸들러 실행" in trace
     assert "사전 매핑된 근거" in trace
     assert "근거 미확보" not in trace
+
+
+def test_trace_separates_core_and_guardian_evidence():
+    from src.agents.generator import _format_think_trace
+
+    state = {
+        "question": "전세보증금 중도인출 필요서류 알려줘",
+        "intent": ["정보형"],
+        "scope": "범위내",
+        "is_safe": True,
+        "info_draft": "필요서류는 다음과 같습니다.",
+        "deterministic_info": True,
+        "retrieved_context": [{"source": "doc48 필요서류", "content": "서류", "node": "info_agent"}],
+        "guardian_result": {
+            "enabled": True,
+            "candidate_id": "housing_deposit_documents",
+            "topic": "withdrawal_tax",
+        },
+        "guardian_evidence": [
+            {"source": "doc38~doc40 파수꾼 세금", "content": "재원별 과세", "node": "guardian"}
+        ],
+        "tool_trace": [],
+        "verification": {"grounded": True, "issues": [], "requirements_met": True},
+        "response_mode": "complete",
+    }
+
+    trace = _format_think_trace(state)
+
+    assert "Core 근거 1건 사용: doc48 필요서류" in trace
+    assert "파수꾼 근거 1건 추가: doc38~doc40 파수꾼 세금" in trace
+    assert "파수꾼 체크 1건 추가: housing_deposit_documents (withdrawal_tax)" in trace
 
 
 def test_fallback_trace_marks_draft_replacement():

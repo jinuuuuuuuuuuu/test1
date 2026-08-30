@@ -124,6 +124,18 @@ def test_composite_category_beats_single_task_categories():
     )
 
 
+def test_withdrawal_tax_task_beats_personal_tax_gate():
+    question = "전세보증금 중도인출 세금 알려줘"
+    candidates = candidate_categories(question)
+
+    assert "복합정보_태스크플랜" in candidates
+    assert "개인세금_입력충분성" in candidates
+    assert (
+        _prioritize_collision_category("개인세금_입력충분성", candidates, question)
+        == "복합정보_태스크플랜"
+    )
+
+
 def test_withdrawal_eligibility_beats_general_when_condition_is_given():
     question = "DB형인데 집 사려고 중도인출할래"
     candidates = candidate_categories(question)
