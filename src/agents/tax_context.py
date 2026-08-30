@@ -18,6 +18,26 @@ from src.rules.comprehensive_tax import (
 )
 from src.rules.retirement_tax_reduction import get_deferred_retirement_tax_rate
 
+# 사용자가 "세금"이라는 주제를 직접 꺼냈는지 판정할 때 쓰는 어휘.
+#
+# ⚠️ 이 판정과 _is_personal_tax_question()을 혼동하면 안 된다. 후자는 "계산 게이트로
+# 보낼까"를 판정하는 함수라, 세금을 물었더라도 순수 세율 비교 질문이면 False를 낸다
+# (실측 no.115 "퇴직금 일시금 vs 연금 중 세금이 더 적은 쪽은?" -> asks_rate_comparison에
+# 걸려 False). Guardian의 EXPLICIT_USER_TOPIC 판정에 그 함수를 쓰면 "세금을 이미 물은
+# 질문"에 파수꾼이 또 세금 이야기를 덧붙이는 중복이 생긴다.
+TAX_TOPIC_WORDS: tuple[str, ...] = (
+    "세금",
+    "세율",
+    "연금소득세",
+    "종합과세",
+    "분리과세",
+    "퇴직소득세",
+    "이연퇴직소득세",
+    "감면",
+    "절세",
+    "과세",
+)
+
 ReceiptType = Literal["pension", "non_pension"]
 SourceType = Literal[
     "tax_deducted_contribution_and_return",
@@ -125,6 +145,9 @@ def _is_personal_tax_question(compact: str) -> bool:
     핵심 판별선은 어휘 목록을 늘리는 게 아니라 "세율(%)만 물었나 vs 세액(원)이나
     복합 조건을 물었나"이므로, 그 기준 자체를 판정에 반영한다.
     """
+    # ⚠️ TAX_TOPIC_WORDS를 그대로 쓰지 않는다 — 그 목록은 Guardian의 "세금 주제를
+    # 물었나" 판정용이라 "감면/절세/과세"까지 포함하는데, 이 계산 게이트에 그대로
+    # 적용하면 "절세 방법 알려줘" 같은 일반 질문까지 계산 경로로 끌어온다.
     has_tax_word = any(
         word in compact
         for word in (
@@ -223,8 +246,23 @@ def _extract_age(compact: str) -> int | None:
     return age
 
 
+# "연금이 아니라 한꺼번에"처럼 연금수령을 **부정**하는 표현. 이게 있으면 문장에
+# "연금으로"가 함께 있어도 연금외수령으로 본다 — 부정을 놓치면 정반대로 판정한다.
+_NON_PENSION_NEGATION_PATTERNS = (
+    "연금으로안", "연금이아니", "연금말고", "연금안받", "연금대신",
+)
+
+# 일시금 수령을 뜻하는 구어 표현. "일시금"이라는 정확한 용어를 쓰지 않는 경우가 많다.
+_LUMP_SUM_WORDS = (
+    "연금외", "일시금", "일시인출", "한도초과",
+    "한번에", "한꺼번에", "목돈으로", "전액인출", "통째로",
+)
+
+
 def _extract_receipt_type(compact: str) -> ReceiptType | None:
-    if any(word in compact for word in ("연금외", "일시금", "일시인출", "한도초과")):
+    if any(pattern in compact for pattern in _NON_PENSION_NEGATION_PATTERNS):
+        return "non_pension"
+    if any(word in compact for word in _LUMP_SUM_WORDS):
         return "non_pension"
     if any(word in compact for word in ("연금수령", "연금으로", "연금받", "종신연금")):
         return "pension"

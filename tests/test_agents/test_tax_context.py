@@ -127,3 +127,45 @@ def test_actual_calculation_question_stays_personal_tax_gate():
     ]
     for q in questions:
         assert _is_personal_tax_question(_compact(q)), q
+
+
+# ── _extract_receipt_type: 구어 표현·부정 표현 ─────────────────────────
+
+
+def test_receipt_type_detects_colloquial_lump_sum():
+    """"일시금"이라는 용어 없이 "한 번에/한꺼번에"로 말해도 연금외수령으로 본다."""
+    from src.agents.tax_context import _compact, _extract_receipt_type
+
+    for question in (
+        "퇴직금을 한 번에 받으려면 어떻게 해야 하나요?",
+        "퇴직금 한꺼번에 인출하고 싶어요.",
+        "IRP 목돈으로 받고 싶은데요.",
+    ):
+        assert _extract_receipt_type(_compact(question)) == "non_pension", question
+
+
+def test_receipt_type_negation_beats_pension_keyword():
+    """"연금으로 안 받고"처럼 연금수령을 부정하면 연금외수령으로 판정해야 한다.
+
+    회귀 방지: "연금으로"라는 부분문자열이 있어 부정을 놓치면 정반대(pension)로
+    판정된다 — 이연퇴직소득세 감면 여부가 뒤집히는 치명적 오판이다.
+    """
+    from src.agents.tax_context import _compact, _extract_receipt_type
+
+    for question in (
+        "퇴직금을 연금으로 안 받고 한꺼번에 인출하고 싶어요.",
+        "연금이 아니라 일시금으로 받으려고요.",
+        "연금 말고 목돈으로 받을 수 있나요?",
+    ):
+        assert _extract_receipt_type(_compact(question)) == "non_pension", question
+
+
+def test_receipt_type_still_detects_pension_receipt():
+    """정상적인 연금수령 표현은 그대로 pension으로 판정한다(과잉 확장 방지)."""
+    from src.agents.tax_context import _compact, _extract_receipt_type
+
+    for question in (
+        "퇴직금을 연금으로 받으려면 어떻게 하나요?",
+        "종신연금으로 수령하면 세율이 얼마인가요?",
+    ):
+        assert _extract_receipt_type(_compact(question)) == "pension", question
