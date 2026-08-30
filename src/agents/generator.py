@@ -5,6 +5,7 @@ is_safe=False(①가드레일에서 차단된 경우)는 모델을 호출하지 
 """
 
 from src.agents.context import dedupe_context, format_conversation_history, merge_drafts
+from src.agents.guardian import GUARD_HEADING
 from src.agents.llm import get_llm, invoke_with_retry
 from src.agents.state import PensionAgentState
 from src.agents.verification import (
@@ -65,13 +66,28 @@ _NODE_LABELS = {
 
 
 def _append_reference_line(answer: str, context: list) -> str:
-    if not context or "참고 근거:" in answer:
+    if not context:
         return answer
     sources = "; ".join(dict.fromkeys(c["source"] for c in context))
-    return f"{answer}\n\n참고 근거: {sources}"
+    if "참고 근거:" not in answer:
+        return f"{answer}\n\n참고 근거: {sources}"
+
+    head, sep, tail = answer.rpartition("참고 근거:")
+    existing = tail.strip()
+    missing = [source for source in dict.fromkeys(c["source"] for c in context) if source not in existing]
+    if not missing:
+        return answer
+    separator = "; " if existing else ""
+    return f"{head}{sep}{existing}{separator}{'; '.join(missing)}"
 
 
-def _enforce_verification(answer: str, verification: dict, context: list) -> str:
+def _enforce_verification(
+    answer: str,
+    verification: dict,
+    context: list,
+    *,
+    append_reference: bool = True,
+) -> str:
     """LLM 답변에 ④ 검증 결과를 코드로 강제 반영한다.
 
     ④에는 L0 코드 오버라이드를 깔아뒀으면서 ⑤에는 프롬프트 부탁만 있어, 검증이
@@ -120,8 +136,43 @@ def _enforce_verification(answer: str, verification: dict, context: list) -> str
     # ④ 잘못된 전제를 바로잡지 않았으면 앞머리에 교정문을 붙인다 (요강: 정확성)
     answer = enforce_premise_issues(answer, premise_issues)
 
-    # ⑤ 근거를 썼는데 출처 줄이 없으면 코드가 붙인다 (LLM에게 맡기면 누락된다 — 실측 K1)
-    return _append_reference_line(answer, context)
+    # ⑤ 근거를 썼는데 출처 줄이 없으면 코드가 붙인다 (LLM에게 맡기면 누락된다 — 실측 K1).
+    # Guardian을 거치는 내부 경로에서는 최종 조립 단계에서 core+guardian 근거를 함께 붙인다.
+    if append_reference:
+        return _append_reference_line(answer, context)
+    return answer
+
+
+def _guardian_context(state: PensionAgentState) -> list:
+    return dedupe_context(state.get("guardian_evidence") or [])
+
+
+def _append_guardian_if_enabled(answer: str, guardian_result: dict | None) -> str:
+    if not guardian_result or guardian_result.get("enabled") is not True:
+        return answer
+
+    message = guardian_result.get("message") or guardian_result.get("guard_fact")
+    if not message:
+        return answer
+    if GUARD_HEADING in answer:
+        return answer
+
+    block = message if message.startswith(GUARD_HEADING) else f"{GUARD_HEADING}\n{message}"
+    if "참고 근거:" not in answer:
+        return f"{answer}\n\n{block}"
+
+    head, sep, tail = answer.rpartition("참고 근거:")
+    return f"{head.rstrip()}\n\n{block}\n\n{sep}{tail.strip()}"
+
+
+def _finalize_answer(verified_core_answer: str, state: PensionAgentState, core_context: list) -> str:
+    """검증이 끝난 Core Answer에 후단 블록과 최종 근거만 조립한다.
+
+    Core 문장 자체를 여기서 재생성하거나 보완하지 않는다. Guardian evidence는 Core prompt나
+    verification에 쓰지 않고, 최종 참고근거 표시에서만 core_context와 합친다.
+    """
+    answer = _append_guardian_if_enabled(verified_core_answer, state.get("guardian_result"))
+    return _append_reference_line(answer, [*core_context, *_guardian_context(state)])
 
 
 def _classification_lines(state: PensionAgentState) -> list[str]:
@@ -268,6 +319,12 @@ def _assembly_lines(state: PensionAgentState, context: list) -> list[str]:
         lines.append("  - 조건 불충분 → 첫 답변에 정보한계와 필요한 역질문 전체를 포함")
     if state.get("response_mode"):
         lines.append(f"  - 응답 모드: {state['response_mode']}")
+    guardian_result = state.get("guardian_result") or {}
+    if guardian_result.get("enabled") is True:
+        lines.append(
+            f"  - 파수꾼 체크 1건 추가: {guardian_result.get('candidate_id')} "
+            f"({guardian_result.get('topic')})"
+        )
     if state.get("repair_attempted"):
         lines.append("  - ④검증 탈락으로 ②③을 1회 재실행한 결과를 반영 (재실행 한도 1회 소진)")
     return lines
@@ -278,7 +335,9 @@ def _format_think_trace(state: PensionAgentState) -> str:
 
     추가 LLM 호출 없이 State에 이미 있는 값(①분류, tool_trace, ④검증 결과)만으로 만든다.
     """
-    context = dedupe_context(state.get("retrieved_context") or [])
+    core_context = dedupe_context(state.get("retrieved_context") or [])
+    guardian_context = _guardian_context(state)
+    context = dedupe_context([*core_context, *guardian_context])
     lines = _classification_lines(state)
     lines.append(f"- 실행 계획: {_plan_sentence(state)}")
     lines.extend(_tool_trace_lines(state))
@@ -364,18 +423,36 @@ def build_generator_node():
         # (④가 missing_requirements로 정확히 지적함). 근거 신뢰도와 "요구에 답했는가"는
         # 별개 축이라, LLM 경로에만 강제를 걸면 정형 경로에 구멍이 남는다.
         if state.get("needs_clarification"):
+            verified_answer = _enforce_verification(
+                draft,
+                verification,
+                context,
+                append_reference=False,
+            )
             return {
-                "answer": _enforce_verification(draft, verification, context),
+                "answer": _finalize_answer(verified_answer, state, context),
                 "think_trace": _format_think_trace(state),
             }
         if state.get("recommendation_stage") == "type_recommendation":
+            verified_answer = _enforce_verification(
+                draft,
+                verification,
+                context,
+                append_reference=False,
+            )
             return {
-                "answer": _enforce_verification(draft, verification, context),
+                "answer": _finalize_answer(verified_answer, state, context),
                 "think_trace": _format_think_trace(state),
             }
         if state.get("deterministic_info"):
+            verified_answer = _enforce_verification(
+                draft,
+                verification,
+                context,
+                append_reference=False,
+            )
             return {
-                "answer": _enforce_verification(draft, verification, context),
+                "answer": _finalize_answer(verified_answer, state, context),
                 "think_trace": _format_think_trace(state),
             }
 
@@ -385,7 +462,11 @@ def build_generator_node():
         ])
 
         return {
-            "answer": _enforce_verification(response.content, verification, context),
+            "answer": _finalize_answer(
+                _enforce_verification(response.content, verification, context, append_reference=False),
+                state,
+                context,
+            ),
             "think_trace": _format_think_trace(state),
         }
 

@@ -17,7 +17,7 @@ ResponseMode = Literal["complete", "conditional", "clarification_included"]
 class RetrievedItem(TypedDict):
     source: str   # 툴 이름(예: calculate_tax_credit) 또는 "RAG"
     content: str  # 근거 텍스트 / 툴 반환값 (JSON 문자열 또는 요약)
-    node: str     # 어느 노드에서 생성됐는지: "info_agent" | "product_agent"
+    node: str     # 어느 노드에서 생성됐는지: "info_agent" | "product_agent" | "guardian"
     chunk_id: NotRequired[str]
     document_id: NotRequired[str]
     file_title: NotRequired[str]
@@ -89,6 +89,11 @@ class PensionAgentState(TypedDict, total=False):
     # "근거 N건 사용"이 같은 think_trace에 함께 나오는 모순이 생긴다 — 근거의 출처를
     # State에 남겨 ⑤가 사실대로 서술할 수 있게 한다 (요강: think_trace = 사고·도구 사용 과정).
     product_fallback_used: bool
+
+    # 후단 파수꾼 체크 결과와 그 전용 근거. guardian_evidence는 Core 답변 생성 프롬프트에
+    # 넣지 않고, 최종 참고근거 조립 시점에만 retrieved_context와 합친다.
+    guardian_result: dict | None
+    guardian_evidence: list[RetrievedItem]
 
     # ④ 검증/Grounding 출력
     verification: dict | None

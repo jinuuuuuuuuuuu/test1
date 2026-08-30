@@ -120,10 +120,14 @@ def answer(
             answer=_FAILURE_ANSWER,
         )
 
+    final_context = [
+        *(result.get("retrieved_context") or []),
+        *(result.get("guardian_evidence") or []),
+    ]
     return EvaluationResponse(
         question_id=qid,
         question=question,
-        retrieved_context=_format_retrieved_context(result.get("retrieved_context")),
+        retrieved_context=_format_retrieved_context(final_context),
         think_trace=result.get("think_trace") or "",
         answer=result.get("answer") or _FAILURE_ANSWER,
     )

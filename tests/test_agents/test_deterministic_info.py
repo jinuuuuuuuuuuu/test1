@@ -212,6 +212,35 @@ def test_forbidden_product_type_is_answered_not_asked_back():
     assert "투자한도_위험자산" in candidate_categories("IRP 위험자산 한도가 70%인가요?")
 
 
+def test_housing_deposit_documents_only_uses_composite_taskplan():
+    question = "전세보증금 중도인출 필요서류 알려줘"
+
+    assert "복합정보_태스크플랜" in candidate_categories(question)
+    draft, context = deterministic_response_for("복합정보_태스크플랜", question)
+
+    assert "중도인출신청서" in draft
+    assert "주택 임대차계약서 사본" in draft
+    assert context
+    assert context[0]["source"] == "doc48 중도인출 무주택 전월세보증금 필요서류"
+
+
+def test_home_purchase_documents_only_uses_composite_taskplan():
+    question = "무주택 주택구입 중도인출 구비서류 알려줘"
+
+    assert "복합정보_태스크플랜" in candidate_categories(question)
+    draft, context = deterministic_response_for("복합정보_태스크플랜", question)
+
+    assert "매매계약서 사본" in draft
+    assert "지방세 세목별 과세증명서" in draft
+    assert context
+    assert context[0]["source"] == "doc49 중도인출 무주택 주택구입 필요서류"
+
+
+def test_unsupported_documents_only_reason_is_not_forced_into_taskplan():
+    # Guardian MVP는 전세보증금/주택구입 서류-only만 켠다. 다른 사유는 기존 경로를 유지한다.
+    assert "복합정보_태스크플랜" not in candidate_categories("재난피해 중도인출 필요서류 알려줘")
+
+
 def test_medical_treatment_covers_family_members():
     """요양 사유 대상자는 본인뿐 아니라 배우자·부양가족을 포함한다.
 
