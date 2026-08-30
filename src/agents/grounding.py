@@ -118,6 +118,30 @@ def build_grounding_node():
         # 복합형에서는 info_draft/product_draft가 둘 다 있으므로 반드시 병합해서 검증한다.
         draft = merge_drafts(state.get("info_draft"), state.get("product_draft"))
         context = dedupe_context(state.get("retrieved_context") or [])
+
+        # 결정론 답변(deterministic_info=True)은 LLM이 전혀 개입하지 않고
+        # deterministic_response_for()가 규칙 모듈에서 계산한 draft 그대로다
+        # (info_agent.py에서 draft = deterministic 그대로 반환, LLM 미호출).
+        # ③상품 Agent는 이 플래그를 쓰지 않으므로, product_draft가 함께 있는 복합형만
+        # 제외하면 나머지는 전부 "LLM이 만들지 않은 텍스트를 LLM이 검증하는" 상태다.
+        #
+        # 실측(501문항): grounded_false 49건 중 13건이 deterministic_info=True였고,
+        # 그 지적은 대부분 부정확했다 — ④ 스스로 "질문에 주어진 정보이므로 문제가
+        # 되지 않음"이라 써놓고도 False를 낸 사례, "종신연금은 80세 이상만 3.3%"처럼
+        # ④ 쪽이 사실관계를 틀린 사례가 있었다. 결정론 답변 184건 중 47건(26%)이
+        # 이렇게 불필요한 repair를 돌았다 — repair는 같은 결정론 함수를 다시 불러
+        # 100% 동일한 draft를 재생산하므로 LLM 호출만 낭비되고 결과는 바뀌지 않는다.
+        if state.get("deterministic_info") and not state.get("product_draft"):
+            return {
+                "verification": {
+                    "grounded": True,
+                    "issues": [],
+                    "unsupported_numbers_confirmed": [],
+                    "premise_issues": [],
+                    "requirements_met": True,
+                    "missing_requirements": [],
+                }
+            }
         context_text = "\n".join(
             f"[근거 {i}] [{c['source']}] {c['content']}" for i, c in enumerate(context, 1)
         ) or "(근거 없음)"
