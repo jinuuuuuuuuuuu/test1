@@ -169,3 +169,20 @@ def test_receipt_type_still_detects_pension_receipt():
         "종신연금으로 수령하면 세율이 얼마인가요?",
     ):
         assert _extract_receipt_type(_compact(question)) == "pension", question
+
+
+def test_receipt_type_ignores_contribution_context_lump_sum():
+    """"한꺼번에 넣는다"(납입)를 연금외수령으로 오판하면 안 된다.
+
+    회귀 방지: 실측 no.325 "연말에 한꺼번에 900만원 넣어도 세액공제 되나요?"는
+    납입 방식을 묻는 질문인데, 구어 표현("한꺼번에")만 보고 연금외수령으로 판정했다.
+    당시엔 재원이 없어 branch=None으로 남아 답변에 영향이 없었지만, 재원이 함께
+    언급되면 정반대 세제 판정(이연퇴직소득세 감면 여부)이 나간다.
+    """
+    from src.agents.tax_context import _compact, _extract_receipt_type
+
+    for question in (
+        "연말에 한꺼번에 900만원 넣어도 세액공제 되나요?",
+        "매달 나눠 넣지 않고 한번에 납입해도 되나요?",
+    ):
+        assert _extract_receipt_type(_compact(question)) is None, question

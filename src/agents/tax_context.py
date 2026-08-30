@@ -252,17 +252,27 @@ _NON_PENSION_NEGATION_PATTERNS = (
     "연금으로안", "연금이아니", "연금말고", "연금안받", "연금대신",
 )
 
-# 일시금 수령을 뜻하는 구어 표현. "일시금"이라는 정확한 용어를 쓰지 않는 경우가 많다.
-_LUMP_SUM_WORDS = (
-    "연금외", "일시금", "일시인출", "한도초과",
-    "한번에", "한꺼번에", "목돈으로", "전액인출", "통째로",
-)
+# 그 자체로 "연금외수령"을 뜻하는 용어 — 문맥 없이도 판정할 수 있다.
+_LUMP_SUM_WORDS = ("연금외", "일시금", "일시인출", "한도초과", "전액인출")
+
+# 수령/납입 어느 쪽에도 쓰이는 모호한 구어 표현. 이것만으로 판정하면 안 된다.
+# ⚠️ 실측 no.325 "연말에 한꺼번에 900만원 넣어도 세액공제 되나요?"는 **납입**을 묻는
+# 질문인데 "한꺼번에"만 보고 연금외수령으로 오판했다(당시엔 재원이 없어 branch=None으로
+# 남아 답변에는 영향이 없었지만, 재원이 함께 언급되면 정반대 세제 판정이 나간다).
+_AMBIGUOUS_LUMP_SUM_WORDS = ("한번에", "한꺼번에", "목돈으로", "통째로")
+
+# 위 모호한 표현이 "수령" 문맥일 때만 연금외수령으로 본다.
+_RECEIPT_CONTEXT_WORDS = ("받", "수령", "찾", "인출", "빼", "해지", "지급")
 
 
 def _extract_receipt_type(compact: str) -> ReceiptType | None:
     if any(pattern in compact for pattern in _NON_PENSION_NEGATION_PATTERNS):
         return "non_pension"
     if any(word in compact for word in _LUMP_SUM_WORDS):
+        return "non_pension"
+    if any(word in compact for word in _AMBIGUOUS_LUMP_SUM_WORDS) and any(
+        word in compact for word in _RECEIPT_CONTEXT_WORDS
+    ):
         return "non_pension"
     if any(word in compact for word in ("연금수령", "연금으로", "연금받", "종신연금")):
         return "pension"
