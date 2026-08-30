@@ -212,6 +212,49 @@ def test_forbidden_product_type_is_answered_not_asked_back():
     assert "투자한도_위험자산" in candidate_categories("IRP 위험자산 한도가 70%인가요?")
 
 
+def test_medical_eligible_persons_detected_in_abbreviated_forms():
+    """"요양"이라는 단어 없이 "의료비"만 쓴 축약형도 대상자 판정에 잡혀야 한다.
+
+    회귀 방지: _asks_medical_eligible_persons의 문맥 어휘에 "의료비"가 빠져 있어
+    "배우자 의료비도 중도인출 되나요?"가 중도인출_요건판정에서도 None을 반환했다 —
+    라우터가 카테고리를 맞게 골라도 답을 못 하는 상태였다.
+    """
+    for question in (
+        "가족 의료비도 중도인출 요건에 포함되나요?",
+        "배우자 의료비도 중도인출 되나요?",
+        "부양가족 치료비로 중도인출 가능한가요?",
+        "남편 간병 때문에 중도인출 할 수 있나요?",
+    ):
+        result = deterministic_response_for("중도인출_요건판정", question)
+        assert result is not None, question
+        assert "배우자" in result[0] and "부양가족" in result[0], question
+
+
+def test_general_withdrawal_handler_yields_to_specific_questions():
+    """중도인출_일반은 대상자·비율 같은 구체적 질문에는 양보해야 한다.
+
+    회귀 방지: candidate_categories는 "중도인출" 한 단어로 일반/기한판정/요건판정을
+    함께 후보로 내고 확정은 라우터 몫인데, 중도인출_일반 핸들러는 게이트가 없어 어떤
+    질문에도 사유 목록을 반환했다. 후보 순서상 항상 첫 번째라, 라우터가 잘못 고르면
+    "배우자 의료비도 포함되나요?"에 사유 목록만 나가는 동문서답이 된다.
+    """
+    # 대상자·비율 질문에는 양보한다.
+    for question in (
+        "배우자 의료비도 중도인출 되나요?",
+        "IRP인데 요양 때문에 중도인출하려면 의료비가 연봉의 몇 % 이상이어야 하나요?",
+    ):
+        assert deterministic_response_for("중도인출_일반", question) is None, question
+
+    # 일반 질문에는 기존대로 사유 목록을 답한다.
+    for question in (
+        "IRP에서 중도인출은 어떤 경우에 가능한가요?",
+        "요양으로 중도인출 가능한가요?",
+    ):
+        result = deterministic_response_for("중도인출_일반", question)
+        assert result is not None, question
+        assert "6개월 이상 요양" in result[0], question
+
+
 def test_medical_treatment_covers_family_members():
     """요양 사유 대상자는 본인뿐 아니라 배우자·부양가족을 포함한다.
 

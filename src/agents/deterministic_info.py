@@ -1217,7 +1217,22 @@ def _early_withdrawal_deadline_response(question: str) -> tuple[str, list[Retrie
     )
     return draft, _context(source, content)
 
-def _early_withdrawal_general_response(question: str) -> tuple[str, list[RetrievedItem]]:
+def _early_withdrawal_general_response(question: str) -> tuple[str, list[RetrievedItem]] | None:
+    """중도인출 사유 목록을 나열한다. 더 구체적인 작업을 묻는 질문이면 양보한다.
+
+    ⚠️ candidate_categories는 "중도인출"이라는 단어만 보고 일반/기한판정/요건판정
+    셋을 함께 후보로 내고, 그중 무엇을 확정할지는 라우터 LLM의 몫이다. 그런데 이
+    핸들러는 게이트가 없어 어떤 질문에도 일반 목록을 반환했다 — 후보 순서상 항상
+    첫 번째라, 라우터가 잘못 고르면 "배우자 의료비도 포함되나요?" 같은 대상자 질문에
+    사유 목록만 나가는 동문서답이 된다.
+
+    같은 도메인 안에서는 더 구체적인 작업이 우선이므로, 대상자 범위·의료비 비율을
+    묻는 질문이면 None을 내어 중도인출_요건판정으로 넘긴다.
+    """
+    text = _compact(question)
+    if _asks_medical_eligible_persons(text) or _asks_medical_expense_ratio(text):
+        return None
+
     source = "doc46~doc50 중도인출 규칙"
     content = (
         "DB는 중도인출이 허용되지 않습니다. DC와 IRP는 법정 사유가 있으면 중도인출 대상 제도입니다. "
@@ -1273,9 +1288,15 @@ def _asks_account_level_transfer(compact_text: str) -> bool:
 _MEDICAL_EXPENSE_RATIO_LABEL = f"{MEDICAL_EXPENSE_RATIO_THRESHOLD * 100:g}%"
 
 
+# 요양 사유 문맥을 알려주는 어휘. 대상자 범위 질문과 의료비 비율 질문이 같은 도메인이라
+# 두 판정이 같은 목록을 봐야 한다 — 예전에는 각자 다른 목록을 갖고 있어 "배우자 의료비도
+# 중도인출 되나요?"가 대상자 판정에서만 빠졌다("의료비"가 그쪽 목록에 없었음).
+_MEDICAL_CONTEXT_WORDS = ("요양", "질병", "치료", "의료비", "치료비", "부상", "입원", "간병")
+
+
 def _asks_medical_eligible_persons(compact_text: str) -> bool:
     """요양 사유의 **대상자 범위**(본인 외 가족도 되는지)를 묻는 질문인지."""
-    if "요양" not in compact_text and "질병" not in compact_text and "치료" not in compact_text:
+    if not any(w in compact_text for w in _MEDICAL_CONTEXT_WORDS):
         return False
     return any(
         w in compact_text
@@ -1285,7 +1306,7 @@ def _asks_medical_eligible_persons(compact_text: str) -> bool:
 
 def _asks_medical_expense_ratio(compact_text: str) -> bool:
     """요양 사유의 "의료비가 임금총액의 몇 % 이상이어야 하나"를 묻는 질문인지."""
-    if not any(w in compact_text for w in ("의료비", "치료비", "요양")):
+    if not any(w in compact_text for w in _MEDICAL_CONTEXT_WORDS):
         return False
     return any(
         w in compact_text
