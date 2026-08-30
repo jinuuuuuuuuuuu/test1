@@ -571,63 +571,14 @@ def _conditional_recommendation_guidance(profile: dict) -> str:
     return "\n".join(lines) + "\n\n"
 
 
-def _what_if_scenario_block(profile: dict) -> str:
-    scenario = _scenario_kind(profile)
-    if scenario is None:
-        return ""
-    scenario_map = {
-        "overseas_equity": (
-            "**시장 상황이 바뀐다면?**\n"
-            "- 미국·해외 증시가 상승하면 주식가격 상승이 성과에 긍정적으로 작용할 수 있습니다.\n"
-            "- 반대로 해외 증시가 하락하면 주식 비중이 높은 만큼 변동성과 손실 가능성도 커질 수 있습니다.\n"
-            "- 환노출형 상품이라면 원/달러 환율 상승은 원화 환산 성과에 긍정적일 수 있지만, 환율 하락은 수익률을 낮추는 요인이 될 수 있습니다.\n\n"
-        ),
-        "domestic_equity": (
-            "**시장 상황이 바뀐다면?**\n"
-            "- 국내 증시가 상승하면 국내주식형 상품 성과에 긍정적으로 작용할 수 있습니다.\n"
-            "- 국내 증시가 하락하거나 특정 업종이 부진하면 손실 가능성이 커질 수 있어 분산 여부를 함께 봐야 합니다.\n\n"
-        ),
-        "bond": (
-            "**시장 상황이 바뀐다면?**\n"
-            "- 금리가 하락하면 기존 채권 가격이 올라 채권형 상품 성과에 긍정적일 수 있습니다.\n"
-            "- 금리가 상승하면 채권 가격이 하락해 단기 성과가 부진할 수 있으므로 듀레이션과 신용위험을 함께 확인해야 합니다.\n\n"
-        ),
-        "tdf": (
-            "**시장 상황이 바뀐다면?**\n"
-            "- TDF는 은퇴시점에 맞춰 위험자산 비중을 조정하지만, 증시가 급락하면 주식 편입 비중에 따라 손실이 발생할 수 있습니다.\n"
-            "- 은퇴시점이 가까울수록 위험자산 비중이 낮아지는 구조인지 확인하는 것이 중요합니다.\n\n"
-        ),
-        "mixed": (
-            "**시장 상황이 바뀐다면?**\n"
-            "- 혼합형 상품은 주식과 채권을 함께 담지만, 두 자산이 동시에 부진하면 손실을 완전히 피할 수는 없습니다.\n"
-            "- 주식·채권 비중과 리밸런싱 방식에 따라 방어력과 기대수익이 달라집니다.\n\n"
-        ),
-        "return_or_comparison": (
-            "**시장 상황이 바뀐다면?**\n"
-            "- 최근 수익률은 시장환경, 비용, 환율, 자산배분에 따라 달라지며 미래 수익을 보장하지 않습니다.\n"
-            "- 상품 비교 시에는 각 상품에 불리한 시장환경이 무엇인지 함께 보는 편이 안전합니다.\n\n"
-        ),
-    }
-    return scenario_map[scenario]
-
-
-def _scenario_kind(profile: dict) -> str | None:
-    preferred = profile.get("preferred_product_type") or ""
-    text = " ".join(str(value) for value in profile.values())
-    target = f"{preferred} {text}"
-    if any(word in target for word in ("해외주식", "미국 주식", "미국주식", "미국", "해외")):
-        return "overseas_equity"
-    if "국내주식" in target or "국내 주식" in target:
-        return "domestic_equity"
-    if "채권" in target:
-        return "bond"
-    if "TDF" in target:
-        return "tdf"
-    if "혼합" in target:
-        return "mixed"
-    if any(word in target for word in ("수익률", "비교")):
-        return "return_or_comparison"
-    return None
+# _what_if_scenario_block/_scenario_kind는 여기 있었다 — 사용자가 말한 profile만 보고
+# "시장 상황이 바뀐다면?" 시나리오를 만들었는데, 실제 검색된 후보(candidates)의 속성과
+# 무관했다. 예: "해외주식형"을 요청했지만 실제 후보가 국내 KOSPI 펀드뿐이어도
+# "환노출형 상품이라면 원/달러 환율..." 같은 근거 없는 서술이 붙을 수 있었다.
+# d69440b에서 모든 호출부를 _candidate_scenario_notes(실제 후보의 fund_name/
+# fund_category에 있는 속성만 반영)로 교체하며 의도적으로 끊겼고, _CLARIFICATION_
+# BLOCKED_MARKERS로 옛 문구가 실수로 남아도 걸러내는 방어까지 걸려 있다. 호출부가
+# 전혀 없는 채로 남아있던 죽은 코드라 제거한다 — 다시 연결하면 이 문제가 재현된다.
 
 
 def _candidate_scenario_notes(candidates: list[dict]) -> tuple[str, list[RetrievedItem]]:
