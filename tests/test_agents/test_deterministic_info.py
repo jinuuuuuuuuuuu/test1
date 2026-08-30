@@ -190,6 +190,23 @@ def test_personal_tax_question_uses_input_sufficiency_gate_before_general_tax_ru
     assert context
 
 
+def test_withdrawal_basis_event_term_alone_routes_deterministically():
+    """"요양종료일" 같은 기준일 용어는 "중도인출"이라는 단어 없이도 후보를 만들어야 한다.
+
+    회귀 방지: 실측 no.426("요양종료일이 2026년 12월 15일이면 신청기한이 다음해로
+    넘어가나요?")은 후보가 0건이라 결정론 경로를 못 탔고, LLM이 질문에 없는
+    plan_type="DB"를 임의로 찍어 호출해 "DB는 중도인출 불가"가 답변을 덮었다.
+    """
+    question = "요양종료일이 2026년 12월 15일이면 신청기한이 다음해로 넘어가나요?"
+    assert "중도인출_기한판정" in candidate_categories(question)
+
+    draft, _ = deterministic_response_for("중도인출_기한판정", question)
+    assert "요양종료일" in draft
+    assert "1개월" in draft
+    # 묻지도 않은 제도를 가정해 가부를 단정하지 않는다.
+    assert "DB" not in draft
+
+
 def test_account_level_transfer_is_not_in_kind_transfer():
     """계좌 단위 이전(계좌이전 제도)은 상품 단위 실물이전 카테고리로 가면 안 된다.
 

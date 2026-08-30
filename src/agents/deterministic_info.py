@@ -222,7 +222,11 @@ def candidate_categories(question: str) -> list[str]:
         "절세" in text and any(word in text for word in ("연금", "irp", "IRP", "개인사업자", "자영업"))
     ):
         candidates.append("세금혜택_개요")
-    if "중도인출" in text:
+    # 사유별 기준일 용어("요양종료일", "잔금지급일" 등)는 그 자체로 중도인출 문맥을
+    # 특정하므로, "중도인출"이라는 단어가 없어도 후보로 낸다. 실측 no.426
+    # ("요양종료일이 2026년 12월 15일이면 신청기한이 다음해로 넘어가나요?")은 후보가
+    # 0건이라 결정론 경로를 못 타고 LLM이 임의로 plan_type="DB"를 찍어 호출했다.
+    if "중도인출" in text or _mentions_withdrawal_basis_event(text):
         # 같은 도메인의 두 작업을 모두 후보로 낸다: 사유 목록 나열(중도인출_일반)과
         # 기한 계산·판정(중도인출_기한판정). 사유별로 후보 조건을 따로 쓰면
         # ("요양이고 요양종료일이 있으면...") 사유가 늘 때마다 조건이 늘고, 실제로
@@ -1116,7 +1120,7 @@ def _early_withdrawal_deadline_response(question: str) -> tuple[str, list[Retrie
     기준일·기간 규칙과 계산 불가 사유만 안내한다.
     """
     text = _compact(question)
-    if "중도인출" not in text:
+    if "중도인출" not in text and not _mentions_withdrawal_basis_event(text):
         return None
     if not any(word in text for word in ("언제까지", "기한", "이내", "언제", "신청")):
         return None
@@ -1203,6 +1207,18 @@ def _early_withdrawal_general_response(question: str) -> tuple[str, list[Retriev
         "신청 요건이 문제될 수 있습니다."
     )
     return draft, _context(source, content)
+
+
+# 중도인출 사유별 기준일 용어 — WITHDRAWAL_DEADLINE_RULES에서 그대로 끌어온다.
+# 손으로 목록을 적으면 사유가 늘 때 여기만 빠져 같은 비대칭이 다시 생긴다.
+_WITHDRAWAL_BASIS_EVENT_TERMS = tuple(
+    _compact(rule.basis_event) for rule in WITHDRAWAL_DEADLINE_RULES.values()
+)
+
+
+def _mentions_withdrawal_basis_event(compact_text: str) -> bool:
+    """"요양종료일", "잔금지급일" 같은 중도인출 기준일 용어를 쓴 질문인지."""
+    return any(term in compact_text for term in _WITHDRAWAL_BASIS_EVENT_TERMS)
 
 
 def _asks_account_level_transfer(compact_text: str) -> bool:

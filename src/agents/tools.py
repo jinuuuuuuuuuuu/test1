@@ -187,7 +187,7 @@ def _deadline_info(
 @_safe_tool
 def check_early_withdrawal(
     reason: EarlyWithdrawalReason,
-    plan_type: Literal["DB", "DC", "IRP"],
+    plan_type: Optional[Literal["DB", "DC", "IRP"]] = None,
     request_date: Optional[str] = None,
     # 요양 (reason="요양")
     medical_expense_last_year: Optional[int] = None,
@@ -227,13 +227,19 @@ def check_early_withdrawal(
     신청일로 넣으면, 묻지도 않은 "그날 신청하면 가능한가" 판정을 하게 됩니다. 기한만
     물었으면 request_date는 비워 두세요.
 
+    ⚠️ plan_type도 마찬가지로 임의로 채우지 마세요. 사용자가 제도(DB/DC/IRP)를 말하지
+    않았으면 비워 두면 됩니다 — 신청기한처럼 제도와 무관한 규칙은 그대로 반환됩니다.
+    (실측 no.426 "요양종료일이 2026년 12월 15일이면 신청기한이 다음해로 넘어가나요?":
+    질문에 제도가 없는데 plan_type="DB"를 찍어 호출했고, 그 결과 묻지도 않은
+    "DB는 중도인출 불가"가 답변 전체를 덮어 기한 질문에 답하지 못했다.)
+
     사유별 기준일 파라미터:
       요양 -> treatment_end_date / 개인회생파산 -> decision_date /
       무주택전월세 -> balance_payment_date / 무주택주택구입 -> ownership_registration_date /
       재난피해 -> damage_date
     날짜는 모두 "YYYY-MM-DD" 형식 문자열로 전달한다.
     """
-    plan = PlanType(plan_type)
+    plan = PlanType(plan_type) if plan_type else None
     req_date = _parse_date(request_date)
 
     # 신청기한 규칙은 신청일과 무관하게 확인할 수 있다. 기본 모드에서는 DB에 직접 정의되지
@@ -250,6 +256,18 @@ def check_early_withdrawal(
         _parse_date(basis_dates.get(reason)),
         calculation_mode=deadline_calculation_mode,
     )
+
+    if plan is None:
+        # 제도를 모르면 제도 무관 규칙(신청기한)만 돌려주고, 제도별 판정은 하지 않는다.
+        # 여기서 임의의 제도를 가정하면 묻지도 않은 가부 판정이 답변을 덮어쓴다.
+        return {
+            **deadline_info,
+            "eligibility_checked": False,
+            "plan_type_required": (
+                "제도(DB/DC/IRP)를 알려주시면 중도인출 가능 여부까지 판정할 수 있습니다. "
+                "DB형은 중도인출이 허용되지 않고, DC·IRP는 법정 사유를 충족하면 가능합니다."
+            ),
+        }
 
     if plan == PlanType.DB:
         from src.rules.early_withdrawal import check_plan_type_eligible
