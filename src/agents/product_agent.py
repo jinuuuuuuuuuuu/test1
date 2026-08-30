@@ -855,6 +855,14 @@ def _fallback_product_recommendation(state: PensionAgentState) -> tuple[str, lis
     호출하지 않았을 때(retrieved_context가 빈 경우) 발동한다는 점이다 — LLM이 "제도 질문이라
     상품 데이터로 답할 수 없다"는 지시를 올바르게 따를수록 오히려 이 폴백에 덮여버리는
     역설이 생긴다. 그래서 추천 의도를 명시적으로 요구한다.
+
+    ⚠️ 반환값은 LLM에게 다시 넘기는 지시문이 아니라 **최종 사용자 답변 그 자체**다.
+    호출부(build_product_agent_node) 두 곳 모두 이 draft를 LLM 재호출 없이 바로
+    product_draft로 쓴다. 예전 버전은 "~하세요/~설명하세요" 같은 지시문 스타일로
+    작성돼 있었다 — 정상 경로(react_agent가 성공)에서는 이 함수가 아예 호출되지
+    않아 501문항 실측에는 드러나지 않았지만, react_agent가 예외를 던지는 경로(CLOVA
+    API 간헐적 400 오류 등, 이미 문서화된 실측 사례)에서는 이 지시문이 그대로 사용자
+    에게 노출된다. _specific_product_recommendation과 같은 완성된 서술형으로 쓴다.
     """
     text = _combined_user_text(state)
     if not (_is_recommendation_intent(text) or _is_specific_recommendation_request(text)):
@@ -871,24 +879,33 @@ def _fallback_product_recommendation(state: PensionAgentState) -> tuple[str, lis
 
     primary = _select_primary_candidate(unique_results, text)
     lines = [
-        "확인된 조건을 기준으로 투자설명서 DB에서 후보를 골랐습니다.",
-        "사용자 조건은 이전 대화와 현재 입력에서 확인된 계좌유형, 투자기간, 위험선호를 반영하세요.",
-        "아래 후보들은 위험등급, 총보수, 과거 수익률을 함께 비교해 제시하세요.",
+        "확인된 조건을 기준으로 투자설명서 DB에서 후보를 비교했습니다.",
         (
-            f"최우선 후보는 {primary.get('fund_name')} ({primary.get('class_name')})입니다. "
-            "최종 답변 첫머리에서 이 상품을 먼저 추천하고, 선택 이유를 위험등급·총보수·수익률로 설명하세요."
+            f"이 조건에서는 **{primary.get('fund_name')} ({primary.get('class_name')})**를 "
+            "우선 후보로 보겠습니다."
         ),
-        "search_funds 결과만으로 IRP 투자 가능 여부를 단정하지 말고, 투자 가능 여부는 금융기관에서 최종 확인이 필요하다고 쓰세요.",
+        "아래는 투자설명서 DB의 구조화 수치로 비교한 후보입니다.",
     ]
     for i, item in enumerate(unique_results, start=1):
         lines.append(
-            f"{i}. {item.get('fund_name')} ({item.get('class_name')}) - "
-            f"위험등급 {item.get('risk_grade')}, 총보수 {item.get('total_expense_ratio')}%, "
-            f"1년 {item.get('return_1y')}%, 3년 {item.get('return_3y')}%, "
-            f"설정이후 {item.get('return_since_inception')}%, 판매채널 {item.get('sales_channel')}"
+            f"{i}. {item.get('fund_name')} ({item.get('class_name')})\n"
+            f"   - 위험등급: {item.get('risk_grade')}\n"
+            f"   - 총보수: {item.get('total_expense_ratio')}%\n"
+            f"   - 수익률: 1년 {item.get('return_1y')}%, 3년 {item.get('return_3y')}%, "
+            f"설정이후 {item.get('return_since_inception')}%\n"
+            f"   - 판매채널: {item.get('sales_channel')}"
         )
-    lines.append("나머지 후보는 비교 후보로 제시하고, 과거 수익률이 미래 수익을 보장하지 않는다는 점을 덧붙이세요.")
-    return "\n".join(lines), context
+    lines.append(
+        "과거 수익률은 미래 수익을 보장하지 않으며, 계좌 내 실제 매수 가능 여부는 "
+        "금융기관에서 최종 확인이 필요합니다."
+    )
+
+    limit_note, limit_context = _risk_asset_limit_note(unique_results, _extract_recommendation_profile(state))
+    if limit_note:
+        lines.append(limit_note)
+        context.extend(limit_context)
+
+    return "\n\n".join(lines), context
 
 
 def _select_primary_candidate(candidates: list[dict], text: str) -> dict:

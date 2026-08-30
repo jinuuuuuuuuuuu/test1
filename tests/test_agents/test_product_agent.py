@@ -306,9 +306,16 @@ def test_fallback_product_recommendation_uses_fund_metrics():
     assert "위험등급" in draft
     assert "총보수" in draft
     assert "1년" in draft
-    assert "최우선 후보" in draft
+    assert "우선 후보로 보겠습니다" in draft
+    # 지시문(LLM에게 주는 명령형 문장)이 최종 답변에 그대로 남으면 안 된다.
+    # 실측 사고: react_agent 예외 경로에서 이 draft가 재호출 없이 그대로 사용자에게
+    # 노출되는데, "~하세요/~설명하세요" 같은 지시문 스타일이 그대로 나갈 수 있었다.
+    for instruction in ("반영하세요", "제시하세요", "설명하세요", "쓰세요", "덧붙이세요"):
+        assert instruction not in draft
     assert context
-    assert all("위험등급=" in item["content"] for item in context)
+    fund_context = [item for item in context if item["source"] != "doc58 퇴직연금 적립금 운용 및 투자한도 안내"]
+    assert fund_context
+    assert all("위험등급=" in item["content"] for item in fund_context)
 
 
 def test_fallback_product_recommendation_skips_without_account_type():
