@@ -1,6 +1,6 @@
 """② 정보 Agent 노드 — 연금 제도·세금 질문에 답한다.
 
-HCX-005 + 규칙엔진/RAG 툴 6개(INFO_AGENT_TOOLS)를 create_react_agent로 묶어 "필요하면 툴을
+HCX-005 + 규칙엔진/RAG 툴 5개(INFO_AGENT_TOOLS)를 create_react_agent로 묶어 "필요하면 툴을
 호출하고, 충분해지면 답을 낸다"는 표준 ReAct 루프를 구성한다.
 
 ⚠️ HCX-007은 기본적으로 Thinking이 켜져 있어 thinking={"effort":"none"}으로 끄지 않으면
@@ -20,7 +20,11 @@ from src.agents.context import (
     history_to_messages,
     split_clarification_marker,
 )
-from src.agents.deterministic_info import deterministic_response_for
+from src.agents.deterministic_info import (
+    deterministic_response_for,
+    in_kind_transfer_judgement_response,
+)
+from src.agents.in_kind_transfer_intent import has_in_kind_transfer_intent
 from src.agents.llm import get_llm, invoke_with_retry
 from src.agents.state import PensionAgentState, RetrievedItem, ToolCallRecord
 from src.agents.tools import INFO_AGENT_TOOLS, search_pension_docs
@@ -56,6 +60,12 @@ INFO_AGENT_SYSTEM_PROMPT = """당신은 연금 제도·세금 전문 상담 에�
 다뤘는가"를 확인하고, 아직 근거가 없는 항목이 남았으면 그 항목의 툴을 마저 호출하세요.
 제도 규정과 계산이 함께 필요한 질문은 search_pension_docs로 규정을 확인하고 계산 툴로
 수치를 확정하는 것이 정상 경로입니다.
+
+실물이전 개별 판정은 질문에 상품 유형·상태가 명시된 경우에만 할 수 있습니다. 계좌 유형
+IRP는 환매조건부채권(RP) 같은 상품 유형이 아니므로, "IRP 상품을 그대로 이전하는 방법"처럼
+상품이 특정되지 않은 질문에서 RP·MMF·사모펀드 등의 상태를 임의로 가정하지 마세요. 이 경우
+search_pension_docs로 확인 가능한 일반 기준만 안내하고, 제공 자료에 없는 신청 절차는 모른다고
+밝히세요.
 
 두 경우 모두 해당하지 않는 순수 개념 설명(예: "IRP가 뭔가요")만 툴 없이 답할 수 있습니다.
 이 경우에도 구체적 숫자를 언급해야 한다면 search_pension_docs로 먼저 확인하세요.
@@ -142,6 +152,22 @@ def _doc_search_context(question: str) -> tuple[list[RetrievedItem], list[ToolCa
     ]
 
 
+def _select_deterministic_response(
+    category: str, question: str
+) -> tuple[str, list[RetrievedItem]] | None:
+    """라우터가 놓친 명시 상품형 실물이전 판정만 결정론 경로로 보완한다.
+
+    상품 상태가 없는 일반 실물이전 절차 질문에는 None을 반환한다. 그런 질문에서 LLM이
+    RP·MMF 등의 Boolean 플래그를 추정해 개별 판정 도구를 부르는 경로를 열지 않는다.
+    """
+    deterministic = deterministic_response_for(category, question) if category != "해당없음" else None
+    if deterministic is not None:
+        return deterministic
+    if has_in_kind_transfer_intent(question):
+        return in_kind_transfer_judgement_response(question)
+    return None
+
+
 def build_info_agent_node():
     llm = get_llm(INFO_AGENT_MODEL)
     react_agent = create_agent(model=llm, tools=INFO_AGENT_TOOLS, system_prompt=INFO_AGENT_SYSTEM_PROMPT)
@@ -167,11 +193,7 @@ def build_info_agent_node():
             }
 
         category = state.get("deterministic_category", "해당없음")
-        deterministic = (
-            deterministic_response_for(category, state["question"])
-            if category != "해당없음"
-            else None
-        )
+        deterministic = _select_deterministic_response(category, state["question"])
         if deterministic is not None:
             draft, retrieved_context = deterministic
             deterministic_source_limited = "calculation_basis=not_defined_in_source" in "\n".join(

@@ -34,6 +34,7 @@ from src.agents.verification import (
     apply_l0_overrides,
     apply_premise_issue_normalization,
     apply_requirement_scope_override,
+    apply_withdrawal_context_override,
     apply_source_limited_override,
     find_unsupported_numbers,
 )
@@ -166,6 +167,15 @@ def build_grounding_node():
             if clarification
             else ""
         )
+        withdrawal_context = state.get("withdrawal_context")
+        withdrawal_context_note = (
+            "\n\n[중도인출 문맥 잠금]\n"
+            f"{withdrawal_context}\n"
+            "이 값은 사용자 명시 또는 결정론 규칙으로 확정된 상태입니다. 사유·재원·수령방식을 "
+            "다시 분류하거나 바꾸지 말고, explicit_topics와 task_required_topics 범위만 검증하세요."
+            if withdrawal_context
+            else ""
+        )
 
         result: GroundingResult = invoke_with_retry(llm, [
             {"role": "system", "content": GROUNDING_SYSTEM_PROMPT},
@@ -176,7 +186,7 @@ def build_grounding_node():
                     f"[초안 답변]\n{draft}\n\n"
                     f"[근거]\n{context_text}\n\n"
                     f"[코드 검사: 근거에 없는 것으로 보이는 수치]\n{suspects_text}"
-                    f"{clarification_note}"
+                    f"{clarification_note}{withdrawal_context_note}"
                 ),
             },
         ])
@@ -200,6 +210,11 @@ def build_grounding_node():
             evidence_texts=[c["content"] for c in context],
         )
         verification = apply_requirement_scope_override(verification, state["question"], draft)
+        verification = apply_withdrawal_context_override(
+            verification,
+            withdrawal_context,
+            draft,
+        )
         if (
             state.get("deterministic_category") == "실물이전_개별판정"
             and not verification.get("issues")

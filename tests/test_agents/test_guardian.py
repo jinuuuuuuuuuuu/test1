@@ -18,6 +18,7 @@ def test_guardian_turns_on_for_housing_deposit_documents_only():
     assert result["enabled"] is True
     assert result["candidate_id"] == "housing_deposit_documents"
     assert result["message"].startswith(GUARD_HEADING)
+    assert "세금도 함께 확인하세요" in result["message"]
     assert "전월세보증금 중도인출" in result["message"]
     assert "무주택 주택구입 중도인출" not in result["message"]
     assert evidence
@@ -29,8 +30,21 @@ def test_guardian_turns_on_for_home_purchase_documents_only():
 
     assert result["enabled"] is True
     assert result["candidate_id"] == "home_purchase_documents"
+    assert "세금도 함께 확인하세요" in result["message"]
     assert "무주택 주택구입 중도인출" in result["message"]
     assert "전월세보증금 중도인출" not in result["message"]
+
+
+def test_guardian_turns_on_for_natural_documents_paraphrases():
+    for question, expected_id in (
+        ("전세계약 때문에 IRP에서 중도인출하려는데 뭐 챙겨야 해?", "housing_deposit_documents"),
+        ("집 사려고 퇴직연금 중도인출할 때 준비할 것 알려줘", "home_purchase_documents"),
+    ):
+        result, evidence = evaluate_guardian(_verified_state(question))
+
+        assert result["enabled"] is True, question
+        assert result["candidate_id"] == expected_id, question
+        assert evidence, question
 
 
 def test_guardian_stays_off_when_question_needs_clarification():
@@ -206,13 +220,46 @@ def test_guardian_turns_on_for_in_kind_transfer_procedure_question():
     assert evidence[0]["node"] == "guardian"
 
 
+def test_guardian_detects_asset_preserving_transfer_procedure_paraphrases():
+    """전문용어 없이도 자산보존 의도와 이전 행동이 명확하면 A1을 켠다."""
+    for question in (
+        "IRP 상품 그대로 이전신청하려면 어떻게 해?",
+        "보유 펀드를 매도 없이 다른 금융사로 옮기는 방법 알려줘",
+        "IRP 상품 그대로 이전할 수 있는 방법 알려줘",
+        "연금계좌 옮기면서 펀드는 매도하고 싶지 않아. 방법 알려줘",
+    ):
+        result, evidence = evaluate_guardian(_verified_state(question))
+
+        assert result["enabled"] is True, question
+        assert result["candidate_id"] == "in_kind_transfer_procedure", question
+        assert evidence, question
+
+
+def test_guardian_does_not_treat_generic_transfer_or_destination_as_in_kind_transfer():
+    """일반 이전이나 목적지 표현만으로 실물이전 의도를 추정하지 않는다."""
+    for question in (
+        "IRP 이전신청 방법 알려줘",
+        "연금계좌를 다른 금융사로 옮기는 방법 알려줘",
+        "다른 증권사로 계약이전하고 싶어",
+        "매도 없이 펀드를 계속 보유하는 방법 알려줘",
+        "매도 없이 다른 금융사 상품을 사는 방법 알려줘",
+    ):
+        result, evidence = evaluate_guardian(_verified_state(question))
+
+        assert result["enabled"] is False, question
+        assert evidence == [], question
+
+
 def test_guardian_stays_off_for_product_specified_or_list_questions():
     """상품을 특정했거나 불가사유 목록 자체를 물으면 Core(개별판정/목록)가 답할 몫이다."""
     for question in (
         "이 펀드 실물이전 가능해?",
         "실물이전 안 되는 상품 알려줘",
         "매도 없이 옮길 수 있어?",
+        "이 상품 그대로 이전 가능한가?",
+        "이 상품 그대로 이전할 수 있나요?",
         "실물이전 절차랑 안 되는 상품도 알려줘",
+        "실물이전 절차와 제한사항 알려줘",
     ):
         result, evidence = evaluate_guardian(_verified_state(question))
 
@@ -271,10 +318,33 @@ def test_guardian_computes_correct_remaining_amount():
     assert "300만원" in result["message"]
 
 
-def test_guardian_stays_off_when_limit_already_used_up():
-    """한도를 이미 채웠거나 초과했으면 미사용 혜택이 없으므로 침묵한다."""
+def test_guardian_respects_pension_savings_only_limit_when_computing_remaining_amount():
+    """연금저축 납입액은 단독 600만원까지만 합산 세액공제 한도에 반영된다."""
     result, evidence = evaluate_guardian(
-        _verified_state("연금저축 900만원 넣었는데 확인 좀 해줘")
+        _verified_state("올해 연금저축 700만원 넣었는데 납입내역은 어디서 봐?")
+    )
+
+    assert result["enabled"] is True
+    assert "연금저축 단독 한도는 이미 채워졌고" in result["message"]
+    assert "IRP를 포함한 합산 한도 기준으로는 300만원 남아 있습니다" in result["message"]
+    assert "200만원" not in result["message"]
+    assert "세액공제 대상 반영액은 600만원" in evidence[0]["content"]
+
+
+def test_guardian_explains_pension_savings_and_combined_remaining_amounts():
+    result, _ = evaluate_guardian(
+        _verified_state("올해 연금저축 500만원 넣었는데 납입내역은 어디서 봐?")
+    )
+
+    assert result["enabled"] is True
+    assert "연금저축 단독 한도는 100만원" in result["message"]
+    assert "IRP를 포함한 합산 한도 기준으로는 400만원 남아 있습니다" in result["message"]
+
+
+def test_guardian_stays_off_when_limit_already_used_up():
+    """합산 세액공제 한도를 이미 채웠거나 초과했으면 미사용 혜택이 없으므로 침묵한다."""
+    result, evidence = evaluate_guardian(
+        _verified_state("연금저축 600만원, IRP 300만원 넣었는데 확인 좀 해줘")
     )
 
     assert result["enabled"] is False

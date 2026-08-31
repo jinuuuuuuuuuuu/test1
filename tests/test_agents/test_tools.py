@@ -41,7 +41,6 @@ def test_tool_registries_have_expected_members():
         "calculate_pension_withdrawal",
         "check_early_withdrawal",
         "check_default_option",
-        "check_in_kind_transfer",
         "search_pension_docs",
     }
     assert {t.name for t in PRODUCT_AGENT_TOOLS} == {

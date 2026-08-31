@@ -191,6 +191,15 @@ def _classification_lines(state: PensionAgentState) -> list[str]:
     ]
     if state.get("scope_note"):
         lines.append(f"- 범위 판단: {state['scope_note']}")
+    withdrawal_context = state.get("withdrawal_context") or {}
+    locked_fields = withdrawal_context.get("locked_fields") or []
+    if locked_fields:
+        locked_values = []
+        for field in locked_fields:
+            value = withdrawal_context.get(field)
+            source = withdrawal_context.get(f"{field}_source")
+            locked_values.append(f"{field}={value}" + (f"({source})" if source else ""))
+        lines.append(f"- 중도인출 문맥 고정: {', '.join(locked_values)}")
     return lines
 
 
@@ -305,14 +314,20 @@ def _verification_lines(state: PensionAgentState) -> list[str]:
     return lines
 
 
-def _assembly_lines(state: PensionAgentState, context: list) -> list[str]:
+def _assembly_lines(state: PensionAgentState, core_context: list, guardian_context: list) -> list[str]:
     lines = ["[⑤ 최종 답변 조립]"]
-    if context:
-        sources = "; ".join(dict.fromkeys(c["source"] for c in context))
+    if core_context:
+        sources = "; ".join(dict.fromkeys(c["source"] for c in core_context))
         origin = " (③ 폴백 조회 결과)" if state.get("product_fallback_used") else ""
-        lines.append(f"  - 근거 {len(context)}건 사용{origin}: {sources}")
+        label = "Core 근거" if guardian_context else "근거"
+        lines.append(f"  - {label} {len(core_context)}건 사용{origin}: {sources}")
+    elif guardian_context:
+        lines.append("  - Core 근거 없음 (Core 답변에 근거가 필요한 수치는 답변에서 제외)")
     else:
         lines.append("  - 사용한 근거 없음 (근거가 필요한 수치는 답변에서 제외)")
+    if guardian_context:
+        guardian_sources = "; ".join(dict.fromkeys(c["source"] for c in guardian_context))
+        lines.append(f"  - 파수꾼 근거 {len(guardian_context)}건 사용: {guardian_sources}")
     if state.get("product_fallback_used"):
         lines.append("  - ③ LLM 초안을 폐기하고 폴백이 만든 상품 후보 답변으로 대체")
     if state.get("needs_clarification"):
@@ -324,6 +339,10 @@ def _assembly_lines(state: PensionAgentState, context: list) -> list[str]:
         lines.append(
             f"  - 파수꾼 체크 1건 추가: {guardian_result.get('candidate_id')} "
             f"({guardian_result.get('topic')})"
+        )
+    elif guardian_result and state.get("withdrawal_context"):
+        lines.append(
+            f"  - 파수꾼 체크 미실행: {guardian_result.get('disabled_reason') or 'NO_CANDIDATE'}"
         )
     if state.get("repair_attempted"):
         lines.append("  - ④검증 탈락으로 ②③을 1회 재실행한 결과를 반영 (재실행 한도 1회 소진)")
@@ -342,7 +361,7 @@ def _format_think_trace(state: PensionAgentState) -> str:
     lines.append(f"- 실행 계획: {_plan_sentence(state)}")
     lines.extend(_tool_trace_lines(state))
     lines.extend(_verification_lines(state))
-    lines.extend(_assembly_lines(state, context))
+    lines.extend(_assembly_lines(state, core_context, guardian_context))
     lines.append("[참고: 근거 원문]")
     if context:
         lines.extend(f"  - [{c['source']}] {c['content']}" for c in context)

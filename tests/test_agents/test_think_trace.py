@@ -229,6 +229,64 @@ def test_deterministic_info_trace_states_mapped_evidence_origin():
     assert "근거 미확보" not in trace
 
 
+def test_guardian_trace_separates_core_and_guardian_evidence():
+    """파수꾼 근거는 Core 근거와 분리해 표시해야 후단 계층임이 드러난다."""
+    from src.agents.generator import _format_think_trace
+
+    state = {
+        "question": "전세보증금 중도인출 필요서류 알려줘",
+        "intent": ["정보형"],
+        "scope": "범위내",
+        "is_safe": True,
+        "info_draft": "필요서류는 다음과 같습니다.",
+        "deterministic_info": True,
+        "retrieved_context": [
+            {"source": "doc48 중도인출 무주택 전월세보증금 필요서류", "content": "서류", "node": "info_agent"}
+        ],
+        "guardian_result": {
+            "enabled": True,
+            "candidate_id": "housing_deposit_documents",
+            "topic": "withdrawal_tax",
+        },
+        "guardian_evidence": [
+            {"source": "doc38~doc40 주택 관련 중도인출 재원별 과세 규칙", "content": "세금", "node": "guardian"}
+        ],
+        "tool_trace": [],
+        "verification": {"grounded": True, "issues": [], "requirements_met": True},
+        "response_mode": "complete",
+    }
+
+    trace = _format_think_trace(state)
+
+    assert "Core 근거 1건 사용: doc48 중도인출 무주택 전월세보증금 필요서류" in trace
+    assert "파수꾼 근거 1건 사용: doc38~doc40 주택 관련 중도인출 재원별 과세 규칙" in trace
+    assert "근거 2건 사용: doc48" not in trace
+
+
+def test_withdrawal_trace_records_intentional_guardian_off_reason():
+    from src.agents.generator import _format_think_trace
+
+    trace = _format_think_trace({
+        "question": "퇴직금 일부는 중도인출하고 나머지는 연금으로 받으면 세금 어떻게 돼?",
+        "intent": ["정보형"],
+        "scope": "범위내",
+        "is_safe": True,
+        "response_mode": "complete",
+        "withdrawal_context": {
+            "source_type": "RETIREMENT_PAY",
+            "source_type_source": "explicit_user",
+            "receipt_mode": "SPLIT",
+            "receipt_mode_source": "deterministic_rule",
+            "locked_fields": ["source_type", "receipt_mode"],
+        },
+        "verification": {"grounded": True, "requirements_met": True},
+        "guardian_result": {"enabled": False, "disabled_reason": "EXPLICIT_USER_TOPIC"},
+    })
+
+    assert "중도인출 문맥 고정" in trace
+    assert "파수꾼 체크 미실행: EXPLICIT_USER_TOPIC" in trace
+
+
 def test_fallback_trace_marks_draft_replacement():
     """폴백은 LLM 초안을 폐기하고 대체한다 — 그 사실도 trace에 남긴다."""
     from src.agents.generator import _format_think_trace

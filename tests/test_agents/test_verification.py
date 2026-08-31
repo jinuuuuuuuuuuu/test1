@@ -308,6 +308,45 @@ def test_missing_requirements_noop_when_empty():
     assert enforce_missing_requirements(answer, []) == answer
 
 
+def test_withdrawal_context_limits_requirements_to_explicit_topics():
+    from src.agents.verification import apply_withdrawal_context_override
+
+    verification = {
+        "grounded": True,
+        "requirements_met": False,
+        "missing_requirements": ["세금", "가능 여부", "다른 중도인출 사유"],
+    }
+    context = {
+        "reason": "DISASTER",
+        "explicit_topics": ["DOCUMENTS", "DEADLINE"],
+        "task_required_topics": [],
+        "locked_fields": ["reason"],
+    }
+    draft = "필요서류는 피해상황확인서입니다. 신청기한은 피해발생일로부터 3개월 이내입니다."
+
+    result = apply_withdrawal_context_override(verification, context, draft)
+
+    assert result["requirements_met"] is True
+    assert result["missing_requirements"] == []
+
+
+def test_withdrawal_context_keeps_missing_explicit_topic_and_required_precondition():
+    from src.agents.verification import apply_withdrawal_context_override
+
+    verification = {"grounded": True, "requirements_met": True, "missing_requirements": []}
+    context = {
+        "reason": None,
+        "explicit_topics": ["TAX"],
+        "task_required_topics": ["ELIGIBILITY_PRECONDITION"],
+        "locked_fields": ["source_type", "receipt_mode"],
+    }
+
+    result = apply_withdrawal_context_override(verification, context, "퇴직금 일부를 받는 방법입니다.")
+
+    assert result["requirements_met"] is False
+    assert result["missing_requirements"] == ["중도인출 세금", "법정 중도인출 요건 충족 전제"]
+
+
 def test_premise_issues_prepends_correction():
     """잘못된 전제를 초안이 안 짚었으면 앞머리에 교정문을 붙인다 — 요강 '정확성'."""
     from src.agents.verification import enforce_premise_issues

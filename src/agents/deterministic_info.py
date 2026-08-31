@@ -96,7 +96,8 @@ from src.rules.withdrawal_limit import (
     UNLIMITED_FROM_YEAR,
     calculate_withdrawal_limit,
 )
-from src.agents.tax_context import personal_tax_response
+from src.agents.tax_context import extract_tax_context, personal_tax_response
+from src.agents.withdrawal_context import extract_withdrawal_context
 
 DeterministicCategory = Literal[
     "복합정보_태스크플랜",
@@ -851,6 +852,20 @@ _WITHDRAWAL_REASON_LABELS = {
     "재난피해": "재난피해",
 }
 
+_CONTEXT_REASON_TO_RULE_REASON = {
+    "MEDICAL": "요양",
+    "PERSONAL_REHABILITATION": "개인회생파산",
+    "BANKRUPTCY": "개인회생파산",
+    "HOUSING_DEPOSIT": "무주택전월세",
+    "HOME_PURCHASE": "무주택주택구입",
+    "DISASTER": "재난피해",
+}
+_CONTEXT_REASON_TO_DOCUMENT_REASON = {
+    **_CONTEXT_REASON_TO_RULE_REASON,
+    "PERSONAL_REHABILITATION": "개인회생",
+    "BANKRUPTCY": "파산",
+}
+
 
 def _has_final_consonant(word: str) -> bool:
     """마지막 글자에 받침이 있는지 — 조사(이/가, 이라는/라는) 선택용."""
@@ -877,7 +892,16 @@ def _detect_withdrawal_reason(text: str) -> str | None:
 
 _COMPOSITE_TAX_WORDS = ("세금", "세율", "과세", "얼마", "떼")
 _COMPOSITE_DEADLINE_WORDS = ("언제까지", "기한", "신청기한", "시기")
-_COMPOSITE_DOCUMENT_WORDS = ("서류", "필요서류", "구비서류", "징구서류")
+_COMPOSITE_DOCUMENT_WORDS = (
+    "서류",
+    "필요서류",
+    "구비서류",
+    "징구서류",
+    "제출서류",
+    "준비서류",
+    "준비할",
+    "챙겨",
+)
 _COMPOSITE_ELIGIBILITY_WORDS = (
     "가능",
     "가능한지",
@@ -912,6 +936,7 @@ def _build_composite_info_tasks(question: str) -> list[str]:
     만들지 않고, 이미 결정론 핸들러/문서로 답할 수 있는 하위 작업만 감지한다.
     """
     text = _compact(question)
+    withdrawal_context = extract_withdrawal_context(question)
     tasks: list[str] = []
 
     if "중도인출" in text:
@@ -924,11 +949,7 @@ def _build_composite_info_tasks(question: str) -> list[str]:
         if any(word in text for word in _COMPOSITE_TAX_WORDS):
             tasks.append("early_withdrawal_tax")
 
-    if (
-        "퇴직금" in text
-        and "연금" in text
-        and any(word in text for word in _COMPOSITE_TAX_WORDS)
-    ):
+    if withdrawal_context and withdrawal_context.receipt_mode == "SPLIT" and "TAX" in withdrawal_context.explicit_topics:
         if "중도인출" in text or "일부" in text or "연금외" in text:
             tasks.append("retirement_benefit_non_pension_tax")
         if "나머지" in text or "연금으로" in text or "연금수령" in text:
@@ -941,9 +962,9 @@ def _build_composite_info_tasks(question: str) -> list[str]:
             for task in tasks
             if task not in {"early_withdrawal_eligibility", "early_withdrawal_tax"}
         ]
-    if tasks == ["early_withdrawal_documents"] and _detect_withdrawal_reason(text) in _WITHDRAWAL_DOCUMENT_RULES:
-        # Guardian MVP의 ON 케이스다. 서류-only 질문도 LLM 자유 생성으로 보내면
-        # Core Answer가 흔들리므로, 근거가 있는 전세보증금/주택구입 서류는 정형 경로로 처리한다.
+    if tasks == ["early_withdrawal_documents"] and withdrawal_context and withdrawal_context.reason:
+        # 사유가 명시된 서류 질문은 해당 사유 근거만 사용하는 정형 경로로 처리한다.
+        # 사유별 근거가 없다고 해서 주택·요양 서류를 fallback으로 섞지 않는다.
         return tasks
     return tasks if len(tasks) >= 2 else []
 
@@ -957,10 +978,10 @@ _WITHDRAWAL_DOCUMENT_RULES: dict[str, tuple[str, str, tuple[str, ...]]] = {
         "임대차계약서 사본 또는 전월세계약서 사본입니다. 잔금일 이후 1개월 이내 신청하는 경우 "
         "계약금 입금확인증 또는 영수증이 필요할 수 있습니다.",
         (
-            "중도인출신청서",
-            "무주택 확인서류: 현거주지 주민등록등본, 등본주소지 건물등기사항증명서 또는 건축물관리대장, 지방세 세목별 과세증명서",
-            "전월세 계약서류: 주택 임대차계약서 사본 또는 전월세계약서 사본",
-            "상황별 추가서류: 잔금일 이후 신청 시 계약금 입금확인증 또는 영수증 등",
+            "공통: 중도인출신청서",
+            "무주택 확인: 현거주지 주민등록등본, 등본주소지 건물등기사항증명서 또는 건축물관리대장, 지방세 세목별 과세증명서",
+            "전월세 계약 확인: 주택 임대차계약서 사본 또는 전월세계약서 사본",
+            "잔금일 이후 신청 시: 계약금 입금확인증 또는 영수증 등",
         ),
     ),
     "무주택주택구입": (
@@ -971,10 +992,42 @@ _WITHDRAWAL_DOCUMENT_RULES: dict[str, tuple[str, str, tuple[str, ...]]] = {
         "또는 공급계약서 또는 분양권매매계약서 사본, 신축은 공사계약서와 건축허가서 또는 "
         "착공신고필증, 경매·공매는 입찰보증금 입금영수증과 사건검색 발급본 등이 필요합니다.",
         (
-            "무주택 확인서류: 현거주지 주민등록등본, 등본주소지 건물등기사항증명서, 지방세 세목별 과세증명서",
+            "무주택 확인: 현거주지 주민등록등본, 등본주소지 건물등기사항증명서, 지방세 세목별 과세증명서",
             "구입: 매매계약서 사본",
             "분양: 분양계약서, 공급계약서 또는 분양권매매계약서 사본",
-            "신축·경매·공매는 공사계약서, 건축허가서, 입찰보증금 입금영수증 등 유형별 서류",
+            "신축·경매·공매: 공사계약서, 건축허가서, 입찰보증금 입금영수증 등 유형별 서류",
+        ),
+    ),
+    "개인회생": (
+        "doc47 중도인출 개인회생 필요서류",
+        "개인회생 중도인출에는 최근 5년 이내 개인회생절차 개시결정문 사본 또는 "
+        "개인회생절차변제인가 확정증명원 등 개시결정을 확인할 수 있는 서류와 대법원 "
+        "나의 사건검색 진행경과 전체 출력물이 필요합니다. 폐지결정 또는 면책결정으로 "
+        "개인회생 효력이 종료된 경우에는 신청할 수 없습니다.",
+        (
+            "개인회생: 최근 5년 이내 개인회생절차 개시결정문 사본 또는 개인회생절차변제인가 확정증명원 등",
+            "개인회생: 대법원 나의 사건검색 진행경과 전체 출력물",
+        ),
+    ),
+    "파산": (
+        "doc47 중도인출 파산선고 필요서류",
+        "파산선고 중도인출에는 최근 5년 이내 파산선고문 사본이 필요합니다. 면책 또는 "
+        "복권 결정 여부와 무관하게 신청할 수 있습니다.",
+        ("파산선고: 최근 5년 이내 파산선고문 사본",),
+    ),
+    "재난피해": (
+        "doc50 중도인출 재난피해 필요서류",
+        "재난피해 중도인출 서류는 피해 유형별로 다릅니다. 물적피해는 건축물대장등본과 "
+        "피해상황확인서 등이 필요하며, 임차 주거시설이면 임대차계약서를 함께 제출합니다. "
+        "인적피해는 피해상황확인서 또는 특별재난지역 선포 확인자료 등이 필요합니다. "
+        "가입자가 15일 이상 입원치료한 경우에는 진단서·소견서 등 입원기간을 확인할 수 "
+        "있는 서류가 필요하며, 가족 피해는 가족관계증명서 또는 주민등록등본으로 관계를 확인합니다.",
+        (
+            "물적피해: 건축물대장등본, 피해상황확인서 또는 특별재난지역 선포 확인자료 등",
+            "임차 주거시설 피해: 임대차계약서 추가",
+            "인적피해: 피해상황확인서, 실종신고접수증 또는 사건사고사실확인원 등 해당 증빙",
+            "15일 이상 입원치료: 진단서·소견서 등 입원기간 확인서류",
+            "가족 피해: 가족관계증명서 또는 주민등록등본",
         ),
     ),
 }
@@ -1017,6 +1070,19 @@ def _withdrawal_documents_section(reason: str | None) -> tuple[str, list[Retriev
     lines = "\n".join(f"- {bullet}" for bullet in bullets)
     section = f"**필요서류**\n{lines}"
     return section, _context(source, content)
+
+
+def _personal_workout_eligibility_result() -> tuple[str, list[RetrievedItem]]:
+    source = "doc47 중도인출 개인워크아웃·신용회복 제외 규칙"
+    content = (
+        "개인워크아웃·신용회복 자체는 법정 중도인출 사유에 해당하지 않습니다. "
+        "개인회생절차개시 결정 또는 파산선고는 별도의 법정 사유입니다."
+    )
+    draft = (
+        "아니요. 개인워크아웃·신용회복 자체는 제공 자료상 법정 중도인출 사유에 해당하지 않습니다.\n\n"
+        "개인회생절차개시 결정 또는 파산선고는 별도의 법정 사유이며, 개인워크아웃·신용회복과 구분됩니다."
+    )
+    return draft, _context(source, content)
 
 
 def _withdrawal_eligibility_section(question: str, reason: str | None) -> tuple[str, list[RetrievedItem]]:
@@ -1083,14 +1149,38 @@ def _early_withdrawal_tax_section(reason: str | None) -> tuple[str, list[Retriev
     return section, _context(source, content)
 
 
-def _retirement_benefit_split_tax_sections() -> tuple[list[str], list[RetrievedItem]]:
+def _retirement_benefit_split_tax_sections(question: str) -> tuple[list[str], list[RetrievedItem]]:
+    non_pension = get_deferred_retirement_tax_rate(1, is_pension_receipt=False)
+    pension_tiers = [
+        get_deferred_retirement_tax_rate(year, is_pension_receipt=True)
+        for year in (1, 11, 21)
+    ]
+    payment_percentages = [round(result.payment_ratio * 100) for result in pension_tiers]
+    non_pension_percentage = round(non_pension.payment_ratio * 100)
+    actual_receipt_year = extract_tax_context(question).actual_pension_year
     source = "doc39~doc40 이연퇴직소득세 감면 규칙"
     content = (
         "IRP 중도인출은 법정 사유를 충족하는 경우에만 가능합니다. "
-        "퇴직금을 연금으로 수령하면 연금실제수령연차 1~10년차는 이연퇴직소득세의 70%를 납부하고, "
-        "11~20년차는 60%를 납부하며, 21년차 이상은 50%를 납부합니다. 연금외수령은 감면 없이 "
-        "이연퇴직소득세를 전액 납부합니다."
+        f"퇴직금을 연금으로 수령하면 연금실제수령연차 1~10년차는 이연퇴직소득세의 {payment_percentages[0]}%를 납부하고, "
+        f"11~20년차는 {payment_percentages[1]}%를 납부하며, 21년차 이상은 {payment_percentages[2]}%를 납부합니다. "
+        f"연금외수령은 감면 없이 이연퇴직소득세의 {non_pension_percentage}%를 납부합니다."
     )
+    pension_lines = [
+        "- 퇴직금 재원을 연금으로 수령하면 연금실제수령연차에 따라 이연퇴직소득세 납부 비율이 달라집니다.",
+        f"- 1~10년차는 {payment_percentages[0]}%, 11~20년차는 {payment_percentages[1]}%, 21년차 이상은 {payment_percentages[2]}%를 납부합니다.",
+    ]
+    if actual_receipt_year:
+        actual_result = get_deferred_retirement_tax_rate(actual_receipt_year, is_pension_receipt=True)
+        pension_lines.append(
+            f"- 입력한 연금실제수령연차 {actual_receipt_year}년차에는 이연퇴직소득세의 "
+            f"{round(actual_result.payment_ratio * 100)}%를 납부합니다."
+        )
+        pension_lines.append("- 정확한 세액 계산에는 원래 납부해야 할 이연퇴직소득세 금액이 필요합니다.")
+    else:
+        pension_lines.append(
+            "- 정확한 비율을 적용하려면 연금실제수령연차가 필요하고, 정확한 세액 계산에는 원래 납부해야 할 이연퇴직소득세 금액도 필요합니다."
+        )
+
     sections = [
         (
             "**전제 확인**\n"
@@ -1098,13 +1188,11 @@ def _retirement_benefit_split_tax_sections() -> tuple[list[str], list[RetrievedI
         ),
         (
             "**중도인출하는 퇴직금 부분**\n"
-            "- 중도인출로 퇴직금 재원을 연금외수령하는 부분은 감면 없이 이연퇴직소득세를 전액 납부하는 구조입니다."
+            f"- 중도인출로 퇴직금 재원을 연금외수령하는 부분은 감면 없이 이연퇴직소득세를 전액 납부({non_pension_percentage}%)하는 구조입니다."
         ),
         (
             "**나머지를 연금으로 받는 부분**\n"
-            "- 퇴직금 재원을 연금으로 수령하면 연금실제수령연차에 따라 이연퇴직소득세 납부 비율이 달라집니다.\n"
-            "- 1~10년차는 70%, 11~20년차는 60%, 21년차 이상은 50%를 납부합니다.\n"
-            "- 정확한 세액 계산에는 연금실제수령연차와 원래 납부해야 할 이연퇴직소득세 금액이 필요합니다."
+            + "\n".join(pension_lines)
         ),
     ]
     return sections, _context(source, content)
@@ -1116,7 +1204,22 @@ def _composite_info_task_plan_response(question: str) -> tuple[str, list[Retriev
         return None
 
     text = _compact(question)
-    reason = _detect_withdrawal_reason(text)
+    withdrawal_context = extract_withdrawal_context(question)
+    if withdrawal_context and withdrawal_context.reason == "PERSONAL_WORKOUT":
+        draft, context = _personal_workout_eligibility_result()
+        if "DOCUMENTS" in withdrawal_context.explicit_topics:
+            draft += "\n\n따라서 개인워크아웃·신용회복 자체를 사유로 한 중도인출 서류 안내 대상도 아닙니다."
+        return draft, context
+    reason = (
+        _CONTEXT_REASON_TO_RULE_REASON.get(withdrawal_context.reason)
+        if withdrawal_context and withdrawal_context.reason
+        else _detect_withdrawal_reason(text)
+    )
+    document_reason = (
+        _CONTEXT_REASON_TO_DOCUMENT_REASON.get(withdrawal_context.reason)
+        if withdrawal_context and withdrawal_context.reason
+        else reason
+    )
     sections: list[str] = []
     context: list[RetrievedItem] = []
 
@@ -1131,7 +1234,7 @@ def _composite_info_task_plan_response(question: str) -> tuple[str, list[Retriev
         context.extend(ctx)
 
     if "early_withdrawal_documents" in tasks:
-        result = _withdrawal_documents_section(reason)
+        result = _withdrawal_documents_section(document_reason)
         if result is not None:
             section, ctx = result
             sections.append(section)
@@ -1148,7 +1251,7 @@ def _composite_info_task_plan_response(question: str) -> tuple[str, list[Retriev
         "retirement_benefit_non_pension_tax" in tasks
         or "retirement_benefit_pension_tax" in tasks
     ):
-        split_sections, ctx = _retirement_benefit_split_tax_sections()
+        split_sections, ctx = _retirement_benefit_split_tax_sections(question)
         sections.append(split_sections[0])
         if "retirement_benefit_non_pension_tax" in tasks:
             sections.append(split_sections[1])
@@ -1383,12 +1486,69 @@ def _early_withdrawal_eligibility_response(question: str) -> tuple[str, list[Ret
         )
         return draft, _context(source, content)
 
-    if any(word in text for word in ("개인워크아웃", "워크아웃", "신용회복")):
-        draft = (
-            "아니요. 제공 자료 기준으로 개인워크아웃이나 신용회복은 퇴직연금 중도인출 사유에 해당하지 않습니다.\n\n"
-            "개인회생절차개시 결정 또는 파산선고는 중도인출 사유가 될 수 있지만, 개인워크아웃·신용회복은 그 사유와 구분됩니다."
+    has_workout = any(word in text for word in ("개인워크아웃", "워크아웃", "신용회복"))
+    has_rehabilitation = "개인회생" in text or "회생절차" in text
+    if has_workout and has_rehabilitation:
+        comparison_source = "doc47 중도인출 개인회생·개인워크아웃 구분 규칙"
+        comparison_content = (
+            "개인회생절차개시 결정은 받은 날부터 5년 이내이고 효력이 진행 중이면 DC와 IRP의 "
+            "중도인출 사유가 될 수 있습니다. 개인워크아웃·신용회복 자체는 법정 중도인출 "
+            "사유에 해당하지 않습니다."
         )
-        return draft, _context(source, content)
+        draft = (
+            "개인회생과 개인워크아웃은 중도인출에서 다르게 처리됩니다.\n\n"
+            "- 개인회생: 개인회생절차개시 결정을 받은 날부터 5년 이내이고 효력이 진행 중이면 "
+            "DC와 IRP의 법정 중도인출 사유가 될 수 있습니다.\n"
+            "- 개인워크아웃·신용회복: 그 자체는 제공 자료상 법정 중도인출 사유에 해당하지 않습니다."
+        )
+        return draft, _context(comparison_source, comparison_content)
+
+    if has_workout:
+        return _personal_workout_eligibility_result()
+
+    if has_rehabilitation:
+        rehabilitation_source = "doc47 중도인출 개인회생 요건 규칙"
+        rehabilitation_content = (
+            "DC와 IRP에서는 개인회생절차개시 결정을 받은 날부터 5년 이내이고 신청 시점에 "
+            "개인회생절차의 효력이 진행 중이면 중도인출 사유가 될 수 있습니다. 폐지결정 또는 "
+            "면책결정으로 효력이 종료된 경우에는 신청할 수 없습니다. DB형은 중도인출이 허용되지 않습니다."
+        )
+        draft = (
+            "개인회생절차개시 결정은 DC와 IRP의 법정 중도인출 사유가 될 수 있습니다.\n\n"
+            "- 신청 시기: 개인회생절차개시 결정을 받은 날부터 **5년 이내**\n"
+            "- 추가 조건: 신청 시점에도 개인회생절차의 효력이 진행 중이어야 합니다.\n"
+            "- 폐지결정 또는 면책결정으로 효력이 종료된 경우에는 이 사유로 신청할 수 없습니다.\n"
+            "- DB형 퇴직연금은 사유와 관계없이 중도인출이 허용되지 않습니다."
+        )
+        return draft, _context(rehabilitation_source, rehabilitation_content)
+
+    withdrawal_context = extract_withdrawal_context(question)
+    if withdrawal_context and withdrawal_context.reason == "BANKRUPTCY":
+        bankruptcy_source = "doc47 중도인출 파산선고 요건 규칙"
+        bankruptcy_content = (
+            "DC와 IRP에서는 파산선고를 받은 날부터 5년 이내이면 중도인출 사유가 될 수 있습니다. "
+            "파산선고는 면책 또는 복권 결정 여부와 무관합니다. DB형은 중도인출이 허용되지 않습니다."
+        )
+        draft = (
+            "파산선고는 DC와 IRP의 법정 중도인출 사유가 될 수 있습니다.\n\n"
+            "- 신청 시기: 파산선고를 받은 날부터 **5년 이내**\n"
+            "- 면책 또는 복권 결정 여부와는 무관합니다.\n"
+            "- DB형 퇴직연금은 사유와 관계없이 중도인출이 허용되지 않습니다."
+        )
+        return draft, _context(bankruptcy_source, bankruptcy_content)
+
+    if withdrawal_context and withdrawal_context.reason == "DISASTER":
+        disaster_source = "doc50 중도인출 재난피해 요건 규칙"
+        disaster_content = (
+            "재난으로 피해를 입은 경우는 DC와 IRP의 법정 중도인출 사유가 될 수 있습니다. "
+            "DB형은 중도인출이 허용되지 않으며, 실제 신청은 피해 유형과 증빙 요건을 확인해야 합니다."
+        )
+        draft = (
+            "재난으로 피해를 입은 경우는 DC와 IRP의 법정 중도인출 사유가 될 수 있습니다.\n\n"
+            "다만 실제 신청 가능 여부는 피해 유형과 해당 증빙 요건을 충족하는지 확인해야 합니다. "
+            "DB형 퇴직연금은 사유와 관계없이 중도인출이 허용되지 않습니다."
+        )
+        return draft, _context(disaster_source, disaster_content)
 
     # 요양 사유의 대상자 범위 — 본인만이 아니라 배우자·부양가족의 요양도 사유가 된다.
     # 실측 no.390("본인 아닌 가족의 의료비도 포함되나요?")에서 LLM은 이 내용이 담긴
@@ -1899,7 +2059,7 @@ def _detect_transfer_codes(question: str) -> list[str]:
     return detected
 
 
-def _in_kind_transfer_judgement_response(question: str) -> tuple[str, list[RetrievedItem]] | None:
+def in_kind_transfer_judgement_response(question: str) -> tuple[str, list[RetrievedItem]] | None:
     """보유 상품이 특정된 실물이전 질문에 가능/불가를 판정한다 (목록 나열이 아님).
 
 실물이전이 안 되는 경우는?"(목록답변)과 "MMF인데 옮길 수 있나요?"(개별판정)는
@@ -2184,7 +2344,7 @@ _CATEGORY_HANDLERS = {
     "투자가능여부_상품유형": _investment_eligibility_response,
     "퇴직시_IRP의무이전": _irp_mandatory_transfer_response,
     "실물이전_불가사유": _in_kind_transfer_block_response,
-    "실물이전_개별판정": _in_kind_transfer_judgement_response,
+    "실물이전_개별판정": in_kind_transfer_judgement_response,
     "연금수령한도": _withdrawal_limit_response,
     "퇴직소득세감면": _retirement_tax_reduction_response,
     "연금소득세_종합과세": _pension_income_tax_response,

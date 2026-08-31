@@ -19,8 +19,10 @@ from src.agents.deterministic_info import (
     candidate_categories,
     deterministic_response_for,
 )
+from src.agents.in_kind_transfer_intent import has_in_kind_transfer_intent
 from src.agents.llm import get_llm, invoke_with_retry
 from src.agents.state import PensionAgentState
+from src.agents.withdrawal_context import extract_withdrawal_context
 from src.storage.queries import find_asset_overlap
 
 ROUTER_MODEL = "HCX-007"
@@ -333,6 +335,19 @@ def _drop_product_intent_for_deterministic_info(
     return remaining or ["정보형"]
 
 
+def _apply_in_kind_transfer_intent_override(intent: list[str], question: str) -> list[str]:
+    """자산보존 실물이전 의도를 상품 추천 경로에서 정보형 Core로 돌린다.
+
+    "상품 그대로 이전" 같은 자연어 표현은 상품명을 추천해 달라는 뜻이 아니라 계좌·제도상
+    이전 규정을 묻는 것이다. Router가 "상품"만 보고 상품형으로 보내면 위험성향을 묻는
+    추천 clarification으로 빠져 A1도 평가될 수 없다. 가능 여부를 직접 묻는 경우도
+    Guardian은 침묵하지만 Core가 답해야 하므로 동일하게 정보형으로 보낸다.
+    """
+    if not has_in_kind_transfer_intent(question):
+        return intent
+    return ["정보형"]
+
+
 def _restore_rejected_category(category: str, candidates: list[str], question: str) -> str:
     """라우터가 잘못 기각한 정형 카테고리를 코드가 되살린다 — 안전이 확인된 것만.
 
@@ -455,6 +470,8 @@ def build_router_node():
         intent = _drop_product_intent_for_deterministic_info(
             intent, deterministic_category, matched_funds
         )
+        intent = _apply_in_kind_transfer_intent_override(intent, state["question"])
+        withdrawal_context = extract_withdrawal_context(state["question"])
         return {
             "intent": intent,
             "scope": scope,
@@ -462,6 +479,7 @@ def build_router_node():
             "is_safe": decision.is_safe,
             "safety_reason": decision.safety_reason,
             "deterministic_category": deterministic_category,
+            "withdrawal_context": withdrawal_context.to_state_dict() if withdrawal_context else None,
         }
 
     return router_node
