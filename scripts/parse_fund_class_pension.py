@@ -36,12 +36,23 @@ VIP한국형가치투자(KR514X450008) 원문을 직접 읽어 6개 연금 클�
 컬럼이며, 요약정보의 4개 대표 클래스 표(A/C/Ae/Ce만 있고 페이지 경계에서
 클래스명이 쪼개짐)는 쓰지 않는다 — 그게 팀원 파싱이 어긋난 원인으로 추정된다.)
 
-45개 텍스트 파일(prospectus_check/*.txt) 중 "정의 충돌 0건 + 코드에 이상 문자
-없음" 기준으로 걸러 **14개 펀드, 43개 연금 클래스**가 깨끗하게 나온다(CLEAN_RESULTS
-필터, main() 참고). 나머지 31개는 표 형식 변형(줄바꿈 위치, 페이지 헤더 텍스트가
-클래스명에 섞이는 오염 등)이 더 다양해서 이 정규식이 아직 못 따라간다 — 무리하게
-정규식을 넓히면 팀원의 v2가 겪은 것과 같은 "이름만 검증된 오염값"이 재발하므로,
-지금은 안전한 14개만 신뢰하고 나머지는 사람이 원문 대조하는 편이 낫다.
+41개 텍스트 파일(prospectus_check/*.txt, 확장자 있는 실제 펀드 파일 기준) 중
+"정의 충돌 0건 + 오염 없음" 기준으로 걸러 **26개 펀드, 74건**이 깨끗하게 나온다
+(is_clean() 필터, main() 참고). 이 26개는 이후 두 라운드의 버그 수정(코드 형태
+오탐 제거, 가짜 충돌 판정 완화, 섹션 헤더 번호 유연화, 총보수·비용 타당범위
+검증)을 거쳐 14개에서 늘어난 것이다.
+
+나머지 15개는 구조적으로 다른 표 형식이라 지금 로직으로는 못 잡는다 — 억지로
+정규식을 더 넓히면 팀원의 v2가 겪은 것과 같은 "이름만 검증된 오염값"이 재발하므로
+손대지 않았다. 확인된 실패 유형 3가지:
+  - 전치형 표: 클래스 코드가 열로 먼저 나열되고 숫자가 행 단위로 뒤따름
+    (지금 로직이 가정하는 "코드 뒤 숫자" 구조와 다름). 예: KR5118201004
+  - 역순 표: "숫자 블록 → 클래스명 → 다음 숫자 블록" 순서(지금까지의 다른 펀드와
+    반대). 예: KR5117420097 — 총보수·비용 타당범위 검증(0.01~3%)이 이 오염을
+    걸러내 신뢰 목록에서는 빠지지만, 표 자체를 파싱하지는 못한다.
+  - PDF 텍스트 추출 자체가 컬럼 레이아웃을 깨뜨려 클래스명·코드·펀드코드가
+    한 줄에 뒤섞인 경우. 예: KR5118420006 — 원문 텍스트 품질 문제라 정규식으로
+    복구하면 안 된다.
 
 ## 아직 안 된 것 / 다음 단계
 
@@ -80,10 +91,16 @@ CLASS_DEF_RE = re.compile(
 )
 NUM_TOKEN_RE = re.compile(r"-?\d+\.\d+|없음|실비|-")
 
+# 섹션 번호가 "나."인 문서가 많지만 "다."인 경우도 있다(실측 KR5117420097 —
+# "가. 투자자에게 직접 부과되는 수수료" 다음이 "다. 집합투자기구에 부과되는 보수 및
+# 비용"으로, 그 사이의 "나."가 다른 내용을 다루는 구조). 번호 자체는 검사하지 않고
+# 제목 문구만으로 앵커를 잡는다.
 _FEE_SECTION_HEADER_RE = re.compile(
-    r"나\.\s*집\s*합\s*투\s*자\s*기\s*구\s*에\s*부\s*과\s*되\s*는\s*보\s*수\s*및\s*비\s*용"
+    r"[가-힣]\.\s*집\s*합\s*투\s*자\s*기\s*구\s*에\s*부\s*과\s*되\s*는\s*보\s*수\s*및\s*비\s*용"
 )
-_NEXT_SECTION_RE = re.compile(r"\n\s*다\.\s*[가-힣]")
+# 다음 섹션 경계도 번호를 가리지 않는다 — 자모 하나 + "."로 시작하는 새 항목이면
+# 그 지점에서 자른다(예: "라.", "마." 등 어떤 글자든).
+_NEXT_SECTION_RE = re.compile(r"\n\s*[가-힣]\.\s*[가-힣]")
 
 
 def classify_account_type(label: str) -> str | None:
@@ -115,8 +132,15 @@ def classify_channel(label: str) -> str:
 _VALID_CODE_CORE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9\-]{0,9}$")
 
 
+# 형태 조건(영문자 시작 + 영숫자/하이픈)은 통과하지만 실제로는 표 헤더의 영문
+# 컬럼명인 경우 — 실측: "종류(Class)"의 "Class"가 코드로 오인됨.
+_NON_CODE_WORDS = {"Class", "Fee", "Type", "Total"}
+
+
 def _looks_like_class_code(code: str) -> bool:
     core = code.split("(")[0]
+    if core in _NON_CODE_WORDS:
+        return False
     return bool(_VALID_CODE_CORE_RE.match(core))
 
 
@@ -168,6 +192,15 @@ def find_fee_rate_sections(text: str) -> list[str]:
     return sections
 
 
+# 총보수·비용(연간 %)의 타당 범위. 실측 전 펀드에서 0.01~2% 사이였다. 이 범위
+# 밖이면 클래스명과 엉뚱한 숫자가 짝지어진 것으로 본다 — 실측: KR5117420097은
+# 표가 "숫자 블록 → 클래스명 → 다음 클래스 숫자 블록" 순서(지금까지의 다른 펀드와
+# 반대)라, 클래스명 뒤 400자에서 찾은 숫자가 실제로는 다음 클래스의 값이었고
+# 결과가 0.0076%처럼 비현실적으로 작게 나왔다. 이 역순 표 형식은 아직 지원하지
+# 않으므로, 범위를 벗어난 값은 조용히 버려 오염된 값을 신뢰 목록에 넣지 않는다.
+_PLAUSIBLE_TER_RANGE = (0.01, 3.0)
+
+
 def extract_numeric_rows(section: str, known_codes: set[str]) -> list[tuple[str, float]]:
     """숫자표 안에서 "코드(또는 전체명(코드))" 뒤에 오는 총보수·비용(7번째 숫자)을 뽑는다."""
     results = []
@@ -180,6 +213,8 @@ def extract_numeric_rows(section: str, known_codes: set[str]) -> list[tuple[str,
         try:
             ter = float(nums[6])
         except ValueError:
+            continue
+        if not (_PLAUSIBLE_TER_RANGE[0] <= ter <= _PLAUSIBLE_TER_RANGE[1]):
             continue
         results.append((code, ter))
 
@@ -196,6 +231,8 @@ def extract_numeric_rows(section: str, known_codes: set[str]) -> list[tuple[str,
         try:
             ter = float(nums[6])
         except ValueError:
+            continue
+        if not (_PLAUSIBLE_TER_RANGE[0] <= ter <= _PLAUSIBLE_TER_RANGE[1]):
             continue
         results.append((code, ter))
     return results
