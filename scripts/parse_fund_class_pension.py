@@ -39,10 +39,11 @@ VIP한국형가치투자(KR514X450008) 원문을 직접 읽어 6개 연금 클�
 투자설명서 PDF 100개 전부(`scripts/extract_prospectus_text.py`로 NFD 유니코드
 정규화 문제를 우회해 전량 텍스트 추출 완료 — 원인은 파일시스템의 한글 디렉터리명이
 NFD 분해형으로 저장돼 있어 NFC 경로 문자열로는 못 열렸던 것)에 대해 이 파서를
-실행한 결과, "정의 충돌 0건 + 오염 없음" 기준으로 **57개 펀드, 173건**이 깨끗하게
+실행한 결과, "정의 충돌 0건 + 오염 없음" 기준으로 **64개 펀드, 203건**이 깨끗하게
 나온다(is_clean() 필터, main() 참고). 41개 파일 기준 26개 펀드/74건이었던 것에서
-신규 추출된 59개 파일을 더해 늘어났다. VIP한국형가치투자 6개 클래스 값은 이 라운드
-에서도 100% 유지됨(회귀 없음).
+신규 추출된 59개 파일과, 총보수·비용 컬럼 인덱스 폴백(기타비용 칸이 빈칸이라
+컬럼 수가 하나 줄어드는 펀드 대응, _pick_ter/_TER_INDEX_CANDIDATES)을 더해
+늘어났다. VIP한국형가치투자 6개 클래스 값은 이 라운드에서도 100% 유지됨(회귀 없음).
 
 나머지 43개는 파서가 커버하지 못하는 펀드로, "추가 검토 필요"(정의 충돌 있음) 3건과
 "정의는 있으나 숫자 매칭 실패"로 나뉜다. 확인된 실패 유형:
@@ -66,9 +67,12 @@ NFD 분해형으로 저장돼 있어 NFC 경로 문자열로는 못 열렸던 �
 1. 여기서 나온 결과를 fund_class 테이블 스키마(product_code, class_code,
    account_type, channel, total_expense_ratio 등)로 옮기고, Cost Guard 규칙에
    연결한다.
-2. 남은 43개(검토 필요 3건 + 매칭 실패 40건)를 손댈지는 Cost Guard가 요구하는
-   커버리지 수준에 따라 판단— 173건이면 대다수 상품에 대해 최소 1쌍(연금저축 vs
-   퇴직연금, 또는 채널 간) 비교가 가능한지부터 확인하는 게 우선.
+2. 남은 36개(검토 필요 3건 + 매칭 실패 20건 + 정의 자체 없음 13건)를 손댈지는
+   Cost Guard가 요구하는 커버리지 수준에 따라 판단 — 203건이면 대다수 상품에
+   대해 최소 1쌍(연금저축 vs 퇴직연금, 또는 채널 간) 비교가 가능한지부터
+   확인하는 게 우선. "정의 자체 없음" 13개는 애초에 연금 클래스가 없는 일반
+   펀드일 가능성이 높다(예: KR5118420006, KR5123365001) — 파서 결함이 아니라
+   실제로 다룰 데이터가 없는 경우인지 원문 확인이 필요.
 
 ## 사용법
 
@@ -203,21 +207,38 @@ def find_fee_rate_sections(text: str) -> list[str]:
 # 않으므로, 범위를 벗어난 값은 조용히 버려 오염된 값을 신뢰 목록에 넣지 않는다.
 _PLAUSIBLE_TER_RANGE = (0.01, 3.0)
 
+# 총보수·비용의 컬럼 위치(7번째, 인덱스 6)가 기본값이지만, "기타비용" 칸이
+# "없음" 대신 아예 빈칸으로 빠지는 펀드(예: KR5119520012)는 컬럼 수 자체가
+# 하나 줄어 위치가 밀린다. 인덱스 6이 비타당하면 인접 인덱스를 순서대로
+# 시도한다 — 4(총보수), 7·8(총보수비용/합성총보수비용)도 실측상 같은 값이거나
+# 근접한 값이라 안전한 폴백이다.
+_TER_INDEX_CANDIDATES = (6, 7, 8, 4)
+
+
+def _pick_ter(nums: list[str]) -> float | None:
+    for idx in _TER_INDEX_CANDIDATES:
+        if idx >= len(nums):
+            continue
+        try:
+            ter = float(nums[idx])
+        except ValueError:
+            continue
+        if _PLAUSIBLE_TER_RANGE[0] <= ter <= _PLAUSIBLE_TER_RANGE[1]:
+            return ter
+    return None
+
 
 def extract_numeric_rows(section: str, known_codes: set[str]) -> list[tuple[str, float]]:
-    """숫자표 안에서 "코드(또는 전체명(코드))" 뒤에 오는 총보수·비용(7번째 숫자)을 뽑는다."""
+    """숫자표 안에서 "코드(또는 전체명(코드))" 뒤에 오는 총보수·비용을 뽑는다."""
     results = []
     for m in CLASS_DEF_RE.finditer(section):
         code = re.sub(r"\s+", "", m.group(2))
         tail = section[m.end(): m.end() + 400]
         nums = NUM_TOKEN_RE.findall(tail)
-        if len(nums) < 7:
+        if len(nums) < 5:
             continue
-        try:
-            ter = float(nums[6])
-        except ValueError:
-            continue
-        if not (_PLAUSIBLE_TER_RANGE[0] <= ter <= _PLAUSIBLE_TER_RANGE[1]):
+        ter = _pick_ter(nums)
+        if ter is None:
             continue
         results.append((code, ter))
 
@@ -229,13 +250,10 @@ def extract_numeric_rows(section: str, known_codes: set[str]) -> list[tuple[str,
             continue
         tail = section[m.end(): m.end() + 400]
         nums = NUM_TOKEN_RE.findall(tail)
-        if len(nums) < 7:
+        if len(nums) < 5:
             continue
-        try:
-            ter = float(nums[6])
-        except ValueError:
-            continue
-        if not (_PLAUSIBLE_TER_RANGE[0] <= ter <= _PLAUSIBLE_TER_RANGE[1]):
+        ter = _pick_ter(nums)
+        if ter is None:
             continue
         results.append((code, ter))
     return results
