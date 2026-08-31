@@ -106,11 +106,28 @@ def classify_channel(label: str) -> str:
     return "불명"
 
 
+# 진짜 클래스 코드의 형태: 영문자로 시작하고 영문자/숫자/하이픈만 쓴다. "(퇴직연금)"
+# 같은 부가 표기가 코드 뒤에 괄호로 덧붙을 수 있어 그 앞부분만 검사한다.
+# ⚠️ CLASS_DEF_RE는 "수수료XX-...(임의문자열)"을 관대하게 매칭해서, 펀드명("...신탁
+# 1호(주식)")이나 전화번호("TEL.1588-5533") 등 "수수료" 근처에 있는 무관한 괄호까지
+# 코드로 오인했다(실측: '%', '2025.03.31기준,억원', 'CJ자산운용㈜→하이자산운용㈜' 등
+# 141개 후보 중 다수가 이런 오탐). 코드 형태 검증으로 이런 오탐을 원천 차단한다.
+_VALID_CODE_CORE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9\-]{0,9}$")
+
+
+def _looks_like_class_code(code: str) -> bool:
+    core = code.split("(")[0]
+    return bool(_VALID_CODE_CORE_RE.match(core))
+
+
 def build_code_to_definition(text: str) -> tuple[dict[str, dict], list]:
     """문서 전체에서 "전체명(코드)" 패턴을 모아 코드 -> {계좌유형, 채널, 전체명} 매핑을 만든다.
 
-    같은 코드가 여러 번 등장해도(문서 전체에 5~6번 반복) 계좌유형/채널은 항상
-    동일해야 정상이다 — 이 가정 자체가 파싱 정합성 검증 역할을 한다.
+    같은 코드가 여러 번 등장해도(문서 안에 5~6번 반복) 채널·계좌유형은 항상 동일해야
+    정상이다 — 이 가정 자체가 파싱 정합성 검증 역할을 한다. label 원문 전체가 아니라
+    (account_type, channel) 두 핵심 필드만 비교한다 — label에 페이지 헤더 텍스트가
+    섞이는 오염이 있어도(실측: "...퇴근로자퇴직급여보장법에의한...=====PAGE29/59====="),
+    핵심 필드가 같으면 같은 클래스로 본다.
     """
     mapping: dict[str, dict] = {}
     conflicts = []
@@ -118,13 +135,17 @@ def build_code_to_definition(text: str) -> tuple[dict[str, dict], list]:
         label_raw, code_raw = m.group(1), m.group(2)
         label = re.sub(r"\s+", "", label_raw)
         code = re.sub(r"\s+", "", code_raw)
+        if not _looks_like_class_code(code):
+            continue
         account_type = classify_account_type(label)
         if account_type is None:
             continue
         channel = classify_channel(label)
         entry = {"account_type": account_type, "channel": channel, "label": label}
-        if code in mapping and mapping[code] != entry:
-            conflicts.append((code, mapping[code], entry))
+        existing = mapping.get(code)
+        if existing is not None:
+            if (existing["account_type"], existing["channel"]) != (account_type, channel):
+                conflicts.append((code, existing, entry))
             continue
         mapping[code] = entry
     return mapping, conflicts
@@ -212,13 +233,17 @@ def extract_pension_classes(text: str) -> tuple[list[dict], list]:
 
 
 def is_clean(classes: list[dict], conflicts: list) -> bool:
-    """Cost Guard에 바로 써도 되는 수준인지 — 충돌 없고 코드에 오염 흔적이 없어야 한다."""
+    """Cost Guard에 바로 써도 되는 수준인지 — 충돌 없고 코드에 오염 흔적이 없어야 한다.
+
+    코드 형태 자체는 build_code_to_definition의 _looks_like_class_code가 이미
+    걸러내므로, 여기서는 label(채널·유형 서술)에 페이지 헤더 등 명백한 텍스트
+    오염이 섞였는지만 추가로 본다. "C-P2"처럼 코드에 숫자가 있는 건 정상이라
+    (퇴직연금형 2종 클래스) 더는 배제하지 않는다 — 예전 버전은 이 조건 때문에
+    VIP한국형가치투자(원문과 100% 일치 확인됨)까지 검토 필요로 잘못 분류했다.
+    """
     if not classes or conflicts:
         return False
-    return not any(
-        len(c["code"]) > 12 or "PAGE" in c["label"] or any(ch.isdigit() for ch in c["code"])
-        for c in classes
-    )
+    return not any("PAGE" in c["label"] or "=====" in c["label"] for c in classes)
 
 
 def main() -> None:
