@@ -6,7 +6,11 @@ os.environ.setdefault("CLOVASTUDIO_API_KEY", "dummy-key-for-wiring-test-only")
 
 from src.agents.deterministic_info import candidate_categories
 import src.agents.router as router_module
-from src.agents.router import _apply_asset_scope_override, _prioritize_collision_category
+from src.agents.router import (
+    _apply_asset_scope_override,
+    _apply_in_kind_transfer_intent_override,
+    _prioritize_collision_category,
+)
 
 
 # ── scope 오버라이드 (F-2) ────────────────────────────────────────────
@@ -95,6 +99,33 @@ def test_override_preserves_partial_scope():
 
     assert scope == "부분관련"
     assert note == "개인사업자 연금계좌 세액공제 관점으로 답변"
+
+
+# ── 자연어 실물이전 의도 라우팅 ───────────────────────────────────────
+
+
+def test_in_kind_transfer_intent_routes_asset_preserving_procedure_to_info_only():
+    """'상품 그대로 이전할 수 있는 방법'은 상품 추천이 아니라 이전 제도 질문이다."""
+    question = "IRP 상품 그대로 이전할 수 있는 방법 알려줘"
+
+    assert candidate_categories(question) == []
+    assert _apply_in_kind_transfer_intent_override(["상품형"], question) == ["정보형"]
+
+
+def test_in_kind_transfer_intent_routes_direct_eligibility_to_info_for_core():
+    """가능 여부 질문은 Guardian이 아닌 Core가 답하므로 역시 상품 추천 경로로 보내지 않는다."""
+    question = "이 상품 그대로 이전할 수 있나요?"
+
+    assert _apply_in_kind_transfer_intent_override(["상품형"], question) == ["정보형"]
+
+
+def test_in_kind_transfer_intent_does_not_override_generic_transfer_or_non_transfer_questions():
+    for question in (
+        "IRP 이전신청 방법 알려줘",
+        "매도 없이 펀드를 계속 보유하는 방법 알려줘",
+        "매도 없이 다른 금융사 상품을 사는 방법 알려줘",
+    ):
+        assert _apply_in_kind_transfer_intent_override(["상품형"], question) == ["상품형"]
 
 
 # ── deterministic category collision ───────────────────────────────────

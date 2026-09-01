@@ -60,6 +60,9 @@ class PensionAgentState(TypedDict, total=False):
     # 분류(카테고리 판정)는 LLM이, 답변 생성(숫자·조건 인용)은 규칙이 맡는 역할 분리 설계
     # (2026-08-25 재점검 — 세액공제+"얼마" 키워드 오분류 사고 재발 방지).
     deterministic_category: str
+    # 중도인출 질문에서 사용자 명시/결정론 확정값을 후속 노드가 잃지 않게 전달한다.
+    # Verifier는 이 값을 재분류하지 않고 요구사항 범위와 충돌 여부 확인에만 사용한다.
+    withdrawal_context: dict | None
 
     # ②③ 출력 — retrieved_context는 여러 노드가 이어서 채우므로 누적(operator.add) 리듀서 사용.
     # repair 재실행 시 같은 근거가 중복 누적되므로 읽는 쪽은 context.dedupe_context를 거친다.

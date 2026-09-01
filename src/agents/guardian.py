@@ -11,6 +11,10 @@ from typing import Literal, TypedDict
 
 from src.agents.context import merge_drafts
 from src.agents.deterministic_info import extract_tax_credit_inputs
+from src.agents.in_kind_transfer_intent import (
+    asks_in_kind_transfer_procedure_only,
+    normalize_for_guard_match,
+)
 from src.agents.state import PensionAgentState, RetrievedItem
 from src.agents.tax_context import (
     TAX_TOPIC_WORDS,
@@ -88,9 +92,8 @@ GUARDIAN_RULES: tuple[GuardianRule, ...] = (
         "priority": 90,
         "question_markers": ("전월세", "전세", "월세", "보증금", "임차보증금", "임대차"),
         "guard_fact": (
-            "전월세보증금 중도인출은 근퇴법상 사유에는 해당할 수 있지만, 세법상 '부득이한 "
-            "사유'에는 해당하지 않습니다. 인출 재원에 따라 세금이 달라질 수 있어 재원 구분도 "
-            "함께 확인해야 합니다."
+            "세금도 함께 확인하세요. 전월세보증금 중도인출은 세법상 '부득이한 사유'가 "
+            "아니며, 인출 재원에 따라 과세가 달라질 수 있습니다."
         ),
         "required_evidence": (_WITHDRAWAL_HOUSING_TAX_EVIDENCE,),
     },
@@ -102,9 +105,8 @@ GUARDIAN_RULES: tuple[GuardianRule, ...] = (
         "priority": 90,
         "question_markers": ("주택구입", "주택매입", "집구입", "집을사", "집사", "주택을사"),
         "guard_fact": (
-            "무주택 주택구입 중도인출은 근퇴법상 사유에는 해당할 수 있지만, 세법상 '부득이한 "
-            "사유'에는 해당하지 않습니다. 인출 재원에 따라 세금이 달라질 수 있어 재원 구분도 "
-            "함께 확인해야 합니다."
+            "세금도 함께 확인하세요. 무주택 주택구입 중도인출은 세법상 '부득이한 사유'가 "
+            "아니며, 인출 재원에 따라 과세가 달라질 수 있습니다."
         ),
         "required_evidence": (_WITHDRAWAL_HOUSING_TAX_EVIDENCE,),
     },
@@ -138,7 +140,9 @@ GUARDIAN_RULES: tuple[GuardianRule, ...] = (
         "trigger": "in_kind_transfer_procedure_without_product",
         "topic": "in_kind_transfer_eligibility",
         "priority": 95,
-        "question_markers": ("실물이전", "이전신청", "이관신청"),
+        # A1은 단순 어휘 목록이 아니라 _asks_in_kind_transfer_procedure_only()의
+        # 구조적 판정만 사용한다. 일반 이전 표현이 다른 공통 게이트에 섞이지 않게 비운다.
+        "question_markers": (),
         "guard_fact": (
             "모든 상품을 그대로 실물이전할 수 있는 것은 아닙니다. 이전하려는 상품이 실물이전 "
             "가능 대상인지도 함께 확인해야 합니다."
@@ -181,10 +185,6 @@ def _enabled(rule: GuardianRule) -> dict:
     }
 
 
-def _compact(text: str | None) -> str:
-    return (text or "").replace(" ", "").lower()
-
-
 def _contains_any(text: str, markers: tuple[str, ...]) -> bool:
     return any(marker in text for marker in markers)
 
@@ -205,13 +205,13 @@ def _core_gate(state: PensionAgentState) -> GuardDisabledReason | None:
 
 
 def _explicit_topics(question: str) -> set[str]:
-    text = _compact(question)
+    text = normalize_for_guard_match(question)
     topics: set[str] = set()
     if _contains_any(text, ("세금", "세율", "과세", "기타소득세", "퇴직소득세")):
         topics.add("withdrawal_tax")
     if _contains_any(text, ("언제까지", "기한", "신청기한", "시기")):
         topics.add("withdrawal_deadline")
-    if _contains_any(text, ("서류", "필요서류", "구비서류", "징구서류")):
+    if _contains_any(text, ("서류", "필요서류", "구비서류", "징구서류", "제출서류", "준비서류", "준비할", "챙겨")):
         topics.add("withdrawal_documents")
     return topics
 
@@ -229,7 +229,7 @@ def _asks_tax_topic(question: str) -> bool:
     "퇴직금 일시금 vs 연금 중 세금이 더 적은 쪽은?"). 그걸 EXPLICIT_USER_TOPIC 판정에
     쓰면 이미 세금을 물은 질문에 파수꾼이 또 세금 이야기를 덧붙이게 된다.
     """
-    return _contains_any(_compact(question), TAX_TOPIC_WORDS)
+    return _contains_any(normalize_for_guard_match(question), TAX_TOPIC_WORDS)
 
 
 def _select_retirement_non_pension_rule(question: str) -> GuardianRule | None:
@@ -246,35 +246,8 @@ def _select_retirement_non_pension_rule(question: str) -> GuardianRule | None:
     return _RULES_BY_ID.get("retirement_non_pension_tax_loss")
 
 
-# 실물이전 "절차·방법"을 묻는 표현 — 이 신호가 있어야 A1 후보가 된다.
-_IN_KIND_TRANSFER_PROCEDURE_MARKERS = ("절차", "방법", "신청", "어떻게", "옮기려면", "이관하려면")
-
-# 상품을 특정해 가능/불가를 물었거나(개별판정), 불가사유 목록 자체를 물은 경우 —
-# 이런 질문은 Core(실물이전_개별판정/실물이전_불가사유)가 이미 답할 몫이라 A1은 침묵한다.
-_IN_KIND_TRANSFER_EXCLUDED_MARKERS = (
-    "가능해", "가능한가", "되나요", "되는지", "안되는", "안 되는", "불가능한",
-    "안되나요", "제한되는", "제한사유", "불가사유", "매도없이", "매도 없이",
-)
-
-
 def _asks_in_kind_transfer_procedure_only(question: str) -> bool:
-    """A1 — 실물이전 절차/방법을 묻고, 특정 상품의 가부나 불가사유 목록은 묻지 않았는지.
-
-    이 판정을 통과해도 라우터가 실제로 "해당없음"으로 분류해야 Core Answer가 절차를
-    말하고, 그래야 Guardian이 얹을 자리가 생긴다(candidate_categories 단계에서는
-    실물이전_불가사유가 항상 후보에 오르지만, 라우터가 "절차 자체를 묻는 질문은
-    해당없음"이라는 프롬프트 지시를 실제로 따르는 것을 실측으로 확인했다). 라우터가
-    다르게 분류하면 Core가 이미 목록/판정을 답하므로 CORE_ALREADY_COVERS_TOPIC이나
-    다른 게이트에서 자연히 걸러진다.
-    """
-    text = _compact(question)
-    if "실물이전" not in text and "이전신청" not in text and "이관신청" not in text:
-        return False
-    if not _contains_any(text, _IN_KIND_TRANSFER_PROCEDURE_MARKERS):
-        return False
-    if _contains_any(text, _IN_KIND_TRANSFER_EXCLUDED_MARKERS):
-        return False
-    return True
+    return asks_in_kind_transfer_procedure_only(question)
 
 
 def _select_in_kind_transfer_rule(question: str) -> GuardianRule | None:
@@ -302,22 +275,41 @@ def _select_unused_tax_credit_capacity_rule(question: str) -> GuardianRule | Non
     if total_paid <= 0:
         return None
 
-    remaining = COMBINED_CREDIT_LIMIT - total_paid
+    credited_pension_savings = min(pension_savings_paid, PENSION_SAVINGS_ONLY_LIMIT)
+    credited_total = min(credited_pension_savings + irp_paid, COMBINED_CREDIT_LIMIT)
+    remaining = COMBINED_CREDIT_LIMIT - credited_total
     if remaining <= 0:
         # 이미 한도를 채웠거나 넘겼다 — 미사용 혜택이 없으므로 탐지할 것이 없다.
         return None
 
     remaining_label = f"{remaining // 10_000:,}만원"
-    guard_fact = (
-        f"제공한 올해 납입정보 기준으로 세액공제 대상 납입한도가 {remaining_label} "
-        "남아 있습니다."
-    )
+    pension_savings_remaining = max(0, PENSION_SAVINGS_ONLY_LIMIT - pension_savings_paid)
+    pension_savings_remaining_label = f"{pension_savings_remaining // 10_000:,}만원"
+    if pension_savings_paid and not irp_paid:
+        if pension_savings_remaining:
+            guard_fact = (
+                f"제공한 올해 납입정보 기준으로 연금저축 단독 한도는 "
+                f"{pension_savings_remaining_label}, IRP를 포함한 합산 한도 기준으로는 "
+                f"{remaining_label} 남아 있습니다."
+            )
+        else:
+            guard_fact = (
+                "제공한 올해 납입정보 기준으로 연금저축 단독 한도는 이미 채워졌고, "
+                f"IRP를 포함한 합산 한도 기준으로는 {remaining_label} 남아 있습니다."
+            )
+    else:
+        guard_fact = (
+            f"제공한 올해 납입정보 기준으로 IRP를 포함한 합산 한도 기준 세액공제 대상 "
+            f"납입한도가 {remaining_label} 남아 있습니다."
+        )
     evidence: RetrievedItem = {
         "source": "doc41 세액공제 규칙",
         "content": (
             f"연금저축+IRP 합산 세액공제 대상 납입한도는 연 {COMBINED_CREDIT_LIMIT // 10_000:,}만원"
             f"(연금저축 단독은 {PENSION_SAVINGS_ONLY_LIMIT // 10_000:,}만원)입니다. "
-            f"현재까지 확인된 납입액은 {total_paid // 10_000:,}만원이므로, "
+            f"현재까지 확인된 납입액은 {total_paid // 10_000:,}만원이고, "
+            f"연금저축 납입액 중 세액공제 대상 반영액은 {credited_pension_savings // 10_000:,}만원입니다. "
+            f"현재 세액공제 대상 반영액은 {credited_total // 10_000:,}만원이므로, "
             f"합산 한도 기준으로 {remaining_label}이 남아 있습니다."
         ),
         "node": "guardian",
@@ -348,7 +340,7 @@ def _select_rule(question: str) -> GuardianRule | None:
     if transfer is not None:
         return transfer
 
-    text = _compact(question)
+    text = normalize_for_guard_match(question)
     if "중도인출" in text and _is_documents_only_withdrawal_question(question):
         for rule in GUARDIAN_RULES:
             if rule["guard_type"] != "ACTION" or not rule["question_markers"]:
@@ -362,7 +354,7 @@ def _select_rule(question: str) -> GuardianRule | None:
 
 
 def _has_guard_domain_marker(question: str) -> bool:
-    text = _compact(question)
+    text = normalize_for_guard_match(question)
     return "중도인출" in text and any(
         _contains_any(text, rule["question_markers"]) for rule in GUARDIAN_RULES
     )
@@ -373,7 +365,7 @@ def _core_text(state: PensionAgentState) -> str:
 
 
 def _core_covers_topic(core: str, topic: str) -> bool:
-    text = _compact(core)
+    text = normalize_for_guard_match(core)
     if topic == "withdrawal_tax":
         return _contains_any(text, ("세법상부득이한사유", "기타소득세", "퇴직소득세", "재원별과세"))
     if topic == "retirement_tax_reduction":

@@ -77,6 +77,57 @@ def extract_number_tokens(text: str) -> list[str]:
     return seen
 
 
+_WITHDRAWAL_TOPIC_ANSWER_MARKERS = {
+    "DOCUMENTS": ("서류", "결정문", "확인서", "증명서", "진단서", "소견서"),
+    "DEADLINE": ("신청기한", "이내", "언제까지", "피해발생일", "결정일"),
+    "TAX": ("세금", "세율", "과세", "퇴직소득세", "기타소득세", "연금소득세"),
+    "ELIGIBILITY": ("가능", "허용", "사유에 해당", "신청할 수", "신청할수"),
+}
+_WITHDRAWAL_TOPIC_LABELS = {
+    "DOCUMENTS": "중도인출 필요서류",
+    "DEADLINE": "중도인출 신청기한",
+    "TAX": "중도인출 세금",
+    "ELIGIBILITY": "중도인출 가능 여부",
+    "ELIGIBILITY_PRECONDITION": "법정 중도인출 요건 충족 전제",
+}
+
+
+def apply_withdrawal_context_override(
+    verification: dict,
+    withdrawal_context: dict | None,
+    draft: str,
+) -> dict:
+    """중도인출 Verifier가 질문 밖 요구사항을 새로 만들지 못하게 범위를 고정한다.
+
+    explicit_topics와 사전 정의된 task_required_topics만 요구사항으로 인정한다. 사유·재원·
+    수령방식은 여기서 다시 추정하지 않으며, grounding/issue 판정은 그대로 유지한다.
+    """
+    if not withdrawal_context:
+        return verification
+
+    explicit_topics = set(withdrawal_context.get("explicit_topics") or [])
+    required_topics = set(withdrawal_context.get("task_required_topics") or [])
+    if not explicit_topics:
+        return verification
+
+    compact_draft = re.sub(r"\s+", "", draft or "")
+    missing: list[str] = []
+    for topic in sorted(explicit_topics):
+        markers = _WITHDRAWAL_TOPIC_ANSWER_MARKERS.get(topic, ())
+        if markers and not any(marker in compact_draft for marker in markers):
+            missing.append(_WITHDRAWAL_TOPIC_LABELS.get(topic, topic))
+
+    if "ELIGIBILITY_PRECONDITION" in required_topics and not any(
+        marker in compact_draft for marker in ("법정사유", "법정중도인출요건", "요건을충족")
+    ):
+        missing.append(_WITHDRAWAL_TOPIC_LABELS["ELIGIBILITY_PRECONDITION"])
+
+    result = dict(verification)
+    result["missing_requirements"] = missing
+    result["requirements_met"] = not missing
+    return result
+
+
 def _numeric_core(token: str) -> str:
     """토큰의 숫자 부분만 콤마 제거 형태로 반환한다. '1,200만원' -> '1200'"""
     m = _NUMERIC_CORE_RE.match(token)

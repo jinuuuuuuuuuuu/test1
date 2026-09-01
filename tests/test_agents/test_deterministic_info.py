@@ -262,6 +262,8 @@ def test_housing_deposit_documents_only_uses_composite_taskplan():
     draft, context = deterministic_response_for("복합정보_태스크플랜", question)
 
     assert "중도인출신청서" in draft
+    assert "공통: 중도인출신청서" in draft
+    assert "전월세 계약 확인" in draft
     assert "주택 임대차계약서 사본" in draft
     assert context
     assert context[0]["source"] == "doc48 중도인출 무주택 전월세보증금 필요서류"
@@ -274,14 +276,93 @@ def test_home_purchase_documents_only_uses_composite_taskplan():
     draft, context = deterministic_response_for("복합정보_태스크플랜", question)
 
     assert "매매계약서 사본" in draft
+    assert "무주택 확인:" in draft
+    assert "신축·경매·공매:" in draft
     assert "지방세 세목별 과세증명서" in draft
     assert context
     assert context[0]["source"] == "doc49 중도인출 무주택 주택구입 필요서류"
 
 
+def test_documents_only_taskplan_covers_natural_preparation_phrases():
+    for question in (
+        "전세계약 때문에 IRP에서 중도인출하려는데 뭐 챙겨야 해?",
+        "집 사려고 퇴직연금 중도인출할 때 준비할 것 알려줘",
+    ):
+        assert "복합정보_태스크플랜" in candidate_categories(question), question
+
+
 def test_unsupported_documents_only_reason_is_not_forced_into_taskplan():
-    # Guardian MVP는 전세보증금/주택구입 서류-only만 켠다. 다른 사유는 기존 경로를 유지한다.
-    assert "복합정보_태스크플랜" not in candidate_categories("재난피해 중도인출 필요서류 알려줘")
+    # 사유가 명시된 서류 질문은 해당 사유 근거만 쓰는 결정론 경로로 처리한다.
+    assert "복합정보_태스크플랜" in candidate_categories("재난피해 중도인출 필요서류 알려줘")
+
+
+def test_disaster_documents_use_only_disaster_evidence():
+    question = "재난피해 중도인출할 때 필요한 서류 알려줘"
+
+    draft, context = deterministic_response_for("복합정보_태스크플랜", question)
+
+    assert "피해상황확인서" in draft
+    assert "15일 이상 입원" in draft
+    assert "매매계약서" not in draft
+    assert "전월세계약서" not in draft
+    assert context
+    assert all("재난피해" in item["source"] for item in context)
+
+
+def test_rehabilitation_documents_and_eligibility_are_source_bound():
+    documents_question = "개인회생 중도인출 서류 알려줘"
+    eligibility_question = "개인회생 때문에 중도인출 가능한가요?"
+
+    documents, documents_context = deterministic_response_for(
+        "복합정보_태스크플랜", documents_question
+    )
+    eligibility, eligibility_context = deterministic_response_for(
+        "중도인출_요건판정", eligibility_question
+    )
+
+    assert "개인회생절차 개시결정문" in documents
+    assert "나의 사건검색" in documents
+    assert "전세계약서" not in documents
+    assert all("개인회생" in item["source"] for item in documents_context)
+    assert "5년 이내" in eligibility
+    assert "효력이 진행 중" in eligibility
+    assert eligibility_context
+
+
+def test_retirement_pay_split_tax_uses_two_receipt_branches():
+    question = "퇴직금 일부는 중도인출하고 나머지는 연금으로 받으면 세금 어떻게 돼?"
+
+    draft, context = deterministic_response_for("복합정보_태스크플랜", question)
+
+    assert "법정 사유를 충족" in draft
+    assert "연금외수령" in draft
+    assert "전액 납부" in draft
+    assert "나머지를 연금으로 받는 부분" in draft
+    assert "1~10년차는 70%" in draft
+    assert "정확한 비율" in draft
+    assert "일부 인출이 불가능" not in draft
+    assert context
+
+
+def test_retirement_pay_split_tax_uses_actual_receipt_year_when_provided():
+    question = (
+        "퇴직금 일부는 중도인출하고 나머지는 연금으로 받을 건데 "
+        "연금실제수령연차 11년차면 세금이 어떻게 돼?"
+    )
+
+    draft, _ = deterministic_response_for("복합정보_태스크플랜", question)
+
+    assert "연금실제수령연차 11년차" in draft
+    assert "이연퇴직소득세의 60%" in draft
+    assert "정확한 비율을 적용하려면 연금실제수령연차가 필요" not in draft
+
+
+def test_retirement_pay_split_collision_does_not_match_all_receipt_questions():
+    for question in (
+        "퇴직금 전부 일시금으로 받으면 세금이 어떻게 돼?",
+        "퇴직금 전부 연금으로 받으면 세금이 어떻게 돼?",
+    ):
+        assert "복합정보_태스크플랜" not in candidate_categories(question), question
 
 
 def test_medical_treatment_covers_family_members():
@@ -779,6 +860,14 @@ def test_transfer_judgement_defers_when_only_account_type_mentioned():
     ) is None
 
 
+def test_in_kind_transfer_judgement_requires_explicit_product_state():
+    """계좌 유형 IRP만으로 RP 상품 판정을 만들면 안 된다."""
+    from src.agents.deterministic_info import in_kind_transfer_judgement_response
+
+    assert in_kind_transfer_judgement_response("IRP 상품 그대로 이전할 수 있는 방법 알려줘") is None
+    assert in_kind_transfer_judgement_response("RP 상품은 실물이전 가능한가요?") is not None
+
+
 def test_transfer_judgement_cites_source_code():
     """근거에 코드 번호와 설명이 함께 담겨야 답변이 지어내지 않는다."""
     _, context = deterministic_response_for("실물이전_개별판정", "MMF인데 실물이전 되나요?")
@@ -888,8 +977,31 @@ def test_withdrawal_eligibility_answers_db_plan_directly():
 def test_withdrawal_eligibility_rejects_personal_workout():
     draft, _ = deterministic_response_for("중도인출_요건판정", "개인워크아웃 중인데 퇴직연금 중도인출 가능한가요?")
 
-    assert "개인워크아웃이나 신용회복은 퇴직연금 중도인출 사유에 해당하지 않습니다" in draft
+    assert "개인워크아웃·신용회복 자체는 제공 자료상 법정 중도인출 사유에 해당하지 않습니다" in draft
     assert "대표적인 중도인출 사유" not in draft
+
+
+def test_withdrawal_eligibility_compares_rehabilitation_and_workout_without_collision():
+    draft, context = deterministic_response_for(
+        "중도인출_요건판정",
+        "개인회생과 개인워크아웃 중도인출 가능 여부 차이가 뭐야?",
+    )
+
+    assert "개인회생절차개시 결정을 받은 날부터 5년 이내" in draft
+    assert "개인워크아웃·신용회복" in draft
+    assert "법정 중도인출 사유에 해당하지 않습니다" in draft
+    assert context
+
+
+def test_personal_workout_documents_do_not_ask_for_reason_again():
+    question = "개인워크아웃 중도인출 서류 알려줘"
+
+    assert "복합정보_태스크플랜" in candidate_categories(question)
+    draft, _ = deterministic_response_for("복합정보_태스크플랜", question)
+
+    assert "법정 중도인출 사유에 해당하지 않습니다" in draft
+    assert "사유를 확정해야" not in draft
+    assert "전월세계약서" not in draft
 
 
 # ── 정형 답변의 적합성 게이트 (2026-08-27 구조 수정) ──────────────────

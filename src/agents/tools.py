@@ -651,7 +651,6 @@ INFO_AGENT_TOOLS = [
     calculate_pension_withdrawal,
     check_early_withdrawal,
     check_default_option,
-    check_in_kind_transfer,
     search_pension_docs,
 ]
 
