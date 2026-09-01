@@ -1,0 +1,39 @@
+# 이미지에 들어가면 안 되는 것 / 넣을 필요 없는 것.
+#
+# Dockerfile이 현재 COPY하는 건 requirements.txt · src/ · data/processed/ 뿐이라
+# 지금 당장은 .env가 들어갈 경로가 없다. 그래도 여기 명시해두는 이유는, 나중에
+# 누군가 `COPY . .`로 바꿨을 때 API 키가 조용히 이미지에 박히는 사고를 막기
+# 위해서다 — 이미지는 레지스트리로 옮겨다니므로 한 번 들어간 비밀은 회수가 어렵다.
+
+# 비밀정보
+.env
+.env.*
+!.env.sample
+
+# 가상환경 (Windows에서 만든 바이너리는 Linux 컨테이너에서 실행 불가)
+.venv/
+venv/
+
+# 파이썬 캐시
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# git
+.git/
+.gitignore
+
+# 원본 데이터 (파싱 전 원본은 런타임에 불필요 — data/processed만 쓴다)
+data/raw/
+
+# 작업 산출물 / 중간 파일
+prospectus_check/
+scripts/_*.txt
+eval/
+tests/
+notebooks/
+
+# 문서
+*.md
+!README.md
