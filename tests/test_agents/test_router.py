@@ -8,6 +8,7 @@ from src.agents.deterministic_info import candidate_categories
 import src.agents.router as router_module
 from src.agents.router import (
     _apply_asset_scope_override,
+    _apply_condition_search_intent_override,
     _apply_in_kind_transfer_intent_override,
     _prioritize_collision_category,
 )
@@ -217,3 +218,35 @@ def test_router_restores_rejected_composite_task_plan():
 
     assert candidates[0] == "복합정보_태스크플랜"
     assert router_module._restore_rejected_category("해당없음", candidates, question) == "복합정보_태스크플랜"
+
+
+def test_condition_search_gains_product_intent():
+    """조건 수치로 상품을 찾는 질문은 상품형이 강제돼야 한다.
+
+    실측 no.207/227: "위험등급 1등급 펀드 중에 총보수가 1% 미만인 상품이 있나요"가
+    intent=['정보형']으로만 잡혀 ③상품 Agent가 실행되지 않았다. find_asset_overlap은
+    특정 상품명이 지목된 질문만 잡으므로("○○펀드"), 이름 없이 조건만으로 후보를
+    찾아달라는 질문은 놓친다.
+    """
+    for question in (
+        "위험등급 1등급 펀드 중에 총보수가 1% 미만인 상품이 있나요?",
+        "위험등급 1등급 펀드랑 5등급 펀드랑 최근 1년 수익률 차이가 얼마나 나나요?",
+    ):
+        result = _apply_condition_search_intent_override(["정보형"], question)
+        assert "상품형" in result, question
+
+
+def test_condition_search_override_does_not_catch_concept_questions():
+    """등급 자체의 의미를 묻는 개념 질문은 상품형으로 새면 안 된다(과잉 확장 방지).
+
+    "맞나요/아닌가요"는 조회 요청이 아니라 개념 확인이라, search_funds로 상품을
+    찾아봐야 답이 나오는 게 아니다 — search_pension_docs(제도 문서)로 등급 체계
+    설명을 찾는 게 정답 경로다.
+    """
+    for question in (
+        "위험등급 6등급 펀드가 1등급보다 안전한 게 맞나요?",
+        "디폴트옵션 상품도 위험등급이 다양한가요?",
+        "같은 펀드에서 판매클래스가 여러 개면 수익률도 다른가요?",
+    ):
+        result = _apply_condition_search_intent_override(["정보형"], question)
+        assert "상품형" not in result, question

@@ -9,6 +9,7 @@ retrieved_context를 State에서 그대로 읽어 쓸 수 있어야 하기 때�
 Outputs와 동시 사용이 안 되므로 thinking_effort="none"으로 꺼서 써야 한다.
 """
 
+import re
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
@@ -335,6 +336,32 @@ def _drop_product_intent_for_deterministic_info(
     return remaining or ["정보형"]
 
 
+# "위험등급 1등급" / "총보수 1%" 처럼 조건 수치가 붙은 상품 속성 + 조회 요청 어휘가
+# 함께 있으면 상품 조건검색이다. find_asset_overlap은 특정 상품명이 지목된 질문만
+# 잡으므로("○○펀드"), 이름 없이 조건만으로 후보를 찾아달라는 질문은 놓친다.
+_PRODUCT_CONDITION_RE = re.compile(r"(위험등급|총보수|수익률)\s*\d")
+_PRODUCT_QUERY_WORDS = ("있나요", "있어요", "얼마나", "알려주세요", "골라주세요", "추천")
+
+
+def _apply_condition_search_intent_override(intent: list[str], question: str) -> list[str]:
+    """조건 수치로 상품을 찾아달라는 질문에 상품형을 강제한다.
+
+    실측(no.207/227): "위험등급 1등급 펀드 중에 총보수가 1% 미만인 상품이 있나요"가
+    intent=['정보형']으로만 잡혀 ③상품 Agent가 실행되지 않았다. search_pension_docs
+    (제도 문서 검색)로는 이런 조건에 맞는 실제 상품을 찾을 수 없어 문서를 억지로
+    끌어와 답을 흐렸다 — 정답은 search_funds로 조건 검색해야 나온다.
+
+    "위험등급 6등급이 1등급보다 안전한 게 맞나요?"(no.200) 같은 순수 개념 질문과는
+    조회 요청 어휘(있나요/얼마나/알려주세요 등) 유무로 구분한다 — "맞나요/아닌가요"는
+    이 어휘에 안 걸리므로 정보형으로 남는다.
+    """
+    if "상품형" in intent:
+        return intent
+    if _PRODUCT_CONDITION_RE.search(question) and any(w in question for w in _PRODUCT_QUERY_WORDS):
+        return [*intent, "상품형"]
+    return intent
+
+
 def _apply_in_kind_transfer_intent_override(intent: list[str], question: str) -> list[str]:
     """자산보존 실물이전 의도를 상품 추천 경로에서 정보형 Core로 돌린다.
 
@@ -470,6 +497,7 @@ def build_router_node():
         intent = _drop_product_intent_for_deterministic_info(
             intent, deterministic_category, matched_funds
         )
+        intent = _apply_condition_search_intent_override(intent, state["question"])
         intent = _apply_in_kind_transfer_intent_override(intent, state["question"])
         withdrawal_context = extract_withdrawal_context(state["question"])
         return {
