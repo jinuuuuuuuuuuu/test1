@@ -876,3 +876,36 @@ def test_enforce_unsupported_numbers_still_skips_negation():
     answer = "평균 임금의 60%가 아니라 30일분에 계속근로기간을 곱하여 계산됩니다."
 
     assert enforce_unsupported_numbers(answer, ["60%"]) == answer
+
+
+# ── 제도 용어 오표기 교정 (실측 no.1) ────────────────────────────────────────
+# L0는 숫자만 검사하므로 "DC(Dividend Contribution)" 같은 용어 오류를 구조적으로
+# 잡지 못한다. 제도명 영문 표기는 법령으로 고정돼 있어 코드로 교정해도 안전하다.
+
+
+def test_correct_institution_terms_fixes_dc_expansion():
+    """DC는 Defined Contribution이다 — Dividend는 '배당'이라 무관하다."""
+    from src.agents.verification import correct_institution_terms
+
+    out = correct_institution_terms("DC(Dividend Contribution)형과 DB(Defined Benefit)형은 다릅니다.")
+
+    assert "Defined Contribution" in out
+    assert "Dividend Contribution" not in out
+    assert "Defined Benefit" in out   # 원래 맞는 표기는 그대로
+
+
+def test_correct_institution_terms_leaves_legitimate_dividend():
+    """배당(Dividend)을 뜻하는 정상적인 쓰임은 건드리지 않는다."""
+    from src.agents.verification import correct_institution_terms
+
+    answer = "배당(Dividend) 수익은 재투자됩니다."
+
+    assert correct_institution_terms(answer) == answer
+
+
+def test_correct_institution_terms_is_noop_for_correct_text():
+    from src.agents.verification import correct_institution_terms
+
+    answer = "DC(Defined Contribution)형은 확정기여형입니다."
+
+    assert correct_institution_terms(answer) == answer

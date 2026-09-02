@@ -994,3 +994,46 @@ def strip_tool_call_artifacts(answer: str) -> str:
         return answer
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
+
+
+# ── 제도 용어 오표기 교정 ────────────────────────────────────────────────────
+#
+# 연금 제도명의 영문 표기는 법령으로 고정돼 있다(DB=Defined Benefit, DC=Defined
+# Contribution). 그런데 LLM이 약어를 풀어 쓰면서 **그럴듯하지만 틀린 단어**를
+# 끼워 넣는 일이 있다.
+#
+# 실측(501문항 no.1 "DC와 DB, 퇴직금이 정해지는 방식이랑 운용 주체가 어떻게
+# 다른가요?"): "DC(Dividend Contribution)형"이라고 썼다. Dividend는 '배당'이라
+# 확정기여와 아무 관련이 없고, 근거 문서에는 정확한 표기가 있었는데도 창작했다.
+# 전수 확인 결과 Defined Contribution 8회(정상) 대 Dividend Contribution 2회(오기)로,
+# 체계적 오류가 아니라 확률적으로 튀는 유형이다 — 즉 프롬프트로는 막기 어렵다.
+#
+# 수치 검증(L0)은 숫자만 보므로 이 오류를 구조적으로 못 잡는다. 제도명은 근거와
+# 무관하게 **정답이 하나로 고정**돼 있어 코드로 교정해도 안전하다.
+#
+# ⚠️ 여기 담는 것은 "틀린 표기 -> 옳은 표기"가 1:1로 확정되는 것만이다. 문맥에
+# 따라 달라질 수 있는 표현은 넣지 않는다 — 잘못 고치면 오히려 정확한 답변을
+# 훼손한다.
+_TERM_CORRECTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
+    # DC = 확정기여(Defined Contribution). Dividend/Definite 등으로 잘못 쓰는 사례.
+    (re.compile(r"Dividend\s+Contribution", re.IGNORECASE), "Defined Contribution"),
+    (re.compile(r"Definite\s+Contribution", re.IGNORECASE), "Defined Contribution"),
+    # DB = 확정급여(Defined Benefit).
+    (re.compile(r"Definite\s+Benefit", re.IGNORECASE), "Defined Benefit"),
+    (re.compile(r"Defined\s+Benefits\b"), "Defined Benefit"),
+    # IRP = 개인형 퇴직연금(Individual Retirement Pension).
+    (re.compile(r"Individual\s+Retirement\s+Plan\b", re.IGNORECASE), "Individual Retirement Pension"),
+)
+
+
+def correct_institution_terms(answer: str) -> str:
+    """제도명 영문 표기 오류를 교정한다 (DC=Defined Contribution 등).
+
+    법령상 표기가 하나로 고정된 용어만 다루므로, 근거를 확인하지 않고 치환해도
+    안전하다. 답변의 다른 내용은 건드리지 않는다.
+    """
+    if not answer:
+        return answer
+    for pattern, correct in _TERM_CORRECTIONS:
+        answer = pattern.sub(correct, answer)
+    return answer

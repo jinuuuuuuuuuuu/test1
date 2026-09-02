@@ -12,6 +12,7 @@ from src.agents.verification import (
     enforce_missing_requirements,
     enforce_premise_issues,
     enforce_unsupported_numbers,
+    correct_institution_terms,
     replace_evidence_placeholders,
     split_premise_issues,
     strip_tool_call_artifacts,
@@ -176,6 +177,10 @@ def _finalize_answer(verified_core_answer: str, state: PensionAgentState, core_c
     # LLM이 도구 사용을 텍스트로 흉내내면(실측 V06) 그건 평범한 답변 문자열이라
     # grounded 검증(수치만 검사)도 enforce_*(덧붙이기만 함)도 걸러내지 못한다.
     answer = strip_tool_call_artifacts(verified_core_answer)
+    # 제도명 영문 표기 오류 교정 (DC=Defined Contribution 등). 법령상 표기가 하나로
+    # 고정된 용어라 근거 확인 없이 치환해도 안전하다 — L0는 숫자만 보므로 이런
+    # 용어 오류를 구조적으로 잡지 못한다(실측 no.1 "DC(Dividend Contribution)형").
+    answer = correct_institution_terms(answer)
     answer = _append_guardian_if_enabled(answer, state.get("guardian_result"))
     return _append_reference_line(answer, [*core_context, *_guardian_context(state)])
 
