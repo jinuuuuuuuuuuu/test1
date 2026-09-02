@@ -66,14 +66,19 @@ class FundSearchResult:
     product_code: str
     fund_name: str
     manager_name: Optional[str]
+    base_date: Optional[str]
+    prospectus_effective_date: Optional[str]
     risk_grade: Optional[str]
     fund_category: Optional[str]
     class_name: str
     sales_channel: Optional[str]
     total_expense_ratio: Optional[float]
+    cost_3y_per_10m_krw: Optional[float]
+    return_asof_date: Optional[str]
     return_1y: Optional[float]
     return_3y: Optional[float]
     return_since_inception: Optional[float]
+    inception_date: Optional[str]
     aum_krw_million: Optional[float] = None  # 시장잔고(백만원) — 요약 재무상태표 최신 기 자본총계
     aum_base_date: Optional[str] = None      # 그 값의 결산 기준일
 
@@ -99,8 +104,10 @@ def search_funds(
     try:
         query = """
             SELECT m.product_code, m.fund_name, m.manager_name, m.risk_grade, m.fund_category,
+                   m.base_date, m.prospectus_effective_date,
                    c.class_name, c.sales_channel, c.total_expense_ratio,
-                   c.return_1y, c.return_3y, c.return_since_inception,
+                   c.cost_3y_per_10m_krw, c.return_asof_date,
+                   c.return_1y, c.return_3y, c.return_since_inception, c.inception_date,
                    m.aum_krw_million, m.aum_base_date
             FROM fund_class c
             JOIN fund_master m ON m.product_code = c.product_code
@@ -147,14 +154,19 @@ def search_funds(
                     product_code=row["product_code"],
                     fund_name=row["fund_name"],
                     manager_name=row["manager_name"],
+                    base_date=row["base_date"],
+                    prospectus_effective_date=row["prospectus_effective_date"],
                     risk_grade=row["risk_grade"],
                     fund_category=row["fund_category"],
                     class_name=row["class_name"],
                     sales_channel=row["sales_channel"],
                     total_expense_ratio=row["total_expense_ratio"],
+                    cost_3y_per_10m_krw=row["cost_3y_per_10m_krw"],
+                    return_asof_date=row["return_asof_date"],
                     return_1y=row["return_1y"],
                     return_3y=row["return_3y"],
                     return_since_inception=row["return_since_inception"],
+                    inception_date=row["inception_date"],
                     aum_krw_million=row["aum_krw_million"],
                     aum_base_date=row["aum_base_date"],
                 )
@@ -218,6 +230,8 @@ def get_pension_class_detail(
             rows = conn.execute(
                 """
                 SELECT p.*, m.fund_name, m.manager_name, m.risk_grade, m.fund_category,
+                       m.base_date, m.prospectus_effective_date,
+                       m.aum_krw_million, m.aum_base_date, m.aum_period_label,
                        m.investment_objective, m.investment_strategy
                 FROM fund_class_pension p
                 LEFT JOIN fund_master m ON m.product_code = p.product_code

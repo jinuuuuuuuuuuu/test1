@@ -346,6 +346,54 @@ def _format_pct(value: object) -> str:
         return "확인 필요"
 
 
+def _format_number(value: object) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return f"{int(number):,}" if number.is_integer() else f"{number:,.1f}"
+
+
+def _basis_suffix(item: dict, field: str, label: str) -> str:
+    value = item.get(field)
+    return f" ({label} {value} 기준)" if value else ""
+
+
+def _format_return_line(item: dict) -> str:
+    return (
+        f"   - 수익률{_basis_suffix(item, 'return_asof_date', '수익률기준일')}: "
+        f"1년 {item.get('return_1y')}%, 3년 {item.get('return_3y')}%, "
+        f"설정이후 {item.get('return_since_inception')}%"
+    )
+
+
+def _format_expense_line(item: dict) -> str:
+    return (
+        f"   - 총보수·비용{_basis_suffix(item, 'prospectus_effective_date', '투자설명서 효력발생일')}: "
+        f"{_format_pct(item.get('total_expense_ratio'))}"
+    )
+
+
+def _format_aum_line(item: dict, *, indent: str = "   ") -> str:
+    value = item.get("aum_krw_million")
+    if value is None:
+        return ""
+    return f"{indent}- 시장잔고: {_format_number(value)}백만원{_basis_suffix(item, 'aum_base_date', '잔고 기준일')}"
+
+
+def _format_candidate_metric_block(item: dict, *, include_type: bool) -> str:
+    lines = []
+    if include_type:
+        lines.append(f"   - 상품 유형: {item.get('fund_category')}")
+    lines.append(f"   - 위험등급: {item.get('risk_grade')}")
+    lines.append(_format_expense_line(item))
+    aum_line = _format_aum_line(item)
+    if aum_line:
+        lines.append(aum_line)
+    lines.append(_format_return_line(item))
+    return "\n".join(lines)
+
+
 def _explicit_product_context_response(
     state: PensionAgentState,
 ) -> tuple[str, list[RetrievedItem], dict, bool] | None:
@@ -374,9 +422,15 @@ def _explicit_product_context_response(
     canonical_class = detail.get("class_code") or class_code
     metric_lines = []
     if detail.get("synthetic_total_expense_ratio") is not None:
-        metric_lines.append(f"- 합성총보수·비용: {_format_pct(detail.get('synthetic_total_expense_ratio'))}")
+        metric_lines.append(
+            f"- 합성총보수·비용{_basis_suffix(detail, 'prospectus_effective_date', '투자설명서 효력발생일')}: "
+            f"{_format_pct(detail.get('synthetic_total_expense_ratio'))}"
+        )
     if detail.get("total_expense_ratio") is not None:
-        metric_lines.append(f"- 총보수·비용: {_format_pct(detail.get('total_expense_ratio'))}")
+        metric_lines.append(
+            f"- 총보수·비용{_basis_suffix(detail, 'prospectus_effective_date', '투자설명서 효력발생일')}: "
+            f"{_format_pct(detail.get('total_expense_ratio'))}"
+        )
     if detail.get("cost_3y_per_10m_krw") is not None:
         metric_lines.append(f"- 1,000만원 3년 총비용 예시: {detail.get('cost_3y_per_10m_krw')}천원")
 
@@ -393,6 +447,9 @@ def _explicit_product_context_response(
     if detail.get("fund_category"):
         lines.append(f"- 상품 유형: {detail['fund_category']}")
     lines.extend(metric_lines)
+    aum_line = _format_aum_line(detail, indent="")
+    if aum_line:
+        lines.append(aum_line)
 
     if detail.get("investment_objective"):
         lines.append("")
@@ -423,6 +480,8 @@ def _explicit_product_context_response(
         f"유형={detail.get('fund_category')}, "
         f"총보수·비용={detail.get('total_expense_ratio')}%, "
         f"합성총보수·비용={detail.get('synthetic_total_expense_ratio')}%, "
+        f"투자설명서효력발생일={detail.get('prospectus_effective_date')}, "
+        f"시장잔고={detail.get('aum_krw_million')}백만원, 잔고기준일={detail.get('aum_base_date')}, "
         f"dataset_version={detail.get('dataset_version')}, dataset_status={detail.get('dataset_status')}"
     )
     context = [{"source": f"{fund_name} ({canonical_class})", "content": content, "node": "product_agent"}]
@@ -966,11 +1025,7 @@ def _specific_product_recommendation(profile: dict, state: PensionAgentState) ->
     for i, item in enumerate(candidates, start=1):
         lines.append(
             f"{i}. {item.get('fund_name')} ({item.get('class_name')})\n"
-            f"   - 상품 유형: {item.get('fund_category')}\n"
-            f"   - 위험등급: {item.get('risk_grade')}\n"
-            f"   - 총보수: {item.get('total_expense_ratio')}%\n"
-            f"   - 수익률: 1년 {item.get('return_1y')}%, 3년 {item.get('return_3y')}%, "
-            f"설정이후 {item.get('return_since_inception')}%\n"
+            f"{_format_candidate_metric_block(item, include_type=True)}\n"
             f"   - 추천 이유: 현재 위험성향과 투자기간 기준으로 위험등급·보수·과거 성과를 함께 비교했을 때 후보군에 포함됩니다.\n"
             f"   - 유의사항: 과거 수익률은 미래 수익을 보장하지 않으며, 계좌 내 실제 매수 가능 여부는 금융기관에서 최종 확인이 필요합니다."
         )
@@ -1054,8 +1109,11 @@ def _fund_candidates_to_context(candidates: list[dict]) -> list[RetrievedItem]:
         content = (
             f"상품코드={item.get('product_code')}, 위험등급={item.get('risk_grade')}, "
             f"총보수={item.get('total_expense_ratio')}%, "
+            f"투자설명서효력발생일={item.get('prospectus_effective_date')}, "
             f"1년수익률={item.get('return_1y')}%, 3년수익률={item.get('return_3y')}%, "
             f"설정이후수익률={item.get('return_since_inception')}%, "
+            f"수익률기준일={item.get('return_asof_date')}, "
+            f"시장잔고={item.get('aum_krw_million')}백만원, 잔고기준일={item.get('aum_base_date')}, "
             f"판매채널={item.get('sales_channel')}, 유형={item.get('fund_category')}"
         )
         context.append({"source": label, "content": content, "node": "product_agent"})
@@ -1124,10 +1182,7 @@ def _fallback_product_recommendation(state: PensionAgentState) -> tuple[str, lis
     for i, item in enumerate(unique_results, start=1):
         lines.append(
             f"{i}. {item.get('fund_name')} ({item.get('class_name')})\n"
-            f"   - 위험등급: {item.get('risk_grade')}\n"
-            f"   - 총보수: {item.get('total_expense_ratio')}%\n"
-            f"   - 수익률: 1년 {item.get('return_1y')}%, 3년 {item.get('return_3y')}%, "
-            f"설정이후 {item.get('return_since_inception')}%\n"
+            f"{_format_candidate_metric_block(item, include_type=False)}\n"
             f"   - 판매채널: {item.get('sales_channel')}"
         )
     lines.append(

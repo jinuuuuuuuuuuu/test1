@@ -232,6 +232,27 @@ def test_no_unsupported_numbers_line_when_list_is_empty(monkeypatch):
     assert "근거에 없는 것으로 확정된 수치" not in prompt
 
 
+def test_generator_prompt_includes_today_context_and_output_format_rules(monkeypatch):
+    """수상작의 날짜 기준 프롬프트 패턴을 우리 최종 생성기에 맞게 반영한다."""
+    from src.agents.generator import GENERATOR_SYSTEM_PROMPT
+
+    prompt = _capture_generator_prompt(
+        monkeypatch,
+        {
+            "grounded": True,
+            "issues": [],
+            "unsupported_numbers_confirmed": [],
+            "premise_issues": [],
+            "requirements_met": True,
+            "missing_requirements": [],
+        },
+    )
+
+    assert "[작성 기준일]" in prompt
+    assert "결론을 먼저" in GENERATOR_SYSTEM_PROMPT
+    assert "수익률기준일" in GENERATOR_SYSTEM_PROMPT
+
+
 # ── Guardian 최종 조립: Core 불변 + 근거 격리 ─────────────────────────────
 
 

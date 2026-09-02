@@ -4,6 +4,8 @@ think_trace를 포맷팅한다. HCX-005 사용.
 is_safe=False(①가드레일에서 차단된 경우)는 모델을 호출하지 않고 바로 정형 거절 응답을 만든다.
 """
 
+from datetime import date
+
 from src.agents.context import dedupe_context, format_conversation_history, merge_drafts
 from src.agents.guardian import GUARD_HEADING
 from src.agents.llm import get_llm, invoke_with_retry
@@ -46,6 +48,13 @@ GENERATOR_SYSTEM_PROMPT = """당신은 연금 상담 AI의 최종 답변 작성�
   "네, 불가능합니다"처럼 쓰면 논리적으로는 "맞습니다"라는 뜻이어도 사용자는 반대로 읽습니다.
   가능하면 "네, ~할 수 있습니다"로 시작하고, 조건부라면 "조건에 따라 다릅니다"로 시작한 뒤
   조건을 설명하세요.
+- 답변은 가능하면 결론을 먼저 쓰세요. 복합 질문이면 "**결론**", "**핵심 내용**",
+  "**적용 조건 / 주의사항**"처럼 짧은 섹션으로 나누되, 단순 질문에 억지로 긴 양식을 만들지
+  마세요. 별점, 매수/매도식 투자 판단, 과한 이모지 헤딩은 쓰지 않습니다.
+- 날짜·기준일이 근거에 있으면 수치와 함께 표시하세요. 특히 상품 수익률은 수익률기준일,
+  시장잔고(AUM)는 잔고 기준일, 투자설명서 정보는 효력발생일 또는 작성기준일을 함께 적습니다.
+  근거에 없는 날짜는 만들지 말고, 사용자가 "오늘"처럼 상대 날짜를 쓴 경우에만 [작성 기준일]을
+  참고해 해석하세요. 질문에 명시된 날짜가 있으면 그 날짜를 우선합니다.
 - [이전 대화]가 함께 주어지면 자연스러운 대화 흐름을 유지하되(중복 설명 반복 지양), 숫자·사실은
   이번 턴의 [근거]에 있는 것만 쓰세요 — 이전 답변에 등장했던 숫자라도 이번 [근거]에 없으면
   다시 쓰지 마세요.
@@ -64,6 +73,15 @@ _NODE_LABELS = {
     "info_agent": "② 정보 Agent — 제도·세제 조사",
     "product_agent": "③ 상품 Agent — 상품 확인",
 }
+
+
+_WEEKDAYS_KR = ("월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일")
+
+
+def _today_context_line(today: date | None = None) -> str:
+    """상대 날짜 해석용 작성 기준일을 프롬프트에만 넣는다."""
+    current = today or date.today()
+    return f"{current.isoformat()} ({_WEEKDAYS_KR[current.weekday()]})"
 
 
 def _append_reference_line(answer: str, context: list) -> str:
@@ -445,6 +463,7 @@ def build_generator_node():
 
         prompt = (
             (f"[이전 대화]\n{history_text}\n\n" if history_text else "")
+            + f"[작성 기준일]\n{_today_context_line()}\n\n"
             + f"[질문]\n{state['question']}\n\n"
             f"[초안]\n{draft}\n\n"
             f"[근거]\n{context_text}\n\n"

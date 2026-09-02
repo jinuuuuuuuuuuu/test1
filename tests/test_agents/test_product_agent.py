@@ -211,6 +211,54 @@ def test_domestic_equity_request_is_unaffected_by_overseas_check():
     assert "해외 투자대상이 확인되는 후보를 찾지 못했습니다" not in draft
 
 
+def test_specific_recommendation_prints_product_metric_dates(monkeypatch):
+    """상품 수익률·보수처럼 시점이 중요한 수치는 기준일을 함께 보여준다."""
+    import src.agents.product_agent as product_agent_module
+
+    class FakeSearchFunds:
+        @staticmethod
+        def invoke(_args):
+            return [
+                {
+                    "product_code": "KR000000001",
+                    "fund_name": "테스트펀드",
+                    "manager_name": "테스트운용",
+                    "base_date": "2025-07-01",
+                    "prospectus_effective_date": "2025-07-15",
+                    "risk_grade": "4등급[보통 위험]",
+                    "fund_category": "증권(주식형)",
+                    "class_name": "C-e",
+                    "sales_channel": "온라인",
+                    "total_expense_ratio": 1.1,
+                    "cost_3y_per_10m_krw": 330,
+                    "return_asof_date": "2025-07-31",
+                    "return_1y": 4.07,
+                    "return_3y": 5.5,
+                    "return_since_inception": 6.1,
+                    "inception_date": "2020-01-01",
+                    "aum_krw_million": 10000,
+                    "aum_base_date": "2025-06-30",
+                }
+            ]
+
+    monkeypatch.setattr(product_agent_module, "search_funds", FakeSearchFunds)
+
+    profile = {
+        "account_type": "IRP",
+        "risk_profile": "중립형",
+        "preferred_product_type": "주식형",
+        "investment_horizon": "장기",
+    }
+    draft, context = _specific_product_recommendation(profile, {"question": "IRP 주식형 상품 추천해줘"})
+
+    assert "총보수·비용 (투자설명서 효력발생일 2025-07-15 기준): 1.1%" in draft
+    assert "시장잔고: 10,000백만원 (잔고 기준일 2025-06-30 기준)" in draft
+    assert "수익률 (수익률기준일 2025-07-31 기준): 1년 4.07%" in draft
+    assert "투자설명서효력발생일=2025-07-15" in context[0]["content"]
+    assert "잔고기준일=2025-06-30" in context[0]["content"]
+    assert "수익률기준일=2025-07-31" in context[0]["content"]
+
+
 def test_sp500_recommendation_does_not_reuse_previous_safe_profile():
     state = {
         "question": "IRP에서 S&P500 ETF 같은 상품 추천해줘.",
