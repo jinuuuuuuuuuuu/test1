@@ -310,7 +310,33 @@ def candidate_categories(question: str) -> list[str]:
     # 반드시 IRP로"라며 55세 이후 퇴직 예외를 빠뜨렸다.
     if _asks_irp_mandatory_transfer(text):
         candidates.append("퇴직시_IRP의무이전")
-    if "연금수령한도" in text or ("연금" in text and "한도" in text):
+    # ⚠️ "한도"라는 단어를 요구하면 이 카테고리가 실제로 답할 수 있는 질문의 상당수가
+    # 후보에조차 오르지 못한다. _withdrawal_limit_response는 한도 공식뿐 아니라
+    # **연금수령연차 기산**(2013.3.1 이전 가입 계좌의 6년차 특례), 11년차 한도 소멸,
+    # 연금수령 요건(가입 5년·만 55세)까지 근거와 함께 답하는데, 이것들은 "한도"라는
+    # 단어 없이 물어보는 게 오히려 자연스럽다.
+    #
+    # 실측(501문항): 후보가 빈 리스트로 나와 라우터가 고를 선택지조차 없었던 문항들 —
+    #   no.104 "2013년 3월 1일 이전 가입인데 연금수령연차를 어떻게 계산하나요"
+    #          (정답은 6년차 특례. 근거 0건으로 연령별 수령시기표를 창작했다)
+    #   no.99  "연금 실제수령연차랑 연금수령연차가 같은 말 아닌가요"
+    #   no.86  "55세 미만인데 연금을 받을 수 있나요"
+    #          (사적연금 서비스인데 국민연금 조기노령연금 수치를 지어냈다)
+    # 후보에 올린다고 이 카테고리로 확정되는 건 아니다 — 라우터가 최종 판단하므로,
+    # 답할 수 있는 범위를 빠짐없이 후보로 올리는 쪽이 안전하다.
+    #
+    # ⚠️ "실제수령연차"는 이 카테고리가 아니라 퇴직소득세감면 소관이다 — 두 연차는
+    # 이름만 비슷할 뿐 서로 다른 값이고(수령연차=한도 산정, 실제수령연차=감면율 산정),
+    # _extract_withdrawal_limit_inputs도 "실제수령연차"가 보이면 명시적으로 손을 뗀다.
+    # 이 구분을 안 하면 no.92~97·345·346 같은 감면율 질문이 한도 후보로 잘못 올라온다.
+    asks_actual_receipt_year = "실제수령연차" in text
+    if (
+        "연금수령한도" in text
+        or ("연금" in text and "한도" in text)
+        or (not asks_actual_receipt_year and "수령연차" in text)
+        or (not asks_actual_receipt_year and "연금" in text and "연차" in text)
+        or ("연금" in text and "55세" in text)
+    ):
         candidates.append("연금수령한도")
     if any(word in text for word in ("퇴직소득세", "이연퇴직소득세")):
         candidates.append("퇴직소득세감면")

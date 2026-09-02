@@ -1292,3 +1292,32 @@ def test_annual_contribution_is_not_multiplied():
     assert values["pension_savings_paid"] == 6_000_000
     assert values["irp_paid"] == 3_000_000
     assert values["total_salary"] == 50_000_000
+
+
+def test_withdrawal_year_questions_offer_limit_category():
+    """연금수령'연차'·55세 요건 질문도 연금수령한도 후보에 올라야 한다.
+
+    후보 조건이 "한도"라는 단어를 요구하던 시절, _withdrawal_limit_response가
+    근거와 함께 답할 수 있는 질문들이 후보에조차 못 올라 라우터에게 선택지가
+    없었다(실측 501문항: no.104는 6년차 특례가 정답인데 근거 0건으로 연령별
+    수령시기표를 창작했고, no.86은 사적연금 서비스인데 국민연금 수치를 지어냈다).
+    """
+    for question in (
+        "2013년 3월 1일 이전에 가입한 연금계좌인데 연금수령연차를 어떻게 계산하나요?",
+        "55세 미만인데 연금을 받을 수 있나요?",
+    ):
+        assert "연금수령한도" in candidate_categories(question), question
+
+
+def test_actual_receipt_year_stays_out_of_limit_category():
+    """'연금실제수령연차'는 퇴직소득세감면 소관이므로 한도 후보로 새면 안 된다.
+
+    수령연차(한도 산정용)와 실제수령연차(감면율 산정용)는 이름만 비슷한 다른 값이다.
+    연차 키워드를 넓힐 때 이 경계를 지키지 않으면 감면율 질문(no.92~97 등)이 전부
+    한도 후보로 잘못 올라와 라우터를 헷갈리게 한다.
+    """
+    for question in (
+        "연금실제수령연차 5년차인데 이연퇴직소득세 감면율이 얼마인가요?",
+        "연금실제수령연차는 어떻게 늘리나요?",
+    ):
+        assert "연금수령한도" not in candidate_categories(question), question
