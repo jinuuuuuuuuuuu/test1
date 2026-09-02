@@ -1432,3 +1432,64 @@ def test_calculable_question_still_computes_amount():
     )
 
     assert "99만원" in content
+
+
+# ── 어휘 커버리지 회귀: 동시출현(AND) 조건이 좁아 정형 경로를 놓친 사례 ──────────
+# 공통 원인: 키워드가 특정 동반어와 **함께** 나오기를 요구해, 사용자가 같은 의도를
+# 다른 말로 표현하면 후보가 0건이 되고 LLM 자유응답으로 새어 폐지된 수치를 답한다.
+
+
+def test_tax_saving_question_without_pension_word_routes():
+    """'절세'가 '연금/IRP'와 동시 출현하지 않아도 후보가 나와야 한다.
+
+    실측(2026-09-02 실사용): "65세로 정년 은퇴를 앞두고 있어... 절세 방법 알려줘"가
+    후보 0건이 되어 LLM이 "연간 최대 700만원"(폐지된 한도)을 지어냈다.
+    """
+    from src.agents.deterministic_info import candidate_categories
+
+    for question in (
+        "나는 올해 나이가 65세로 정년 은퇴를 앞두고 있어. 이런 내가 절세를 하고자하는데 방법 알려줘",
+        "65세인데 절세하고 싶어",
+        "절세 방법 알려줘",
+        "세금 줄이는 법 알려줘",
+    ):
+        assert "세금혜택_개요" in candidate_categories(question), question
+
+
+def test_tax_benefit_answer_covers_retirement_income_deduction():
+    """정년퇴직자에게 핵심인 이연퇴직소득세 감면이 정형 답변에 들어 있다."""
+    from src.agents.deterministic_info import deterministic_response_for
+
+    content, _ = deterministic_response_for(
+        "세금혜택_개요",
+        "나는 올해 나이가 65세로 정년 은퇴를 앞두고 있어. 이런 내가 절세를 하고자하는데 방법 알려줘",
+    )
+
+    assert "이연퇴직소득세" in content
+    assert "600만원" in content and "900만원" in content
+    assert "700만원" not in content   # 2023년 개정 전 폐지된 한도
+
+
+def test_contribution_order_question_routes_to_limit_category():
+    """한도를 묻지 않고 단정·확인하는 형태도 정형 경로를 타야 한다 (실측 no.383)."""
+    from src.agents.deterministic_info import candidate_categories
+
+    question = "연금저축을 먼저 600만원 채우고 IRP로 300만원 추가하는 순서가 맞나요?"
+
+    assert "세액공제_한도" in candidate_categories(question)
+
+
+def test_pension_tax_rate_by_name_routes():
+    """카테고리 이름 그대로 물어도 후보가 나와야 한다 (나이·수령 문맥 없이)."""
+    from src.agents.deterministic_info import candidate_categories
+
+    for question in ("연금소득세율 알려줘", "연금소득세율이 어떻게 되나요"):
+        assert "연금소득세율_연령별" in candidate_categories(question), question
+
+
+def test_widened_conditions_do_not_match_unrelated_questions():
+    """넓힌 조건이 무관한 질문까지 끌어오지 않는다."""
+    from src.agents.deterministic_info import candidate_categories
+
+    for question in ("점심 뭐 먹지", "펀드 추천해줘", "안녕하세요"):
+        assert candidate_categories(question) == [], question

@@ -258,28 +258,61 @@ def candidate_categories(question: str) -> list[str]:
     # 조금만 달라지면 무너진다")과 같은 클래스다. 정도부사("최대한 많이")가 원인이
     # 아니라는 점이 중요하다 — 부사를 빼도("연금저축이랑 IRP에 넣고 싶어요. 얼마까지
     # 되나요?") 여전히 후보가 0건이었다. 원인은 "넣다/납입"이라는 어휘 자체의 누락이다.
+    # ⚠️ _compact는 소문자화를 하지 않는다 — "IRP"(대문자)가 실제 표기라
+    # "irp"만 검사하면 영원히 안 걸린다. 두 표기를 함께 본다.
+    mentions_pension_account = any(
+        word in text for word in ("연금저축", "IRP", "irp", "연금계좌")
+    )
     asks_contribution_limit = (
         any(word in text for word in ("납입한도", "납입limit", "불입한도"))
         or (
-            # ⚠️ _compact는 소문자화를 하지 않는다 — "IRP"(대문자)가 실제 표기라
-            # "irp"만 검사하면 영원히 안 걸린다. 두 표기를 함께 본다.
-            any(word in text for word in ("연금저축", "IRP", "irp", "연금계좌"))
+            mentions_pension_account
             and any(word in text for word in ("넣", "납입", "불입", "저축", "가입", "얼마까지"))
             and any(word in text for word in ("얼마", "한도", "최대", "까지"))
+        )
+        # 한도를 **묻지 않고 단정**하는 형태도 같은 정형 답변이 정답이다.
+        # 실측 no.383("연금저축을 먼저 600만원 채우고 IRP로 300만원 추가하는 순서가
+        # 맞나요?")은 "얼마/한도" 어휘가 없어 후보 0건이 됐고, LLM이 "합산 한도는
+        # 연간 700만원"(폐지된 값)이라 답했다. 사용자가 한도를 이미 안다고 전제하고
+        # 확인만 구하는 질문일수록 틀린 전제를 바로잡아 줘야 하는데, 정작 그런
+        # 질문이 정형 경로에서 빠지고 있었다.
+        or (
+            mentions_pension_account
+            and re.search(r"\d[\d,]*\s*만\s*원", text) is not None
+            and any(word in text for word in ("맞나요", "맞는", "맞죠", "순서", "채우", "먼저", "나눠", "배분"))
         )
     )
     if "세액공제" in text or asks_contribution_limit:
         candidates.append("세액공제_계산_입력부족")
         candidates.append("세액공제_한도")
-    if any(word in text for word in ("세금혜택", "세제혜택", "절세혜택", "세금상혜택")) or (
-        "절세" in text and any(word in text for word in ("연금", "irp", "IRP", "개인사업자", "자영업"))
+    # ⚠️ "절세"가 연금 문맥 단어와 **동시에** 나오기를 요구하면, 사용자가 연금 상황을
+    # 다른 말로 표현한 순간 후보가 0건이 된다. 이 서비스는 연금 상담 전용이므로
+    # (범위 판정은 라우터의 scope가 따로 한다) "절세"라는 단어 자체가 이미 충분한
+    # 신호다. 동시출현 요구는 커버리지만 좁히고 얻는 것이 없다.
+    #
+    # 실측(2026-09-02, 실사용): "나는 올해 나이가 65세로 정년 은퇴를 앞두고 있어.
+    # 이런 내가 절세를 하고자하는데 방법 알려줘" -> 후보 0건.
+    # "은퇴/정년/65세"는 전부 연금 문맥인데 "연금/IRP"라는 단어가 없어서 걸러졌다.
+    # 그 결과 LLM 자유응답으로 흘러 "연간 최대 700만원까지 세액공제"(폐지된 한도)를
+    # 지어냈다. 정작 _tax_benefit_overview_response는 정답(600/900만원)뿐 아니라
+    # 사용자가 물은 이연퇴직소득세 감면(수령연차별 30/40/50%)까지 갖고 있었다.
+    # 같은 원인의 실측이 501문항에도 있었다 — no.383(700만원), no.321(700만원).
+    if any(word in text for word in ("세금혜택", "세제혜택", "절세혜택", "세금상혜택", "절세")) or (
+        "세금" in text and any(word in text for word in ("줄이", "아끼", "덜내", "덜 내", "혜택"))
     ):
         candidates.append("세금혜택_개요")
     # 사유별 기준일 용어("요양종료일", "잔금지급일" 등)는 그 자체로 중도인출 문맥을
     # 특정하므로, "중도인출"이라는 단어가 없어도 후보로 낸다. 실측 no.426
     # ("요양종료일이 2026년 12월 15일이면 신청기한이 다음해로 넘어가나요?")은 후보가
     # 0건이라 결정론 경로를 못 타고 LLM이 임의로 plan_type="DB"를 찍어 호출했다.
-    if "중도인출" in text or _mentions_withdrawal_basis_event(text):
+    # 제도 용어("중도인출")를 모르는 사용자는 "중간에 빼서 쓴다"처럼 풀어 쓴다.
+    asks_early_withdrawal_plainly = any(
+        word in text for word in ("중간에빼", "중간에찾", "미리빼", "미리찾", "중간인출")
+    ) or (
+        any(word in text for word in ("퇴직연금", "연금계좌", "IRP", "irp", "연금저축"))
+        and any(word in text for word in ("빼서쓸", "빼서쓰", "빼쓸", "꺼내쓸", "꺼내쓰"))
+    )
+    if "중도인출" in text or _mentions_withdrawal_basis_event(text) or asks_early_withdrawal_plainly:
         # 같은 도메인의 두 작업을 모두 후보로 낸다: 사유 목록 나열(중도인출_일반)과
         # 기한 계산·판정(중도인출_기한판정). 사유별로 후보 조건을 따로 쓰면
         # ("요양이고 요양종료일이 있으면...") 사유가 늘 때마다 조건이 늘고, 실제로
@@ -296,7 +329,10 @@ def candidate_categories(question: str) -> list[str]:
     # "1개 보유 중 같은 상품 추가매수 가능한가요?" 같은 옵트인 질문이 트리거 자체가
     # 없어 얼버무리거나 포기하는 답변만 나갔다). 두 작업을 모두 후보로 내고
     # 라우터가 질문 의도로 고르게 한다.
-    if any(word in text for word in ("디폴트옵션", "사전지정운용", "자동매수")):
+    # "자동매수"를 붙여 쓰지 않는 표현("자동으로 매수", "자동으로 사")도 같은 질문이다.
+    if any(word in text for word in ("디폴트옵션", "사전지정운용", "자동매수")) or (
+        "자동" in text and any(word in text for word in ("매수", "매입", "사지", "사는", "삽니"))
+    ):
         candidates.append("디폴트옵션_자동매수")
     if "옵트인" in text or (
         any(word in text for word in ("디폴트옵션", "사전지정운용"))
@@ -385,9 +421,14 @@ def candidate_categories(question: str) -> list[str]:
     # 연령별 세율 카테고리는 후보에서 빠지는 오발화가 생긴다(실측). "종합과세"·
     # "분리과세"는 그 자체로 명확한 단어라 문제없지만, "연금소득세"만 뒤에 "율"이
     # 붙지 않았는지 확인해 순수 종합과세 표현만 잡는다.
+    # 제도명 대신 **기준 금액**으로 묻는 표현이 흔하다("1500만원 넘으면 어떻게 되나요").
+    # 1,500만원은 사적연금소득 종합과세 판단 기준이라 이 금액 자체가 강한 신호다.
+    mentions_annual_threshold = any(
+        word in text for word in ("1500만", "1,500만", "1500만원", "천5백만", "1천5백만")
+    )
     if any(word in text for word in ("종합과세", "분리과세")) or (
         "연금소득세" in text and "연금소득세율" not in text
-    ):
+    ) or (mentions_annual_threshold and any(w in text for w in ("연금", "초과", "넘으면", "넘으"))):
         candidates.append("연금소득세_종합과세")
 
     # 연령별 연금소득세율 — 세금 얘기 + (나이 언급 OR 연금 수령 문맥)일 때 후보에 넣는다.
@@ -404,7 +445,11 @@ def candidate_categories(question: str) -> list[str]:
     # 없어 후보 0건이 되고, 라우터가 맞게 판정해도 _enforce_candidate_scope가 되돌렸다.
     has_tax_context = any(word in text for word in _TAX_AMOUNT_WORDS)
     has_receipt_context = any(word in text for word in _PENSION_RECEIPT_WORDS)
-    if "연령별" in text or (
+    # "연금소득세율"은 이 카테고리를 글자 그대로 지목하는 이름이다. 나이·수령 문맥을
+    # 추가로 요구하면 정작 가장 직접적인 질문("연금소득세율 알려줘")이 후보 0건이 된다
+    # — 이 함수가 반복해서 겪은 "표면 어휘 조합" 실패와 같은 형태다.
+    # 핸들러는 나이를 못 찾으면 연령별 세율표 전체를 안내하므로 되살려도 안전하다.
+    if "연금소득세율" in text or "연령별" in text or (
         has_tax_context and (_AGE_MENTION_RE.search(text) or has_receipt_context)
     ):
         candidates.append("연금소득세율_연령별")
