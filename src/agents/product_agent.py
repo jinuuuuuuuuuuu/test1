@@ -348,13 +348,44 @@ def _extract_horizon(text: str) -> str | None:
     return None
 
 
+# 위험선호를 누그러뜨리는 표현. "약간 공격적으로"를 그대로 공격형(1~3등급)으로 읽으면
+# 사용자가 스스로 단 완충 표현을 무시하고 가장 위험한 구간을 추천하게 된다 —
+# 실측 V11("약간 공격적으로 투자하고 싶은데")이 이 경로였다. 완충 표현이 붙으면
+# 한 단계 안쪽(중립형)으로 당긴다.
+_RISK_HEDGE_MARKERS = ("약간", "조금", "살짝", "다소", "어느 정도", "적당히", "너무 위험하지")
+
+# ⚠️ "보수"는 쓰지 않는다 — **총보수(수수료)**에도 걸려 오판을 만든다.
+# 실측 V23("합리적인 수준의 총보수를 가진 펀드가 뭔가요?")이 위험성향 "안정형"으로
+# 확정돼 5등급 이상만 후보에 올랐다. 수수료를 물었는데 위험등급이 좁혀지는 것은
+# 사용자가 의도한 바가 아니다. 보수적 성향은 "보수적"으로만 받는다.
+_CONSERVATIVE_MARKERS = (
+    "안정형", "보수적", "안정적", "안전한", "안전하게", "크게 잃지", "손실 싫",
+    "낮은 위험", "위험등급 낮", "원금 지키", "잃고 싶지",
+)
+_NEUTRAL_MARKERS = ("중립형", "중립", "약간의 변동성", "어느 정도", "중간")
+_AGGRESSIVE_MARKERS = ("공격형", "공격", "적극", "높은 수익", "고위험")
+
+
 def _extract_risk_profile(text: str) -> str | None:
-    if any(word in text for word in ("안정형", "보수", "안정적", "안전한", "안전하게", "크게 잃지", "손실 싫", "낮은 위험", "위험등급 낮")):
+    """질문에서 위험선호를 읽는다. 못 읽으면 None(→ 역질문)이다.
+
+    ⚠️ 여기서 확정한 값은 곧바로 위험등급 필터로 번역된다(_search_args_from_profile).
+    즉 이 함수의 오판은 곧 "사용자가 원하지 않은 상품군만 보여주는" 결과가 되므로,
+    애매하면 확정하지 말고 None을 내 역질문으로 보내는 편이 낫다.
+    """
+    hedged = any(marker in text for marker in _RISK_HEDGE_MARKERS)
+
+    if any(word in text for word in _CONSERVATIVE_MARKERS):
         return "안정형"
-    if any(word in text for word in ("중립형", "중립", "약간의 변동성", "어느 정도", "중간")):
+    if any(word in text for word in _AGGRESSIVE_MARKERS):
+        # "약간 공격적" → 공격형(1~3등급)이 아니라 중립형으로 완화한다.
+        return "중립형" if hedged else "공격형"
+    if any(word in text for word in _NEUTRAL_MARKERS):
         return "중립형"
-    if any(word in text for word in ("공격형", "공격", "적극", "높은 수익", "고위험")):
-        return "공격형"
+    # "위험은 조금만 감수하고" — 완충 표현 + 위험 언급은 중립형으로 읽는다.
+    # 이 표현을 놓치면 사용자가 이미 말한 성향을 다시 되묻게 된다(실측 V10).
+    if hedged and any(word in text for word in ("위험", "리스크", "변동")):
+        return "중립형"
     return None
 
 
@@ -508,6 +539,16 @@ def _recommend_product_types(profile: dict) -> list[str]:
     return ["TDF", "채권혼합형 펀드"]
 
 
+# 위험성향을 실제 검색 조건(위험등급)으로 번역한 결과. _search_args_from_profile과
+# 반드시 같은 값이어야 한다 — 보여주는 해석과 실제 필터가 어긋나면 고지가 오히려
+# 오해를 만든다. (위험등급은 숫자가 클수록 안전하다: 1등급=매우 높은 위험, 6등급=매우 낮은 위험)
+_RISK_GRADE_DISCLOSURE = {
+    "안정형": "위험등급 5~6등급",
+    "중립형": "위험등급 4등급 이상",
+    "공격형": "위험등급 1~3등급",
+}
+
+
 def _format_profile_summary(profile: dict) -> str:
     rows = []
     labels = {
@@ -521,8 +562,15 @@ def _format_profile_summary(profile: dict) -> str:
         "preferred_product_type": "관심 상품 유형",
     }
     for key, label in labels.items():
-        if profile.get(key):
-            rows.append(f"- {label}: {profile[key]}")
+        if not profile.get(key):
+            continue
+        value = profile[key]
+        # "안정적인 걸 원해요" 같은 모호한 표현을 코드가 위험등급으로 확정하는데,
+        # 그 해석을 알리지 않으면 사용자는 왜 그 상품들만 나왔는지 알 수 없다.
+        # 해석 결과를 밝혀, 사용자가 다르게 생각했다면 바로잡을 수 있게 한다.
+        if key == "risk_profile" and value in _RISK_GRADE_DISCLOSURE:
+            value = f"{value}({_RISK_GRADE_DISCLOSURE[value]}으로 해석)"
+        rows.append(f"- {label}: {value}")
     return "\n".join(rows)
 
 

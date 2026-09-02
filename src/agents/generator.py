@@ -14,6 +14,7 @@ from src.agents.verification import (
     enforce_unsupported_numbers,
     replace_evidence_placeholders,
     split_premise_issues,
+    strip_tool_call_artifacts,
 )
 
 GENERATOR_MODEL = "HCX-005"
@@ -110,7 +111,7 @@ def _enforce_verification(
     # 문자열이 두 필드에 똑같이 중복될 때만 걸러내면(아래 로직) 표현이 다른 오분류는
     # 그대로 통과해, "먼저 질문에 담긴 전제를 짚고 넘어가겠습니다: 초안이 날짜에 직접
     # 답하지 않음"처럼 사용자가 하지도 않은 말을 전제로 지적하는 답변이 나간다.
-    premise_issues, misfiled = split_premise_issues(premise_issues)
+    premise_issues, misfiled = split_premise_issues(premise_issues, missing)
     missing.extend(item for item in misfiled if item not in missing)
 
     # ④가 같은 항목을 두 필드에 동시에 넣는 경우가 있다 (실측 S1: "2027년 개편안 확정
@@ -171,7 +172,11 @@ def _finalize_answer(verified_core_answer: str, state: PensionAgentState, core_c
     Core 문장 자체를 여기서 재생성하거나 보완하지 않는다. Guardian evidence는 Core prompt나
     verification에 쓰지 않고, 최종 참고근거 표시에서만 core_context와 합친다.
     """
-    answer = _append_guardian_if_enabled(verified_core_answer, state.get("guardian_result"))
+    # 도구 호출·코드블록 텍스트 제거는 **모든 경로가 지나는 이 지점**에서 한다.
+    # LLM이 도구 사용을 텍스트로 흉내내면(실측 V06) 그건 평범한 답변 문자열이라
+    # grounded 검증(수치만 검사)도 enforce_*(덧붙이기만 함)도 걸러내지 못한다.
+    answer = strip_tool_call_artifacts(verified_core_answer)
+    answer = _append_guardian_if_enabled(answer, state.get("guardian_result"))
     return _append_reference_line(answer, [*core_context, *_guardian_context(state)])
 
 
@@ -424,6 +429,20 @@ def build_generator_node():
             else ""
         )
 
+        # ⚠️ 프롬프트에 넣기 **전에** premise_issues 오분류를 걷어낸다.
+        # _enforce_verification도 같은 정제를 하지만 그건 LLM 응답을 받은 뒤라, 오분류된
+        # 항목이 프롬프트를 오염시키는 것은 막지 못한다 — 사후 정제는 출력에 붙는 교정문만
+        # 없앨 뿐 이미 회피형으로 쓰인 본문을 되돌릴 수 없다.
+        # 실측(eval no.199 솔로몬 국공채): missing_requirements와 글자까지 똑같은 항목이
+        # premise_issues에 중복 기재돼 "전제를 바로잡아라" 지시가 발동했고, grounded=True에
+        # 근거 8건(솔로몬 펀드 전 종류)을 갖고도 답변이 "자료에서 찾을 수 없다"로 나갔다.
+        prompt_premise_issues, prompt_misfiled = split_premise_issues(
+            list(verification.get("premise_issues") or []),
+            list(verification.get("missing_requirements") or []),
+        )
+        prompt_missing = list(verification.get("missing_requirements") or [])
+        prompt_missing.extend(item for item in prompt_misfiled if item not in prompt_missing)
+
         prompt = (
             (f"[이전 대화]\n{history_text}\n\n" if history_text else "")
             + f"[질문]\n{state['question']}\n\n"
@@ -432,9 +451,9 @@ def build_generator_node():
             f"[검증결과]\n"
             f"- grounded: {verification.get('grounded')}, issues: {verification.get('issues')}\n"
             f"{unsupported_line}"
-            f"- premise_issues(질문의 잘못된 전제): {verification.get('premise_issues')}\n"
+            f"- premise_issues(질문의 잘못된 전제): {prompt_premise_issues}\n"
             f"- requirements_met: {verification.get('requirements_met')}, "
-            f"missing_requirements: {verification.get('missing_requirements')}"
+            f"missing_requirements: {prompt_missing}"
         )
         # ⚠️ 아래 조기 반환 경로들도 _enforce_verification을 거쳐야 한다. 실측 S1(2027년
         # 세제 개편안)은 "세금혜택_개요" 정형 응답으로 분류돼 이 경로로 빠졌는데, 정형

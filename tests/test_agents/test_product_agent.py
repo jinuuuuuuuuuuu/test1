@@ -643,3 +643,73 @@ def test_clarification_policy_does_not_over_block_normal_text():
     out = _apply_clarification_policy(answer)
     for line in safe_lines:
         assert line in out, line
+
+
+# ── 모호한 정도 표현 해석 회귀 ────────────────────────────────────────────────
+# "안정적/약간 공격적" 같은 표현은 코드가 위험등급으로 확정하는데, 이 판정의 오판은
+# 곧 "사용자가 원하지 않은 상품군만 보여주는" 결과가 된다.
+
+
+def test_risk_profile_does_not_match_fee_words():
+    """'보수'(수수료)를 보수적 성향으로 오판하지 않는다 (실측 V23)."""
+    from src.agents.product_agent import _extract_risk_profile
+
+    for text in ("합리적인 수준의 총보수를 가진 펀드", "총보수가 낮은 펀드", "운용보수 얼마인가요"):
+        assert _extract_risk_profile(text) is None, text
+    # 진짜 보수적 성향은 계속 잡아야 한다
+    assert _extract_risk_profile("보수적으로 운용하고 싶어요") == "안정형"
+
+
+def test_hedged_aggressive_is_softened_to_neutral():
+    """'약간 공격적'을 공격형(1~3등급)으로 읽으면 완충 표현을 무시하게 된다 (V11)."""
+    from src.agents.product_agent import _extract_risk_profile
+
+    assert _extract_risk_profile("약간 공격적으로 투자하고 싶은데") == "중립형"
+    assert _extract_risk_profile("공격적으로 굴리고 싶어요") == "공격형"
+
+
+def test_hedged_risk_mention_is_read_as_neutral():
+    """'위험은 조금만 감수하고'를 놓치면 이미 말한 성향을 다시 되묻게 된다 (V10)."""
+    from src.agents.product_agent import _extract_risk_profile
+
+    assert _extract_risk_profile("위험은 조금만 감수하고 수익 좀 보고 싶어요") == "중립형"
+
+
+def test_abstract_quality_words_stay_unresolved():
+    """'괜찮은/좋은'은 기준이 없으므로 확정하지 않고 역질문으로 보낸다."""
+    from src.agents.product_agent import _extract_risk_profile
+
+    for text in ("괜찮은 연금저축 펀드 하나 골라주세요", "좋은 퇴직연금 상품이 뭔가요"):
+        assert _extract_risk_profile(text) is None, text
+
+
+def test_risk_disclosure_matches_actual_search_filter():
+    """사용자에게 고지하는 해석과 실제 검색 필터가 어긋나면 안 된다."""
+    from src.agents.product_agent import (
+        _RISK_GRADE_DISCLOSURE,
+        _format_profile_summary,
+        _search_args_from_profile,
+    )
+
+    expected = {
+        "안정형": {"risk_grade_min": 5},
+        "중립형": {"risk_grade_min": 4},
+        "공격형": {"risk_grade_max": 3},
+    }
+    for profile_value, filters in expected.items():
+        args = _search_args_from_profile({"risk_profile": profile_value})
+        for key, value in filters.items():
+            assert args[key] == value, profile_value
+        # 고지 문구에 실제 등급 숫자가 들어 있어야 한다
+        assert profile_value in _RISK_GRADE_DISCLOSURE
+        summary = _format_profile_summary({"risk_profile": profile_value})
+        assert _RISK_GRADE_DISCLOSURE[profile_value] in summary
+
+
+def test_profile_summary_discloses_interpretation():
+    from src.agents.product_agent import _format_profile_summary
+
+    summary = _format_profile_summary({"account_type": "IRP", "risk_profile": "안정형"})
+
+    assert "위험등급 5~6등급" in summary
+    assert "IRP" in summary

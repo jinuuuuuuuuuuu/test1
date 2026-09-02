@@ -180,6 +180,16 @@ CODE_OVERRIDABLE_CATEGORIES: frozenset[str] = frozenset({
     # 재현되지 않도록 코드가 되살릴 수 있어야 한다.
     "투자가능여부_상품유형",
     "퇴직시_IRP의무이전",
+    # ⚠️ 세액공제 한도는 **틀린 답이 가장 잦은 주제**다. 2023년 개정 전 수치(400만원/
+    # 700만원/13.2%)가 학습 데이터에 대량으로 남아 있어, 정형 경로를 못 타면 LLM이
+    # 옛 수치를 자신 있게 답한다.
+    # 실측(정도부사 25문항):
+    #   V03 "세액공제 대박으로 받을 수 있는 방법 있나요?"    -> 700만원, 50세 (오답)
+    #   V05 "세액공제를 많이 받고 싶은데 얼마나 넣어야 하나요?" -> 400만원, 14.6%, 700만원 (오답)
+    # 정답(600만원/900만원/16.5%·13.2%)은 _tax_credit_limit_response가 이미 갖고 있었다 —
+    # 라우터가 "얼마/한도" 형태가 아닌 질문("~받는 방법", "~많이 받고 싶은데")을
+    # 기각하면서 답을 못 쓴 것이다. 핸들러가 스스로 None을 내므로 되살려도 안전하다.
+    "세액공제_한도",
 })
 
 
@@ -237,7 +247,28 @@ def candidate_categories(question: str) -> list[str]:
         candidates.append("복합정보_태스크플랜")
     if personal_tax_response(question) is not None:
         candidates.append("개인세금_입력충분성")
-    if "세액공제" in text:
+    # ⚠️ "세액공제"라는 단어가 없어도 **납입 한도**를 묻는 질문은 같은 정형 답변이
+    # 정답이다(_tax_credit_limit_response가 연금저축+IRP 합산 납입한도와 세액공제
+    # 대상 한도를 함께 제시한다). 이 어휘를 빠뜨려서 생긴 구멍이 실측으로 확인됐다 —
+    # V06("연금저축이랑 IRP에 최대한 많이 넣고 싶어요. 얼마까지 되나요?")은 후보가
+    # 0건이라 결정론 경로를 못 타고 LLM 자유응답으로 새서, 13.2%·5,500만원을
+    # 근거 없이 지어냈다(grounded=False로 디스클레이머까지 붙었다).
+    #
+    # 이 함수의 docstring이 경고하는 실패 유형("표면 어휘 조합으로 판정하려다 표현이
+    # 조금만 달라지면 무너진다")과 같은 클래스다. 정도부사("최대한 많이")가 원인이
+    # 아니라는 점이 중요하다 — 부사를 빼도("연금저축이랑 IRP에 넣고 싶어요. 얼마까지
+    # 되나요?") 여전히 후보가 0건이었다. 원인은 "넣다/납입"이라는 어휘 자체의 누락이다.
+    asks_contribution_limit = (
+        any(word in text for word in ("납입한도", "납입limit", "불입한도"))
+        or (
+            # ⚠️ _compact는 소문자화를 하지 않는다 — "IRP"(대문자)가 실제 표기라
+            # "irp"만 검사하면 영원히 안 걸린다. 두 표기를 함께 본다.
+            any(word in text for word in ("연금저축", "IRP", "irp", "연금계좌"))
+            and any(word in text for word in ("넣", "납입", "불입", "저축", "가입", "얼마까지"))
+            and any(word in text for word in ("얼마", "한도", "최대", "까지"))
+        )
+    )
+    if "세액공제" in text or asks_contribution_limit:
         candidates.append("세액공제_계산_입력부족")
         candidates.append("세액공제_한도")
     if any(word in text for word in ("세금혜택", "세제혜택", "절세혜택", "세금상혜택")) or (
@@ -330,7 +361,16 @@ def candidate_categories(question: str) -> list[str]:
     # _extract_withdrawal_limit_inputs도 "실제수령연차"가 보이면 명시적으로 손을 뗀다.
     # 이 구분을 안 하면 no.92~97·345·346 같은 감면율 질문이 한도 후보로 잘못 올라온다.
     asks_actual_receipt_year = "실제수령연차" in text
-    if (
+    # ⚠️ "연금"+"한도"만으로 잡으면 **납입**한도 질문까지 수령한도로 끌려온다.
+    # 납입(넣는 것)과 수령(받는 것)은 정반대 개념이라 정형 답변도 완전히 다르다 —
+    # 실측: "연금저축이랑 IRP 납입한도가 얼마인가요?"가 연금수령한도 후보로만 올라왔다.
+    asks_contribution_not_receipt = any(
+        word in text for word in ("납입한도", "불입한도")
+    ) or (
+        any(word in text for word in ("넣", "납입", "불입"))
+        and not any(word in text for word in ("수령", "받", "인출", "연차"))
+    )
+    if not asks_contribution_not_receipt and (
         "연금수령한도" in text
         or ("연금" in text and "한도" in text)
         or (not asks_actual_receipt_year and "수령연차" in text)

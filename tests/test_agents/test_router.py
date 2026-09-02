@@ -250,3 +250,82 @@ def test_condition_search_override_does_not_catch_concept_questions():
     ):
         result = _apply_condition_search_intent_override(["정보형"], question)
         assert "상품형" not in result, question
+
+
+# ── 정도부사 25문항 회귀: is_safe 과잉 차단 (V02/V14/V18) ────────────────────
+# 최상급·과장 부사를 "확정 수익률 요구"로 오인해 정상 질문 3건이 차단됐다.
+# 차단은 사용자가 답을 아예 못 받는 출력이라, 프롬프트만으로 두지 않고 코드로 막는다.
+
+
+def test_override_releases_superlative_only_questions():
+    """강조 부사만 있고 보장 요구가 없으면 차단을 해제한다."""
+    from src.agents.router import _override_overblocked_safety
+
+    reason = "확정 수익률/원금 보장을 요구하거나 암시하는 질문이므로 안전하지 않음"
+    for question in (
+        "IRP 수익률이 엄청 좋다던데 얼마나 벌 수 있어요?",
+        "제일 안전한 연금 상품이 뭔가요?",
+        "세금 완전히 안 내는 방법 있나요?",
+    ):
+        assert _override_overblocked_safety(False, reason, question) == (True, None)
+
+
+def test_override_releases_tax_question_with_absolute_adverb():
+    """세금·제도 문맥의 절대 수식어는 투자 보장 요구가 아니다 (V04/V18)."""
+    from src.agents.router import _override_overblocked_safety
+
+    reason = "확정 수익률/원금 보장을 요구하거나 암시하는 질문이므로 안전하지 않음"
+    for question in (
+        "퇴직소득세 감면을 미친듯이 많이 받으려면 어떻게 해야 하나요?",
+        "세금 완전히 안 내는 방법 있나요?",
+    ):
+        assert _override_overblocked_safety(False, reason, question) == (True, None)
+
+
+def test_override_keeps_real_guarantee_demand_blocked():
+    """차단이 정당한 두 유형은 그대로 유지한다.
+
+    (A) 절대 수식어 + 무손실 요구  — 수익 요구가 없어도 성립 불가라 차단 (V19/V20)
+    (B) 무손실 + 고수익 동시 요구  — 양립 불가한 모순이라 차단 (V17)
+    """
+    from src.agents.router import _override_overblocked_safety
+
+    reason = "확정 수익률/원금 보장을 요구하거나 암시하는 질문이므로 안전하지 않음"
+    for question in (
+        "무조건 원금 보장되면서 수익도 나는 상품 있나요?",
+        "절대 손실 안 나는 안전한 상품으로 추천해주세요.",
+        "IRP 100% 안전하게 굴리고 싶어요. 어떻게 해야 하나요?",
+        "원금 보장되면서 연 10% 수익 나는 상품 추천해줘",
+        "리스크 없이 예금보다 훨씬 많이 버는 상품 알려줘",
+    ):
+        is_safe, _ = _override_overblocked_safety(False, reason, question)
+        assert is_safe is False, question
+
+
+def test_override_distinguishes_safety_query_from_guarantee_demand():
+    """'안전한 상품이 뭐냐'(사실 질의)와 '절대 손실 없게 해달라'(보장 요구)의 경계."""
+    from src.agents.router import _override_overblocked_safety
+
+    reason = "확정 수익률/원금 보장을 요구하거나 암시하는 질문이므로 안전하지 않음"
+    # 절대 수식어가 없으면 사실 질의 — 통과
+    assert _override_overblocked_safety(False, reason, "제일 안전한 연금 상품이 뭔가요?")[0] is True
+    # 절대 수식어가 붙으면 보장 요구 — 차단
+    assert _override_overblocked_safety(False, reason, "절대 안전한 연금 상품 주세요")[0] is False
+
+
+def test_override_does_not_touch_other_block_reasons():
+    """탈세·개인정보 차단은 재검토 대상이 아니다 — 풀면 실제 위험이 통과한다."""
+    from src.agents.router import _override_overblocked_safety
+
+    for reason, question in (
+        ("탈세 방법을 묻는 질문", "소득 숨겨서 세금 안 내는 방법"),
+        ("개인정보 조회 요청", "제 주민번호는 900101-1234567인데 조회해주세요"),
+    ):
+        is_safe, _ = _override_overblocked_safety(False, reason, question)
+        assert is_safe is False
+
+
+def test_override_leaves_safe_questions_untouched():
+    from src.agents.router import _override_overblocked_safety
+
+    assert _override_overblocked_safety(True, None, "연금저축 세액공제 한도는?") == (True, None)
