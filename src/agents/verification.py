@@ -517,9 +517,16 @@ _USER_PREMISE_MARKERS = (
 # ④가 "초안/질문이 ~하다"처럼 답변 과정을 서술하는 주어. 이게 등장하면 사용자 발화가
 # 아니라 시스템 내부 상태를 말하는 것이다.
 _META_SUBJECT_MARKERS = ("초안", "답변이", "답변은", "질문은", "질문이")
+# ⚠️ "이라는 전제"·"라는 전제"는 여기 두면 안 된다(제거 이력). "전제"는 ④가 **모든**
+# premise 항목에 붙이는 일반 용어라, 조건 되뇜과 진짜 오류를 전혀 구분하지 못한다.
+# 게다가 "이라는/라는"은 앞 명사의 받침 유무로 갈리는 조사일 뿐이라, 판정이 의미가
+# 아니라 철자에 좌우됐다:
+#   "IRP는 원금보장 상품이라는 전제"   -> 필터링(진짜 오류인데 사라짐)
+#   "중도인출이 가능하다는 전제"        -> 유지
+# 실측: 이 마커 때문에 진짜 전제 오류 5개 중 4개가 조용히 걸러졌다(IRP 원금보장,
+# 위험등급 6등급, DB형 중도인출, 폐지된 700만원 한도). 원래 의도했던 "사용자가 준
+# 조건을 되뇐 항목"(잔금지급일 2026-01-31 등)은 아래 숫자 분기가 이미 전부 커버한다.
 _BENIGN_CONDITION_MARKERS = (
-    "이라는 전제",
-    "라는 전제",
     "이라고 가정",
     "라고 가정",
     "나이가",
@@ -572,6 +579,31 @@ def is_want_statement(text: str) -> bool:
     return any(compact.endswith(ending) for ending in _WANT_STATEMENT_ENDINGS)
 
 
+# "제도가 이렇게 작동한다"는 주장에 쓰이는 서술어. 사용자가 준 **자기 조건**(잔금지급일,
+# 본인 나이, 수령연차)과 **제도에 대한 주장**(원금보장이다, 중도인출이 된다, 한도가 얼마다)을
+# 가르는 신호다. 전자는 되뇜이라 교정 대상이 아니고, 후자는 틀렸으면 반드시 바로잡아야 한다.
+_INSTITUTIONAL_CLAIM_MARKERS = (
+    "위험하", "안전하", "가능하", "불가능", "된다", "안된다", "안 된다",
+    "보장", "유리", "불리", "면제", "비과세", "과세되", "적용되", "허용",
+    "높다", "낮다", "같다", "다르다", "이다", "입니다",
+)
+# 제도의 기준값을 주장하는 표현. 사용자 조건은 "내 상황이 얼마"이고, 제도 주장은
+# "규정상 얼마"다 — 후자는 숫자가 들어 있어도 검증 대상이다.
+_INSTITUTIONAL_VALUE_MARKERS = ("한도", "기준", "요건", "세율", "공제율", "등급")
+
+
+def asserts_institutional_rule(text: str) -> bool:
+    """항목이 "제도가 이렇게 작동한다"는 주장인지(= 참·거짓 검증 대상인지) 판정한다.
+
+    사용자가 제시한 자기 조건("잔금지급일이 2026년 1월 31일")과 구분하기 위한 것이다.
+    조건 되뇜은 값을 그대로 옮길 뿐이지만, 제도 주장은 그 값이나 성질이 **맞는지 틀리는지**를
+    말한다 — 틀렸다면 답변 앞머리에서 바로잡아야 하는 바로 그 대상이다.
+    """
+    return any(marker in text for marker in _INSTITUTIONAL_CLAIM_MARKERS) or any(
+        marker in text for marker in _INSTITUTIONAL_VALUE_MARKERS
+    )
+
+
 def is_answer_defect_statement(text: str) -> bool:
     """premise_issues 항목이 '질문의 전제'가 아니라 '답변의 결함'을 서술하는지 판정한다."""
     has_defect = any(marker in text for marker in _ANSWER_DEFECT_MARKERS)
@@ -598,6 +630,13 @@ def is_benign_condition_statement(text: str) -> bool:
     # (_FALSE_PREMISE_MARKERS 확인 뒤에 둔다 — 사실 주장이 섞였으면 그쪽이 우선)
     if is_want_statement(text):
         return True
+    # "제도가 이렇게 작동한다"는 주장은 사용자가 준 조건이 아니라 검증 대상이다.
+    # 아래 무해 분기들(숫자 포함, 중도인출 문맥 등)보다 먼저 확인해야 한다 — 그 분기들은
+    # 주제어만 보므로 제도 주장까지 함께 삼킨다(실측: "연금저축 한도가 700만원이라는
+    # 전제"가 숫자+"연금" 조합으로, "DB형도 중도인출이 된다는 전제"가 "DB형" 마커로
+    # 무해 처리돼 폐지된 한도·틀린 제도 이해를 교정하지 못했다).
+    if asserts_institutional_rule(text):
+        return False
     if re.search(r"\d", text) and any(
         marker in text
         for marker in (

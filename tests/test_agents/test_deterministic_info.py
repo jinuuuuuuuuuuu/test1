@@ -1570,3 +1570,43 @@ def test_retirement_pay_without_pension_receipt_is_not_reduction_category():
         "퇴직금은 언제 받나요?",
     ):
         assert "퇴직소득세감면" not in candidate_categories(question), question
+
+
+def test_stated_pension_income_amount_reaches_comprehensive_tax():
+    """본인 연금소득 금액을 말하면 종합과세 안내 카테고리에 닿아야 한다.
+
+    실측 CASE 8("연금소득이 1600만원이야"): 후보 조건이 **기준값(1,500만원) 자체**를
+    말한 경우만 잡아서, 정작 규칙이 발동하는 상황(본인 금액이 기준을 넘음)에 후보가
+    0건이 됐다. 그러면 LLM 자유응답으로 새는데, 그 경로는 폐지된 수치를 지어내는
+    곳이라 통제 밖으로 나가는 것과 같다.
+
+    핸들러는 기준과 판정 대상 재원만 설명하고 사용자 금액이 과세대상인지는 단정하지
+    않으므로, 후보에 올려도 금액을 잘못 확정할 위험이 없다.
+    """
+    for question in (
+        "연금소득이 1600만원이야",
+        "연금소득이 1600만원인데 세금 어떻게 돼?",
+        "연금으로 연 1600만원 받으면 어떻게 되나요?",
+    ):
+        assert "연금소득세_종합과세" in candidate_categories(question), question
+
+
+def test_comprehensive_tax_answer_does_not_assume_taxable_source():
+    """사용자가 말한 금액을 자동으로 "과세대상 사적연금소득"으로 확정하지 않는다.
+
+    1,500만원 판정 대상은 세액공제 받은 납입금·운용수익뿐이고, 세액공제 받지 않은
+    원금과 퇴직금 재원은 제외된다 — 이 구분을 답변이 반드시 밝혀야 한다.
+    """
+    draft, _ = deterministic_response_for("연금소득세_종합과세", "사적연금소득 1600만원이면 종합과세인가요?")
+
+    assert "세액공제 받은 납입금과 운용수익 재원만 포함" in draft
+    assert "퇴직금 재원은 이 판정에서 제외" in draft
+
+
+def test_contribution_amounts_do_not_trigger_comprehensive_tax():
+    """납입액을 말한 질문은 종합과세 후보로 끌어오지 않는다(수령 vs 납입 구분)."""
+    for question in (
+        "연금저축에 600만원 넣으면 세액공제 얼마?",
+        "연금저축 한도가 얼마야?",
+    ):
+        assert "연금소득세_종합과세" not in candidate_categories(question), question

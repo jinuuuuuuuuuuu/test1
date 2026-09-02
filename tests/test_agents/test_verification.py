@@ -965,3 +965,45 @@ def test_want_ending_with_factual_claim_stays_a_premise():
     real, _misfiled = split_premise_issues([item], [])
 
     assert real == [item]
+
+
+def test_institutional_claims_survive_benign_filters():
+    """"제도가 이렇게 작동한다"는 주장은 무해 필터에 걸려 사라지면 안 된다.
+
+    실측: _BENIGN_CONDITION_MARKERS의 "이라는 전제"/"라는 전제"가 진짜 전제 오류 5개 중
+    4개를 조용히 걸러냈다. "이라는/라는"은 앞 명사의 받침 유무로 갈리는 조사일 뿐이라
+    판정이 의미가 아니라 철자에 좌우됐다 — "원금보장 상품**이라는** 전제"는 필터링되고
+    "중도인출이 가능하다**는** 전제"는 통과하는 식이었다.
+
+    숫자 분기·"DB형" 마커도 같은 문제를 안고 있어(주제어만 보고 무해 판정) 제도 주장을
+    함께 삼켰다: 폐지된 한도("700만원"), 틀린 제도 이해("DB형도 중도인출이 된다").
+    """
+    from src.agents.verification import split_premise_issues
+
+    for item in (
+        "IRP는 원금보장 상품이라는 전제",
+        "위험등급 6등급이 가장 위험하다는 전제",
+        "DB형도 중도인출이 된다는 전제",
+        "연금저축 한도가 700만원이라는 전제",
+        "55세 이전에도 연금수령이 가능하다는 전제",
+    ):
+        real, _misfiled = split_premise_issues([item], [])
+        assert real == [item], f"제도 주장이 무해로 걸러졌다: {item}"
+
+
+def test_user_supplied_conditions_are_still_filtered():
+    """사용자가 준 자기 조건을 되뇐 항목은 그대로 무해 처리한다(과잉 교정 방지).
+
+    제도 주장과의 차이는 서술 대상이다 — 조건 되뇜은 "내 상황이 얼마"를 옮길 뿐이고,
+    제도 주장은 "규정상 이렇다"를 말한다.
+    """
+    from src.agents.verification import split_premise_issues
+
+    for item in (
+        "잔금지급일이 2026년 1월 31일이라고 가정",
+        "2026년 5월 10일이 피해발생일이라는 전제",
+        "만 65세라는 전제",
+        "요양종료일이 2026년 3월 2일이라는 전제",
+    ):
+        real, _misfiled = split_premise_issues([item], [])
+        assert real == [], f"사용자 조건이 교정 대상으로 남았다: {item}"

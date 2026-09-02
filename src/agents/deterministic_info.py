@@ -440,9 +440,22 @@ def candidate_categories(question: str) -> list[str]:
     mentions_annual_threshold = any(
         word in text for word in ("1500만", "1,500만", "1500만원", "천5백만", "1천5백만")
     )
+    # ⚠️ 기준값(1,500만원) 자체를 말한 경우만 잡으면, 정작 **본인 연금소득 금액**을
+    # 말한 질문이 후보 0건이 된다 — 규칙이 발동하는 바로 그 상황인데도. 실측 CASE 8
+    # "연금소득이 1600만원이야"는 후보가 없어 LLM 자유응답으로 샜다(그 경로는 폐지된
+    # 수치를 지어내는 곳이라 통제 밖으로 나가는 것과 같다).
+    #
+    # 연금소득을 만원 단위 금액으로 말했으면 이 카테고리의 안내 대상이다. 핸들러는
+    # 기준과 판정 대상 재원만 설명하고 **사용자 금액이 과세대상인지는 단정하지 않으므로**
+    # (실측 확인) 금액을 잘못 확정할 위험이 없다.
+    states_pension_income_amount = ("연금소득" in text or "연금으로" in text) and re.search(
+        r"\d[\d,]*\s*만\s*원", text
+    ) is not None
     if any(word in text for word in ("종합과세", "분리과세")) or (
         "연금소득세" in text and "연금소득세율" not in text
-    ) or (mentions_annual_threshold and any(w in text for w in ("연금", "초과", "넘으면", "넘으"))):
+    ) or (mentions_annual_threshold and any(w in text for w in ("연금", "초과", "넘으면", "넘으"))) or (
+        states_pension_income_amount
+    ):
         candidates.append("연금소득세_종합과세")
 
     # 연령별 연금소득세율 — 세금 얘기 + (나이 언급 OR 연금 수령 문맥)일 때 후보에 넣는다.
