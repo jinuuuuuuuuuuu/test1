@@ -1236,6 +1236,29 @@ def test_withdrawal_limit_falls_back_to_formula_without_inputs():
     assert "필요합니다" in draft
 
 
+def test_withdrawal_limit_overage_question_states_16_5_percent():
+    """한도를 넘겨서 인출하면 세금이 얼마나 더 나오는지 물으면 16.5%를 명시해야 한다.
+
+    실측 no.142: 이 핸들러는 "한도가 얼마인지"만 답하고 정작 질문의 핵심(초과분의
+    세금)에는 답하지 못했다 — 한도 초과 인출분이 연금외수령으로 분류되어 16.5%
+    기타소득세가 부과된다는 사실이 이미 근거 문서(doc38, no.106 수정 때 확인한 것과
+    같은 문서)에 있는데도 그 사실을 안내하지 않았다.
+    """
+    draft, _ = deterministic_response_for(
+        "연금수령한도", "연금수령한도를 넘겨서 인출하면 세금이 얼마나 더 나오나요?"
+    )
+
+    assert "16.5%" in draft
+    assert "기타소득세" in draft
+
+
+def test_withdrawal_limit_plain_question_does_not_mention_overage_tax():
+    """초과 여부를 안 물으면 초과세금 안내를 덧붙이지 않는다(불필요한 정보 추가 방지)."""
+    draft, _ = deterministic_response_for("연금수령한도", "연금수령한도가 어떻게 계산되나요?")
+
+    assert "기타소득세" not in draft
+
+
 def test_withdrawal_limit_does_not_hijack_actual_receipt_year_question():
     """'연금실제수령연차'는 이연퇴직소득세 감면율용이라 한도 계산에 쓰면 안 된다.
 

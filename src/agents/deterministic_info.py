@@ -2156,6 +2156,14 @@ def _extract_withdrawal_limit_inputs(question: str) -> tuple[Optional[int], Opti
     return account_value, payment_year
 
 
+_OVERAGE_TAX_QUESTION_MARKERS = ("넘겨서", "넘게", "초과해서", "초과하면", "초과인출", "한도넘")
+_OVERAGE_TAX_NOTE = (
+    "\n\n한도를 초과해 인출하는 부분은 연금수령이 아니라 연금외수령으로 분류되어, "
+    "세액공제 받은 납입금·운용수익 재원이라면 전액 16.5% 기타소득세가 부과됩니다 "
+    "(한도 이내 인출분에 적용되는 연령별 연금소득세율보다 높습니다)."
+)
+
+
 def _withdrawal_limit_response(question: str) -> tuple[str, list[RetrievedItem]]:
     source = "doc39 연금수령한도 규칙"
     content = (
@@ -2168,6 +2176,15 @@ def _withdrawal_limit_response(question: str) -> tuple[str, list[RetrievedItem]]
         "다만 연금수령연차 11년차 이상부터는 한도가 없어져 전액 인출해도 연금수령으로 인정될 수 있습니다. "
         "또 2013.3.1 이전 가입한 연금계좌는 1년차가 아니라 6년차부터 기산하는 특례가 있습니다."
     )
+    # ⚠️ 이 핸들러는 원래 "한도가 얼마인지"만 답했다. 그런데 "한도를 넘겨서 인출하면
+    # 세금이 얼마나 더 나오나요"(실측 no.142)처럼 **초과분의 세금**을 묻는 질문도
+    # 같은 카테고리(연금수령한도)로 들어온다 — 정답(16.5% 기타소득세)이 이미 doc38
+    # 근거 문서에 있는데(no.106 수정 때 확인한 것과 같은 문서), 한도 공식만 반복
+    # 답하고 정작 질문의 핵심(초과 시 세금)에는 답하지 못했다.
+    asks_overage_tax = any(marker in question for marker in _OVERAGE_TAX_QUESTION_MARKERS)
+    overage_note = _OVERAGE_TAX_NOTE if asks_overage_tax else ""
+    if asks_overage_tax:
+        content += " 한도 초과 인출분은 연금외수령으로 분류되어 전액 16.5% 기타소득세가 부과됩니다."
 
     # 질문에 평가액과 연차가 모두 있으면 규칙엔진으로 실제 금액을 계산한다.
     # ⚠️ 예전에는 question을 아예 읽지 않고 항상 공식만 안내해서, 계산에 필요한 값이
@@ -2189,7 +2206,7 @@ def _withdrawal_limit_response(question: str) -> tuple[str, list[RetrievedItem]]
                 f"입력해주신 조건(평가액 {_won(account_value)}, 연금수령 {payment_year}년차)의 "
                 f"올해 연금수령한도는 **{_won(result.limit_amount)}**입니다.\n\n"
                 f"계산식: {_won(account_value)} ÷ (11 - {payment_year}) × 120% = "
-                f"{_won(result.limit_amount)}\n\n{formula_note}"
+                f"{_won(result.limit_amount)}\n\n{formula_note}{overage_note}"
             )
         content += (
             f" 입력 조건에서는 평가액 {_won(account_value)}, 연금수령 {payment_year}년차이며 "
@@ -2204,7 +2221,7 @@ def _withdrawal_limit_response(question: str) -> tuple[str, list[RetrievedItem]]
     draft = (
         "연금수령한도는 다음 공식으로 계산합니다.\n\n"
         "연금수령한도 = 연금계좌 평가액 ÷ (11 - 연금수령연차) × 120%\n\n"
-        f"{formula_note}\n\n"
+        f"{formula_note}{overage_note}\n\n"
         "구체적인 금액 계산을 하려면 연금계좌 평가액과 현재 연금수령연차가 필요합니다."
     )
     return draft, _context(source, content)
