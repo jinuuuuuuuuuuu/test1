@@ -117,6 +117,27 @@ def test_prior_answer_numbers_do_not_legitimize_reuse():
     assert find_unsupported_numbers(draft, [], user_texts=["그 한도 다시 알려줘"]) == ["900만원"]
 
 
+def test_short_number_is_not_hidden_by_unrelated_longer_number():
+    """짧은 숫자가 근거 속 다른 숫자의 부분문자열이라는 이유로 "지원됨"이 되면 안 된다.
+
+    실측 no.26/123: "DB형은 퇴직 전 평균임금의 60% × 근속연수를 보장합니다"는 근거
+    어디에도 없는 지어낸 공식(정답은 "평균임금 30일분 × 계속근로기간")인데, 근거
+    문서 중 하나에 우연히 "6,000,000원"(콤마 제거 후 "6000000")이 있어 "60"이 그
+    부분문자열로 매치되며 지원된 것으로 오판됐다 — L0 오버라이드도 ⑤의 디스클레이머도
+    발동하지 못했다.
+    """
+    draft = "세율은 60%입니다."
+    evidence = ["납입액 6,000,000원을 기준으로 계산합니다."]
+    assert find_unsupported_numbers(draft, evidence) == ["60%"]
+
+
+def test_number_matches_only_at_word_boundary():
+    """근거에 진짜로 그 숫자가 단독으로 등장하면 정상적으로 지원됨 처리돼야 한다(회귀 방지)."""
+    draft = "한도는 600만원입니다."
+    evidence = ["연금저축 세액공제 한도는 600만원이다."]
+    assert find_unsupported_numbers(draft, evidence) == []
+
+
 def test_empty_evidence_flags_all_numbers():
     draft = "비용처리와 함께 노란우산공제 연 500만원, 공제율 16.5%가 대표적입니다."
     suspects = find_unsupported_numbers(draft, [])

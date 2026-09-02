@@ -186,8 +186,27 @@ def find_unsupported_numbers(
     return [
         token
         for token in extract_number_tokens(draft)
-        if _numeric_core(token) not in normalized_support
+        if not _numeric_core_supported(_numeric_core(token), normalized_support)
     ]
+
+
+def _numeric_core_supported(core: str, normalized_support: str) -> bool:
+    """core(예: "60")가 근거 텍스트에 그 자체 숫자로 등장하는지, 다른 숫자에 우연히
+    포함된 것인지 구분한다.
+
+    ⚠️ 예전엔 `core in normalized_support`(부분문자열 포함)로만 판정해서, "60%"가
+    근거의 "6,000,000원"(콤마 제거 후 "6000000")에 "60"이 부분문자열로 들어있다는
+    이유만으로 "지원됨"으로 오판됐다. 실측 no.26/123: DB형 급여 계산식이 근거에
+    없는데도 "평균임금의 60% × 근속연수"라는 지어낸 공식이 검증을 그대로 통과해
+    L0 오버라이드도, ⑤의 디스클레이머도 발동하지 못했다 — 부분문자열 일치가 검증
+    전체를 무력화하는 구멍이었다.
+
+    앞뒤가 숫자가 아닌 위치(단어 경계)에서 core가 등장할 때만 "지원됨"으로 본다.
+    """
+    if not core:
+        return True
+    pattern = re.compile(rf"(?<!\d){re.escape(core)}(?!\d)")
+    return pattern.search(normalized_support) is not None
 
 
 def apply_l0_overrides(verification: dict, suspects: list[str], has_evidence: bool) -> dict:
