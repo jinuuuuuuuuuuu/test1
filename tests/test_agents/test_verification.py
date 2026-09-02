@@ -802,3 +802,77 @@ def test_strip_tool_call_artifacts_preserves_clean_answer():
 
     answer = "연금저축 세액공제 한도는 연 600만원입니다.\n\n참고 근거: 세액공제 안내"
     assert strip_tool_call_artifacts(answer) == answer
+
+
+# ── 확정된 미지원 수치를 본문에서 제거 (A그룹 회귀) ──────────────────────────
+# 예전에는 경고만 붙이고 본문은 그대로 뒀다. 그러나 사용자는 본문을 먼저 읽고
+# 경고는 맨 아래에 있어, 처음 읽을 때 지어낸 값을 사실로 받아들인다.
+
+
+def test_enforce_unsupported_numbers_drops_fabricated_sentence():
+    """지어낸 수치를 담은 문장을 통째로 제거하고 나머지는 보존한다 (실측 no.27)."""
+    from src.agents.verification import enforce_unsupported_numbers
+
+    answer = (
+        "네, DB형 퇴직연금은 퇴직 시 받을 금액이 사전에 확정되어 있는 구조입니다. "
+        "이는 퇴직 전 3개월간의 평균 임금의 60% 이상으로 계산된다는 규정이 있습니다. "
+        "기본적인 퇴직급여의 액수는 이미 확정된 상태입니다."
+    )
+    out = enforce_unsupported_numbers(answer, ["60%"])
+
+    assert "60%" not in out                    # 본문에서 제거
+    assert "참고용입니다" not in out            # 제거했으므로 경고는 불필요
+    assert "사전에 확정되어 있는 구조" in out   # 나머지 문장은 보존
+    assert "이미 확정된 상태" in out
+
+
+def test_enforce_unsupported_numbers_keeps_numbered_list_intact():
+    """번호 목록 항목은 지우지 않는다 — 번호가 어긋나면 서식이 더 망가진다 (실측 no.140)."""
+    from src.agents.verification import enforce_unsupported_numbers
+
+    answer = (
+        "판단 요소는 다음과 같습니다.\n"
+        "1. **세금**: 중도인출 시 기타소득세 16.5%가 부과될 수 있습니다.\n"
+        "2. **수수료**: 일부 금융기관은 실물이전 수수료를 부과합니다.\n"
+        "3. **상품 특성**: 상품 종류에 따라 장단점이 달라집니다."
+    )
+    out = enforce_unsupported_numbers(answer, ["16.5%"])
+
+    assert "1." in out and "2." in out and "3." in out   # 번호 유지
+    assert "참고용입니다" in out                          # 대신 경고로 처리
+
+
+def test_enforce_unsupported_numbers_falls_back_when_too_short():
+    """본문이 거의 사라지는 경우에는 지우지 않고 경고를 붙인다."""
+    from src.agents.verification import enforce_unsupported_numbers
+
+    answer = "세액공제 한도는 700만원입니다."
+    out = enforce_unsupported_numbers(answer, ["700만원"])
+
+    assert answer in out
+    assert "참고용입니다" in out
+
+
+def test_enforce_unsupported_numbers_preserves_reference_line():
+    """참고 근거 줄은 삭제 대상이 아니다."""
+    from src.agents.verification import enforce_unsupported_numbers
+
+    answer = (
+        "연금저축은 누구나 가입할 수 있습니다. "
+        "세액공제 한도는 700만원입니다. "
+        "자세한 내용은 아래를 참고하세요.\n\n"
+        "참고 근거: 세액공제 안내"
+    )
+    out = enforce_unsupported_numbers(answer, ["700만원"])
+
+    assert "참고 근거: 세액공제 안내" in out
+    assert "700만원" not in out.split("참고 근거:")[0]
+
+
+def test_enforce_unsupported_numbers_still_skips_negation():
+    """부정·교정 문맥은 여전히 손대지 않는다(기존 동작 유지)."""
+    from src.agents.verification import enforce_unsupported_numbers
+
+    answer = "평균 임금의 60%가 아니라 30일분에 계속근로기간을 곱하여 계산됩니다."
+
+    assert enforce_unsupported_numbers(answer, ["60%"]) == answer

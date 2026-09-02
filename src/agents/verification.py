@@ -373,21 +373,116 @@ def _number_is_asserted(answer: str, number_token: str) -> bool:
         start = idx + len(core)
 
 
+# 문장 분리 — 마침표·물음표·느낌표 뒤 공백, 또는 줄바꿈을 경계로 본다.
+# 목록 항목("- 2013년 3월 1일 이후...")도 줄 단위로 하나의 문장처럼 다룬다.
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+# 번호 목록 항목("1. ", "  2. "). 이런 줄은 통째로 보존한다 — 한 항목만 지우면
+# 번호가 어긋나고, 다시 매기면 원문 서식을 더 훼손한다.
+_NUMBERED_ITEM_RE = re.compile(r"^[ \t]*\d+\.[ \t]+\S")
+
+# 이 표현이 문장에 있으면 삭제하지 않는다 — 수치를 부정·교정하거나 한계를 고지하는
+# 문장은 지우면 오히려 정확한 정보가 사라진다.
+_SENTENCE_KEEP_MARKERS = _NUMBER_NEGATION_MARKERS + _LIMIT_DISCLOSURE_MARKERS
+
+
+def _drop_sentences_with_numbers(answer: str, leaked: list[str]) -> tuple[str, list[str]]:
+    """확정된 미지원 수치를 '사실로 주장하는 문장'만 통째로 제거한다.
+
+    반환값은 (정리된 답변, 실제로 제거하지 못해 남은 수치들)이다.
+
+    ⚠️ 왜 문장 단위인가: 수치만 지우면 문장이 깨진다("연금소득세율은 %입니다").
+    문장을 통째로 들어내면 나머지 문장은 온전하다. 실측으로 확인한 결과 지어낸
+    주장은 한 문장에 고립돼 있었다 —
+      no.27  "...평균 임금의 60% 이상으로 계산된다는 규정이 있으나..."  (10문장 중 1개)
+      no.56  "- 2013년 3월 1일 이후 가입한 연금 계좌의 자금을..."       (19문장 중 1개)
+    둘 다 근거에 없는 규정을 사실처럼 서술한 문장이고, 지워도 답변의 나머지 설명은
+    그대로 성립한다.
+
+    ⚠️ 보수적으로 동작한다 — 다음 경우에는 지우지 않고 기존처럼 경고만 붙인다:
+      - 부정·교정 문맥("60%가 아니라")이나 한계 고지 문맥의 문장
+      - 그 문장을 지우면 본문이 거의 남지 않는 경우(문장이 1~2개뿐인 짧은 답변)
+    답변을 과하게 훼손하는 것은 할루시네이션 못지않게 나쁘기 때문이다.
+    """
+    body, separator, tail = answer.partition("참고 근거:")
+    kept_lines: list[str] = []
+    removed_numbers: set[str] = set()
+    for line in body.split("\n"):
+        # 번호 목록 항목은 건드리지 않는다 — 한 항목만 지우면 번호가 어긋나고
+        # (1. 다음에 3.) 재부여는 원문 서식을 더 망가뜨린다. 목록 안의 지어낸
+        # 값은 경고로 처리한다(실측 no.140).
+        if _NUMBERED_ITEM_RE.match(line):
+            kept_lines.append(line)
+            continue
+
+        # 한 줄 안에서 문장 단위로만 들어낸다 — 줄바꿈은 서식이므로 보존한다.
+        pieces = _SENTENCE_SPLIT_RE.split(line)
+        kept_pieces: list[str] = []
+        for piece in pieces:
+            target = next(
+                (
+                    n
+                    for n in leaked
+                    if _numeric_core(n) in strip_inline_markup(piece).replace(",", "")
+                ),
+                None,
+            )
+            if target is not None and not any(m in piece for m in _SENTENCE_KEEP_MARKERS):
+                removed_numbers.add(target)
+                continue
+            kept_pieces.append(piece)
+        if pieces and not kept_pieces:
+            continue  # 줄 전체가 지어낸 내용이면 줄째로 뺀다
+        kept_lines.append(" ".join(p for p in kept_pieces if p).strip())
+
+    if not removed_numbers:
+        return answer, leaked
+
+    # 남은 분량은 **문장 수**로 센다. 줄 수로 세면 여러 문장이 한 줄에 있는 답변에서
+    # "1줄이니 너무 짧다"고 오판해 삭제가 통째로 무산된다.
+    def _sentence_count(text: str) -> int:
+        return len([s for s in _SENTENCE_SPLIT_RE.split(text) if s.strip()])
+
+    kept_sentences = _sentence_count("\n".join(kept_lines))
+    original_sentences = _sentence_count(body)
+    # 본문이 절반 넘게 사라지거나 거의 남지 않으면 삭제하지 않는다 — 지나친 훼손은
+    # 할루시네이션 못지않게 나쁘므로 경고로 물러선다.
+    if kept_sentences < 2 or kept_sentences * 2 < original_sentences:
+        return answer, leaked
+
+    cleaned = re.sub(r"\n{3,}", "\n\n", "\n".join(kept_lines)).strip()
+    still_leaked = [n for n in leaked if n not in removed_numbers]
+    return f"{cleaned}\n\n{separator}{tail}" if separator else cleaned, still_leaked
+
+
 def enforce_unsupported_numbers(answer: str, confirmed: list[str]) -> str:
-    """④가 '근거에 없다'고 확정한 수치가 최종 답변에 사실로 남아 있으면 경고를 붙인다.
+    """④가 '근거에 없다'고 확정한 수치를 최종 답변에서 제거하거나, 못 지우면 경고를 붙인다.
 
     ⑤ 프롬프트에 이 목록을 넘기고 "쓰지 말라"고 부탁하지만(generator.py), 그 실측
     4/4 위반이 이 프로젝트가 "프롬프트 순종은 확률적으로 실패한다"는 원칙을 세운
     근거였다 — missing_requirements/premise_issues는 이미 코드로 강제하면서 정작
     grounded=False의 핵심 증거인 unsupported_numbers_confirmed는 강제가 없었다.
 
-    수치를 코드로 지우면 문장이 깨진다("연금소득세율은 %입니다") — 그래서 삭제 대신
-    경고를 붙인다. 이미 부정 문맥으로 쓰였다면(수치를 틀렸다고 바로잡는 중) 손대지
-    않는다 — 그건 할루시네이션이 아니라 올바른 답변이다.
+    ⚠️ 예전에는 경고만 붙이고 본문은 그대로 뒀다("수치를 지우면 문장이 깨진다"는
+    이유). 그러나 사용자는 본문을 먼저 읽고 경고는 맨 아래에 있어, **처음 읽을 때는
+    지어낸 값을 사실로 받아들인다.** 실측:
+      no.27 "평균 임금의 60% 이상으로 계산된다는 규정"  (근거에 없는 계산식)
+      no.56 "2013년 3월 1일 이후 가입한 계좌는 이전 불가"  (근거에 없는 규정)
+      실사용 "연간 최대 700만원까지 세액공제"            (2023년 폐지된 한도)
+    수치만 지우면 문장이 깨지는 것은 맞지만, **문장을 통째로 들어내면** 나머지는
+    온전하다. 그래서 문장 단위 제거를 먼저 시도하고, 안전하지 않으면 경고로 물러선다.
+
+    이미 부정 문맥으로 쓰였다면(수치를 틀렸다고 바로잡는 중) 손대지 않는다 — 그건
+    할루시네이션이 아니라 올바른 답변이다.
     """
     leaked = [n for n in confirmed if _number_is_asserted(answer, n)]
     if not leaked:
         return answer
+
+    answer, leaked = _drop_sentences_with_numbers(answer, leaked)
+    if not leaked:
+        return answer
+
     items = ", ".join(dict.fromkeys(leaked))
     return (
         f"{answer}\n\n"
