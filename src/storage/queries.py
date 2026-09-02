@@ -23,6 +23,8 @@ DEFAULT_PROSPECTUS_COLLECTION = "prospectus_text"
 #   → 40은 범위내 전부 보존 + 명백한 무관 차단. 경계 사례(부동산 양도세 31~36)는 일부
 #   통과하지만 라우터 scope 게이트가 1차로 막는다. 데이터/임베딩 재적재 시 재캘리브레이션 필수.
 DEFAULT_MAX_DISTANCE = 40.0
+PENSION_STANDARD_CHANNELS = {"오프라인", "온라인"}
+PENSION_COST_METRICS = ("synthetic_total_expense_ratio", "total_expense_ratio")
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
@@ -64,14 +66,19 @@ class FundSearchResult:
     product_code: str
     fund_name: str
     manager_name: Optional[str]
+    base_date: Optional[str]
+    prospectus_effective_date: Optional[str]
     risk_grade: Optional[str]
     fund_category: Optional[str]
     class_name: str
     sales_channel: Optional[str]
     total_expense_ratio: Optional[float]
+    cost_3y_per_10m_krw: Optional[float]
+    return_asof_date: Optional[str]
     return_1y: Optional[float]
     return_3y: Optional[float]
     return_since_inception: Optional[float]
+    inception_date: Optional[str]
     aum_krw_million: Optional[float] = None  # 시장잔고(백만원) — 요약 재무상태표 최신 기 자본총계
     aum_base_date: Optional[str] = None      # 그 값의 결산 기준일
 
@@ -97,8 +104,10 @@ def search_funds(
     try:
         query = """
             SELECT m.product_code, m.fund_name, m.manager_name, m.risk_grade, m.fund_category,
+                   m.base_date, m.prospectus_effective_date,
                    c.class_name, c.sales_channel, c.total_expense_ratio,
-                   c.return_1y, c.return_3y, c.return_since_inception,
+                   c.cost_3y_per_10m_krw, c.return_asof_date,
+                   c.return_1y, c.return_3y, c.return_since_inception, c.inception_date,
                    m.aum_krw_million, m.aum_base_date
             FROM fund_class c
             JOIN fund_master m ON m.product_code = c.product_code
@@ -145,14 +154,19 @@ def search_funds(
                     product_code=row["product_code"],
                     fund_name=row["fund_name"],
                     manager_name=row["manager_name"],
+                    base_date=row["base_date"],
+                    prospectus_effective_date=row["prospectus_effective_date"],
                     risk_grade=row["risk_grade"],
                     fund_category=row["fund_category"],
                     class_name=row["class_name"],
                     sales_channel=row["sales_channel"],
                     total_expense_ratio=row["total_expense_ratio"],
+                    cost_3y_per_10m_krw=row["cost_3y_per_10m_krw"],
+                    return_asof_date=row["return_asof_date"],
                     return_1y=row["return_1y"],
                     return_3y=row["return_3y"],
                     return_since_inception=row["return_since_inception"],
+                    inception_date=row["inception_date"],
                     aum_krw_million=row["aum_krw_million"],
                     aum_base_date=row["aum_base_date"],
                 )
@@ -170,6 +184,74 @@ class FundDetail:
     classes: list[dict] = field(default_factory=list)
 
 
+@dataclass
+class LowerCostPensionClass:
+    found: bool
+    product_code: str
+    account_type: str
+    current_class_code: str
+    target_class_code: str = ""
+    comparison_metric: str = ""
+    current_value: Optional[float] = None
+    target_value: Optional[float] = None
+    difference_pct_point: Optional[float] = None
+    eligibility: str = ""
+    eligibility_type: str = ""
+    current_channel: str = ""
+    target_channel: str = ""
+    current_source_page: str = ""
+    target_source_page: str = ""
+    current_validation_status: str = ""
+    target_validation_status: str = ""
+    dataset_version: str = ""
+    dataset_status: str = ""
+    fund_name: str = ""
+    reason: str = ""
+
+
+def get_pension_class_detail(
+    product_code: str,
+    class_code: str,
+    account_type: str,
+    *,
+    db_path: str = DEFAULT_DB_PATH,
+) -> dict | None:
+    """Cost Guard canonical 기준의 특정 연금 판매클래스 상세를 반환한다.
+
+    기존 fund_class 테이블은 일반 C/Ce 클래스 중심이라 C-P2/C-P2E 같은 연금 전용
+    클래스 질문에서 다른 축의 데이터를 답할 수 있다. 명시된 product/class/account
+    맥락은 frozen canonical 테이블을 우선 조회한다.
+    """
+    normalized_class = normalize_pension_class_code(class_code)
+    normalized_account = normalize_pension_account_type(account_type)
+    conn = _connect(db_path)
+    try:
+        try:
+            rows = conn.execute(
+                """
+                SELECT p.*, m.fund_name, m.manager_name, m.risk_grade, m.fund_category,
+                       m.base_date, m.prospectus_effective_date,
+                       m.aum_krw_million, m.aum_base_date, m.aum_period_label,
+                       m.investment_objective, m.investment_strategy
+                FROM fund_class_pension p
+                LEFT JOIN fund_master m ON m.product_code = p.product_code
+                WHERE p.product_code = ? AND p.account_type = ?
+                ORDER BY p.class_code
+                """,
+                (product_code, normalized_account),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return None
+    finally:
+        conn.close()
+
+    for row in rows:
+        item = dict(row)
+        if normalize_pension_class_code(item.get("class_code")) == normalized_class:
+            return item
+    return None
+
+
 def get_fund_detail(product_code: str, db_path: str = DEFAULT_DB_PATH) -> Optional[FundDetail]:
     """특정 상품코드의 펀드 마스터 정보 + 전체 판매클래스 상세를 반환한다. 없으면 None."""
     conn = _connect(db_path)
@@ -185,6 +267,214 @@ def get_fund_detail(product_code: str, db_path: str = DEFAULT_DB_PATH) -> Option
         return FundDetail(master=dict(master_row), classes=[dict(r) for r in class_rows])
     finally:
         conn.close()
+
+
+def normalize_pension_class_code(value: str | None) -> str:
+    """Cost Guard 매칭용 판매클래스 코드 정규화."""
+    text = "" if value is None else str(value)
+    return re.sub(r"\s+", "", text).split("(")[0].upper()
+
+
+def normalize_pension_account_type(value: str | None) -> str:
+    """사용자/상품 경로의 계좌 표현을 canonical Cost Guard 계좌유형으로 맞춘다."""
+    text = (value or "").upper()
+    if "연금저축" in (value or ""):
+        return "연금저축"
+    if "IRP" in text or "DC" in text or "DB" in text or "퇴직연금" in (value or ""):
+        return "퇴직연금/IRP"
+    return value or ""
+
+
+def _cost_value(row: dict, metric: str) -> Optional[float]:
+    value = row.get(metric)
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def choose_pension_cost_metric(current: dict, target: dict) -> str | None:
+    """current↔target pair 단위로 공통 비용 metric을 선택한다."""
+    for metric in PENSION_COST_METRICS:
+        if _cost_value(current, metric) is not None and _cost_value(target, metric) is not None:
+            return metric
+    return None
+
+
+def _pension_pair_kind(current: dict, target: dict) -> str:
+    if current.get("channel") in PENSION_STANDARD_CHANNELS and target.get("channel") in PENSION_STANDARD_CHANNELS:
+        return "STANDARD"
+    return "CHANNEL_CONDITIONAL"
+
+
+def _source_page(row: dict, metric: str) -> str:
+    if metric == "synthetic_total_expense_ratio":
+        return row.get("synthetic_expense_source_page") or row.get("review_source_page") or ""
+    return row.get("total_expense_source_page") or row.get("review_source_page") or ""
+
+
+def _blocked_validation(row: dict) -> bool:
+    status = row.get("validation_status") or ""
+    return "AMBIGUOUS" in status or "SOURCE_CONFLICT" in status
+
+
+def get_cost_guard_dataset_manifest(db_path: str = DEFAULT_DB_PATH) -> dict:
+    conn = _connect(db_path)
+    try:
+        try:
+            row = conn.execute("SELECT * FROM cost_guard_dataset_manifest WHERE id = 1").fetchone()
+        except sqlite3.OperationalError:
+            return {}
+        return dict(row) if row else {}
+    finally:
+        conn.close()
+
+
+def find_lower_cost_pension_class(
+    product_code: str,
+    current_class_code: str,
+    account_type: str,
+    *,
+    include_channel_conditional: bool = False,
+    require_frozen: bool = True,
+    db_path: str = DEFAULT_DB_PATH,
+) -> LowerCostPensionClass:
+    """같은 상품·계좌유형에서 더 낮은 비용의 판매클래스 1건을 찾는다.
+
+    Cost Guard는 metric을 섞어 비교하지 않는다. current↔target pair 양쪽에
+    synthetic_total_expense_ratio가 있으면 합성총보수·비용으로, 아니면 양쪽에
+    total_expense_ratio가 있을 때만 총보수·비용으로 비교한다.
+    """
+    normalized_class = normalize_pension_class_code(current_class_code)
+    normalized_account = normalize_pension_account_type(account_type)
+    manifest = get_cost_guard_dataset_manifest(db_path)
+    dataset_version = manifest.get("dataset_version") or ""
+    dataset_status = manifest.get("dataset_status") or ""
+    if require_frozen and dataset_status != "FROZEN_V1":
+        return LowerCostPensionClass(
+            found=False,
+            product_code=product_code,
+            account_type=normalized_account,
+            current_class_code=normalized_class,
+            dataset_version=dataset_version,
+            dataset_status=dataset_status,
+            reason="DATASET_NOT_FROZEN" if manifest else "DATASET_MANIFEST_NOT_LOADED",
+        )
+    conn = _connect(db_path)
+    try:
+        try:
+            rows = conn.execute(
+                """
+                SELECT p.*, m.fund_name
+                FROM fund_class_pension p
+                LEFT JOIN fund_master m ON m.product_code = p.product_code
+                WHERE p.product_code = ? AND p.account_type = ?
+                ORDER BY p.class_code
+                """,
+                (product_code, normalized_account),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return LowerCostPensionClass(
+                found=False,
+                product_code=product_code,
+                account_type=normalized_account,
+                current_class_code=normalized_class,
+                dataset_version=dataset_version,
+                dataset_status=dataset_status,
+                reason="TABLE_NOT_LOADED",
+            )
+    finally:
+        conn.close()
+
+    dict_rows = [dict(row) for row in rows]
+    current = next((row for row in dict_rows if normalize_pension_class_code(row.get("class_code")) == normalized_class), None)
+    if current is None:
+        return LowerCostPensionClass(
+            found=False,
+            product_code=product_code,
+            account_type=normalized_account,
+            current_class_code=normalized_class,
+            dataset_version=dataset_version,
+            dataset_status=dataset_status,
+            reason="CURRENT_CLASS_NOT_FOUND",
+        )
+    if _blocked_validation(current):
+        return LowerCostPensionClass(
+            found=False,
+            product_code=product_code,
+            account_type=normalized_account,
+            current_class_code=normalized_class,
+            dataset_version=dataset_version,
+            dataset_status=dataset_status,
+            reason="CURRENT_CLASS_BLOCKED",
+        )
+
+    candidates: list[tuple[int, int, float, str, dict, str, float, float, str]] = []
+    for target in dict_rows:
+        if normalize_pension_class_code(target.get("class_code")) == normalized_class:
+            continue
+        if _blocked_validation(target):
+            continue
+        kind = _pension_pair_kind(current, target)
+        if kind == "CHANNEL_CONDITIONAL" and not include_channel_conditional:
+            continue
+        metric = choose_pension_cost_metric(current, target)
+        if metric is None:
+            continue
+        current_value = _cost_value(current, metric)
+        target_value = _cost_value(target, metric)
+        if current_value is None or target_value is None or target_value >= current_value:
+            continue
+        kind_priority = 0 if kind == "STANDARD" else 1
+        metric_priority = 0 if metric == "synthetic_total_expense_ratio" else 1
+        candidates.append((
+            kind_priority,
+            metric_priority,
+            target_value,
+            target.get("class_code") or "",
+            target,
+            metric,
+            current_value,
+            target_value,
+            kind,
+        ))
+
+    if not candidates:
+        return LowerCostPensionClass(
+            found=False,
+            product_code=product_code,
+            account_type=normalized_account,
+            current_class_code=normalized_class,
+            dataset_version=dataset_version,
+            dataset_status=dataset_status,
+            reason="NO_LOWER_COST_CLASS",
+        )
+
+    _, _, _, _, target, metric, current_value, target_value, kind = sorted(candidates)[0]
+    return LowerCostPensionClass(
+        found=True,
+        product_code=product_code,
+        account_type=normalized_account,
+        current_class_code=current["class_code"],
+        target_class_code=target["class_code"],
+        comparison_metric=metric,
+        current_value=current_value,
+        target_value=target_value,
+        difference_pct_point=round(current_value - target_value, 6),
+        eligibility=kind,
+        eligibility_type=kind,
+        current_channel=current.get("channel") or "",
+        target_channel=target.get("channel") or "",
+        current_source_page=_source_page(current, metric),
+        target_source_page=_source_page(target, metric),
+        current_validation_status=current.get("validation_status") or "",
+        target_validation_status=target.get("validation_status") or "",
+        dataset_version=dataset_version,
+        dataset_status=dataset_status,
+        fund_name=current.get("fund_name") or "",
+    )
 
 
 # ── 보유 데이터 접점 조회 (①라우터 scope 판정 보조) ──────────────────────

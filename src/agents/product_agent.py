@@ -31,6 +31,11 @@ from src.agents.state import PensionAgentState, RetrievedItem
 from src.agents.tools import PRODUCT_AGENT_TOOLS, search_funds
 from src.rules.early_withdrawal import PlanType
 from src.rules.investment_limit import RISKY_ASSET_LIMIT, RiskTier, classify_fund_category_risk_tier
+from src.storage.queries import (
+    find_lower_cost_pension_class,
+    get_pension_class_detail,
+    normalize_pension_account_type,
+)
 
 PRODUCT_AGENT_MODEL = "HCX-005"
 
@@ -242,6 +247,64 @@ def _is_specific_product_or_comparison(text: str) -> bool:
     return ("펀드" in text or "상품" in text) and any(word in text for word in _SPECIFIC_PRODUCT_WORDS)
 
 
+def _extract_product_code(text: str) -> str | None:
+    match = re.search(r"KR[0-9A-Z]+", (text or "").upper())
+    return match.group(0) if match else None
+
+
+def _extract_class_code(text: str) -> str | None:
+    raw = (text or "").upper()
+    match = re.search(r"(?<![A-Z0-9])([A-Z]-[A-Z0-9]{1,5})(?![A-Z0-9])", raw)
+    if match:
+        return match.group(1)
+    compact = re.sub(r"\s+", "", raw)
+    match = re.search(r"(?<![A-Z0-9])([A-Z]-[A-Z0-9]{1,5})(?![A-Z0-9])", compact)
+    if match:
+        return match.group(1)
+    match = re.search(r"\(([^()]*)\)\s*$", text or "")
+    if match:
+        inner = match.group(1).strip()
+        if re.fullmatch(r"[A-Za-z]-?[A-Za-z0-9]{0,5}", inner):
+            return inner
+    return None
+
+
+def _asks_alternative_recommendation(text: str) -> bool:
+    compact = re.sub(r"\s+", "", text or "")
+    return any(
+        marker in compact
+        for marker in (
+            "다른상품",
+            "다른펀드",
+            "비슷한상품",
+            "비슷한펀드",
+            "유사상품",
+            "유사펀드",
+            "대안",
+            "비교",
+        )
+    )
+
+
+def _asks_cost_topic(text: str) -> bool:
+    compact = re.sub(r"\s+", "", text or "")
+    return any(
+        marker in compact
+        for marker in (
+            "보수",
+            "수수료",
+            "비용",
+            "총보수",
+            "합성총보수",
+            "저렴",
+            "싼",
+            "더낮은클래스",
+            "낮은클래스",
+            "클래스비교",
+        )
+    )
+
+
 def _is_context_reference_without_target(state: PensionAgentState) -> bool:
     text = state["question"]
     if state.get("conversation_history"):
@@ -268,6 +331,163 @@ def _context_reference_response(state: PensionAgentState) -> tuple[str, list[Ret
         + "\n".join(f"{i}. {question}" for i, question in enumerate(questions, start=1))
     )
     return draft, [], dict(state.get("recommendation_profile") or {}), True
+
+
+_COST_METRIC_LABELS = {
+    "synthetic_total_expense_ratio": "합성총보수·비용",
+    "total_expense_ratio": "총보수·비용",
+}
+
+
+def _format_pct(value: object) -> str:
+    try:
+        return f"{float(value):g}%"
+    except (TypeError, ValueError):
+        return "확인 필요"
+
+
+def _format_number(value: object) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return f"{int(number):,}" if number.is_integer() else f"{number:,.1f}"
+
+
+def _basis_suffix(item: dict, field: str, label: str) -> str:
+    value = item.get(field)
+    return f" ({label} {value} 기준)" if value else ""
+
+
+def _format_return_line(item: dict) -> str:
+    return (
+        f"   - 수익률{_basis_suffix(item, 'return_asof_date', '수익률기준일')}: "
+        f"1년 {item.get('return_1y')}%, 3년 {item.get('return_3y')}%, "
+        f"설정이후 {item.get('return_since_inception')}%"
+    )
+
+
+def _format_expense_line(item: dict) -> str:
+    return (
+        f"   - 총보수·비용{_basis_suffix(item, 'prospectus_effective_date', '투자설명서 효력발생일')}: "
+        f"{_format_pct(item.get('total_expense_ratio'))}"
+    )
+
+
+def _format_aum_line(item: dict, *, indent: str = "   ") -> str:
+    value = item.get("aum_krw_million")
+    if value is None:
+        return ""
+    return f"{indent}- 시장잔고: {_format_number(value)}백만원{_basis_suffix(item, 'aum_base_date', '잔고 기준일')}"
+
+
+def _format_candidate_metric_block(item: dict, *, include_type: bool) -> str:
+    lines = []
+    if include_type:
+        lines.append(f"   - 상품 유형: {item.get('fund_category')}")
+    lines.append(f"   - 위험등급: {item.get('risk_grade')}")
+    lines.append(_format_expense_line(item))
+    aum_line = _format_aum_line(item)
+    if aum_line:
+        lines.append(aum_line)
+    lines.append(_format_return_line(item))
+    return "\n".join(lines)
+
+
+def _explicit_product_context_response(
+    state: PensionAgentState,
+) -> tuple[str, list[RetrievedItem], dict, bool] | None:
+    """명시된 product/class/account는 현재 상품 맥락으로 잠근다.
+
+    특정 판매클래스를 들고 "이 상품"을 묻는 경우 기존 추천 검색으로 빠지면 Core는
+    다른 후보 3개를 말하고 Guardian은 사용자가 명시한 상품의 비용을 말하는 충돌이 생긴다.
+    단, "비슷한 다른 상품 추천/비교"처럼 대안 추천을 명시한 경우는 기존 recommender에 맡긴다.
+    """
+    question = state["question"]
+    if _asks_alternative_recommendation(question):
+        return None
+
+    product_code = _extract_product_code(question)
+    class_code = _extract_class_code(question)
+    account_type = _extract_account_type(question)
+    if not (product_code and class_code and account_type):
+        return None
+
+    normalized_account = normalize_pension_account_type(account_type)
+    detail = get_pension_class_detail(product_code, class_code, normalized_account)
+    if not detail:
+        return None
+
+    fund_name = detail.get("fund_name") or product_code
+    canonical_class = detail.get("class_code") or class_code
+    metric_lines = []
+    if detail.get("synthetic_total_expense_ratio") is not None:
+        metric_lines.append(
+            f"- 합성총보수·비용{_basis_suffix(detail, 'prospectus_effective_date', '투자설명서 효력발생일')}: "
+            f"{_format_pct(detail.get('synthetic_total_expense_ratio'))}"
+        )
+    if detail.get("total_expense_ratio") is not None:
+        metric_lines.append(
+            f"- 총보수·비용{_basis_suffix(detail, 'prospectus_effective_date', '투자설명서 효력발생일')}: "
+            f"{_format_pct(detail.get('total_expense_ratio'))}"
+        )
+    if detail.get("cost_3y_per_10m_krw") is not None:
+        metric_lines.append(f"- 1,000만원 3년 총비용 예시: {detail.get('cost_3y_per_10m_krw')}천원")
+
+    lines = [
+        f"말씀하신 상품은 **{fund_name} ({canonical_class})**로 확인됩니다.",
+        "",
+        "**확인된 상품 정보**",
+        f"- 상품코드: {product_code}",
+        f"- 계좌 유형: {normalized_account}",
+        f"- 판매채널: {detail.get('channel') or '확인 필요'}",
+    ]
+    if detail.get("risk_grade"):
+        lines.append(f"- 위험등급: {detail['risk_grade']}")
+    if detail.get("fund_category"):
+        lines.append(f"- 상품 유형: {detail['fund_category']}")
+    lines.extend(metric_lines)
+    aum_line = _format_aum_line(detail, indent="")
+    if aum_line:
+        lines.append(aum_line)
+
+    if detail.get("investment_objective"):
+        lines.append("")
+        lines.append("**투자 목적**")
+        lines.append(str(detail["investment_objective"]))
+    if detail.get("investment_strategy"):
+        lines.append("")
+        lines.append("**투자 전략**")
+        lines.append(str(detail["investment_strategy"]))
+
+    if _asks_cost_topic(question):
+        lower = find_lower_cost_pension_class(product_code, canonical_class, normalized_account)
+        lines.append("")
+        lines.append("**동일 펀드 클래스 비용 확인**")
+        if lower.found and lower.eligibility_type == "STANDARD":
+            label = _COST_METRIC_LABELS.get(lower.comparison_metric, lower.comparison_metric)
+            lines.append(
+                f"동일한 연금계좌 유형에서 {label} 기준으로 더 낮은 클래스가 확인됩니다. "
+                f"현재 {lower.current_class_code} 클래스는 {_format_pct(lower.current_value)}, "
+                f"{lower.target_class_code} 클래스는 {_format_pct(lower.target_value)}입니다."
+            )
+        else:
+            lines.append("동일한 연금계좌 유형에서 바로 비교 가능한 더 낮은 비용의 STANDARD 클래스는 확인되지 않았습니다.")
+
+    content = (
+        f"상품코드={product_code}, 클래스={canonical_class}, 계좌유형={normalized_account}, "
+        f"판매채널={detail.get('channel')}, 위험등급={detail.get('risk_grade')}, "
+        f"유형={detail.get('fund_category')}, "
+        f"총보수·비용={detail.get('total_expense_ratio')}%, "
+        f"합성총보수·비용={detail.get('synthetic_total_expense_ratio')}%, "
+        f"투자설명서효력발생일={detail.get('prospectus_effective_date')}, "
+        f"시장잔고={detail.get('aum_krw_million')}백만원, 잔고기준일={detail.get('aum_base_date')}, "
+        f"dataset_version={detail.get('dataset_version')}, dataset_status={detail.get('dataset_status')}"
+    )
+    context = [{"source": f"{fund_name} ({canonical_class})", "content": content, "node": "product_agent"}]
+    profile = dict(state.get("recommendation_profile") or {})
+    profile["account_type"] = account_type
+    return "\n".join(lines), context, profile, False
 
 
 def _extract_recommendation_profile(state: PensionAgentState) -> dict:
@@ -696,6 +916,10 @@ def _recommendation_flow_response(state: PensionAgentState) -> tuple[str, list[R
     if reference_response is not None:
         return reference_response
 
+    explicit_product_response = _explicit_product_context_response(state)
+    if explicit_product_response is not None:
+        return explicit_product_response
+
     current = state["question"]
     combined = _combined_user_text(state)
     if _is_specific_product_or_comparison(current) and not _is_specific_recommendation_request(current):
@@ -801,11 +1025,7 @@ def _specific_product_recommendation(profile: dict, state: PensionAgentState) ->
     for i, item in enumerate(candidates, start=1):
         lines.append(
             f"{i}. {item.get('fund_name')} ({item.get('class_name')})\n"
-            f"   - 상품 유형: {item.get('fund_category')}\n"
-            f"   - 위험등급: {item.get('risk_grade')}\n"
-            f"   - 총보수: {item.get('total_expense_ratio')}%\n"
-            f"   - 수익률: 1년 {item.get('return_1y')}%, 3년 {item.get('return_3y')}%, "
-            f"설정이후 {item.get('return_since_inception')}%\n"
+            f"{_format_candidate_metric_block(item, include_type=True)}\n"
             f"   - 추천 이유: 현재 위험성향과 투자기간 기준으로 위험등급·보수·과거 성과를 함께 비교했을 때 후보군에 포함됩니다.\n"
             f"   - 유의사항: 과거 수익률은 미래 수익을 보장하지 않으며, 계좌 내 실제 매수 가능 여부는 금융기관에서 최종 확인이 필요합니다."
         )
@@ -889,8 +1109,11 @@ def _fund_candidates_to_context(candidates: list[dict]) -> list[RetrievedItem]:
         content = (
             f"상품코드={item.get('product_code')}, 위험등급={item.get('risk_grade')}, "
             f"총보수={item.get('total_expense_ratio')}%, "
+            f"투자설명서효력발생일={item.get('prospectus_effective_date')}, "
             f"1년수익률={item.get('return_1y')}%, 3년수익률={item.get('return_3y')}%, "
             f"설정이후수익률={item.get('return_since_inception')}%, "
+            f"수익률기준일={item.get('return_asof_date')}, "
+            f"시장잔고={item.get('aum_krw_million')}백만원, 잔고기준일={item.get('aum_base_date')}, "
             f"판매채널={item.get('sales_channel')}, 유형={item.get('fund_category')}"
         )
         context.append({"source": label, "content": content, "node": "product_agent"})
@@ -959,10 +1182,7 @@ def _fallback_product_recommendation(state: PensionAgentState) -> tuple[str, lis
     for i, item in enumerate(unique_results, start=1):
         lines.append(
             f"{i}. {item.get('fund_name')} ({item.get('class_name')})\n"
-            f"   - 위험등급: {item.get('risk_grade')}\n"
-            f"   - 총보수: {item.get('total_expense_ratio')}%\n"
-            f"   - 수익률: 1년 {item.get('return_1y')}%, 3년 {item.get('return_3y')}%, "
-            f"설정이후 {item.get('return_since_inception')}%\n"
+            f"{_format_candidate_metric_block(item, include_type=False)}\n"
             f"   - 판매채널: {item.get('sales_channel')}"
         )
     lines.append(

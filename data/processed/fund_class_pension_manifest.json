@@ -1,0 +1,14 @@
+{
+  "dataset_version": "cost_guard_v1",
+  "dataset_status": "FROZEN_V1",
+  "generated_at": "2026-09-02T10:02:54.852385+00:00",
+  "canonical_sha256": "054df7e5919cf6446b7da148a576e57bde5988c676d123eba20210ccd4d6508b",
+  "canonical_row_count": 210,
+  "canonical_fund_count": 64,
+  "standard_pair_count": 93,
+  "channel_conditional_pair_count": 60,
+  "review_override_count": 56,
+  "p0_review_required_case_count": 44,
+  "p0_review_required_field_row_count": 56,
+  "p0_review_unresolved_field_row_count": 0
+}

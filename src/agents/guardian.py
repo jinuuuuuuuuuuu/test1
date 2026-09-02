@@ -7,6 +7,8 @@ Guardian은 검증된 Core Answer를 수정하지 않는다. 사용자가 직접
 
 from __future__ import annotations
 
+import re
+from dataclasses import asdict
 from typing import Literal, TypedDict
 
 from src.agents.context import merge_drafts
@@ -22,6 +24,7 @@ from src.agents.tax_context import (
     extract_tax_context,
 )
 from src.rules.tax_credit import COMBINED_CREDIT_LIMIT, PENSION_SAVINGS_ONLY_LIMIT
+from src.storage.queries import find_lower_cost_pension_class, normalize_pension_account_type
 
 GUARD_HEADING = "🛡️ 파수꾼 체크"
 
@@ -35,6 +38,7 @@ GuardDisabledReason = Literal[
     "NO_CANDIDATE",
     "NO_GUARD_EVIDENCE",
     "CORE_ALREADY_COVERS_TOPIC",
+    "DATASET_NOT_FROZEN",
     # 사용자가 그 주제를 직접 물어본 경우 — Core Answer가 답할 몫이라 파수꾼은 침묵한다.
     "EXPLICIT_USER_TOPIC",
 ]
@@ -80,6 +84,12 @@ _RETIREMENT_NON_PENSION_EVIDENCE: RetrievedItem = {
         "(일시금 등)은 감면이 적용되지 않아 이연퇴직소득세를 전액 납부합니다."
     ),
     "node": "guardian",
+}
+
+
+_COST_METRIC_LABELS = {
+    "synthetic_total_expense_ratio": "합성총보수·비용",
+    "total_expense_ratio": "총보수·비용",
 }
 
 
@@ -326,6 +336,139 @@ def _select_unused_tax_credit_capacity_rule(question: str) -> GuardianRule | Non
     }
 
 
+def _asks_cost_topic(question: str) -> bool:
+    text = normalize_for_guard_match(question)
+    return _contains_any(
+        text,
+        (
+            "보수",
+            "수수료",
+            "비용",
+            "총보수",
+            "합성총보수",
+            "저렴",
+            "싼",
+            "더낮은클래스",
+            "낮은클래스",
+            "클래스비교",
+        ),
+    )
+
+
+def _extract_product_code(text: str) -> str | None:
+    match = re.search(r"KR[0-9A-Z]+", (text or "").upper())
+    return match.group(0) if match else None
+
+
+def _extract_class_code(text: str) -> str | None:
+    raw = (text or "").upper()
+    match = re.search(r"(?<![A-Z0-9])([A-Z]-[A-Z0-9]{1,5})(?![A-Z0-9])", raw)
+    if match:
+        return match.group(1)
+    compact = normalize_for_guard_match(text).upper()
+    match = re.search(r"(?<![A-Z0-9])([A-Z]-[A-Z0-9]{1,5})(?![A-Z0-9])", compact)
+    if match:
+        return match.group(1)
+    match = re.search(r"\(([^()]*)\)\s*$", text or "")
+    if match:
+        inner = match.group(1).strip()
+        if re.fullmatch(r"[A-Za-z]-?[A-Za-z0-9]{0,5}", inner):
+            return inner
+    return None
+
+
+def _extract_account_type(question: str, state: PensionAgentState) -> str | None:
+    profile = state.get("recommendation_profile") or {}
+    if profile.get("account_type"):
+        return normalize_pension_account_type(profile["account_type"])
+    upper = (question or "").upper()
+    if "연금저축" in (question or ""):
+        return "연금저축"
+    if "IRP" in upper or "DC" in upper or "퇴직연금" in (question or ""):
+        return "퇴직연금/IRP"
+    return None
+
+
+def _targets_from_question(state: PensionAgentState) -> list[tuple[str, str, str]]:
+    question = state.get("question") or ""
+    product_code = _extract_product_code(question)
+    class_code = _extract_class_code(question)
+    account_type = _extract_account_type(question, state)
+    if product_code and class_code and account_type:
+        return [(product_code, class_code, account_type)]
+    return []
+
+
+def _targets_from_product_context(state: PensionAgentState) -> list[tuple[str, str, str]]:
+    account_type = _extract_account_type(state.get("question") or "", state)
+    if not account_type:
+        return []
+    targets: list[tuple[str, str, str]] = []
+    for item in state.get("retrieved_context") or []:
+        if item.get("node") != "product_agent":
+            continue
+        product_code = _extract_product_code(item.get("content") or "")
+        class_code = _extract_class_code(item.get("source") or "")
+        if product_code and class_code:
+            targets.append((product_code, class_code, account_type))
+    return targets
+
+
+def _cost_guard_fact(result: dict) -> str:
+    metric_label = _COST_METRIC_LABELS.get(result["comparison_metric"], result["comparison_metric"])
+    return (
+        f"같은 펀드의 동일한 연금계좌 유형에서 {metric_label} 기준으로 더 낮은 클래스가 "
+        f"확인됩니다. 현재 {result['current_class_code']} 클래스는 {result['current_value']}%, "
+        f"{result['target_class_code']} 클래스는 {result['target_value']}%입니다."
+    )
+
+
+def _cost_guard_evidence(result: dict) -> RetrievedItem:
+    metric_label = _COST_METRIC_LABELS.get(result["comparison_metric"], result["comparison_metric"])
+    source = f"Cost Guard canonical: {result['product_code']} {result['current_class_code']}→{result['target_class_code']}"
+    pages = [p for p in (result.get("current_source_page"), result.get("target_source_page")) if p]
+    eligibility_type = result.get("eligibility_type") or result.get("eligibility") or ""
+    return {
+        "source": source,
+        "content": (
+            f"동일 상품코드 {result['product_code']} 및 동일 계좌유형 {result['account_type']}에서 "
+            f"{metric_label} 기준 {result['current_class_code']}={result['current_value']}%, "
+            f"{result['target_class_code']}={result['target_value']}%로 구조화 검증된 비용 차이가 확인됩니다. "
+            f"비교 유형={eligibility_type}."
+        ),
+        "node": "guardian",
+        "source_location": ", ".join(dict.fromkeys(pages)),
+    }
+
+
+def _select_lower_cost_class_rule(state: PensionAgentState) -> dict | None:
+    if _asks_cost_topic(state.get("question") or ""):
+        return {"disabled_reason": "EXPLICIT_USER_TOPIC"}
+
+    for product_code, class_code, account_type in [
+        *_targets_from_question(state),
+        *_targets_from_product_context(state),
+    ]:
+        result = find_lower_cost_pension_class(product_code, class_code, account_type)
+        if result.reason == "DATASET_NOT_FROZEN":
+            return {"disabled_reason": "DATASET_NOT_FROZEN"}
+        if not result.found or result.eligibility != "STANDARD":
+            continue
+        result_dict = asdict(result)
+        return {
+            "candidate_id": "lower_cost_pension_class",
+            "guard_type": "COST",
+            "trigger": "lower_cost_class_detected",
+            "topic": "fund_class_cost",
+            "priority": 70,
+            "question_markers": (),
+            "guard_fact": _cost_guard_fact(result_dict),
+            "required_evidence": (_cost_guard_evidence(result_dict),),
+            "cost_guard_result": result_dict,
+        }
+    return None
+
+
 def _select_rule(question: str) -> GuardianRule | None:
     """규칙별 트리거를 우선순위 순으로 확인해 하나만 고른다 (LLM에 맡기지 않는다).
 
@@ -384,6 +527,9 @@ def _core_covers_topic(core: str, topic: str) -> bool:
     if topic == "tax_credit_capacity":
         # Core가 이미 세액공제 한도(남은 금액·합산 900만원 기준)를 언급했으면 중복이다.
         return _contains_any(text, ("남아있습니다", "한도가남", "합산900만원", "합산9백만원"))
+    if topic == "fund_class_cost":
+        # 단순히 후보별 총보수를 나열한 것과 "더 낮은 비용 클래스가 있다"는 탐지는 다르다.
+        return _contains_any(text, ("더낮은클래스", "낮은비용클래스", "비용이더낮", "보수가더낮"))
     return False
 
 
@@ -396,6 +542,15 @@ def evaluate_guardian(state: PensionAgentState) -> tuple[dict, list[RetrievedIte
     question = state.get("question") or ""
     if "withdrawal_tax" in _explicit_topics(question) and _has_guard_domain_marker(question):
         return _disabled("GUARD_FACT_ALREADY_ASKED"), []
+
+    cost_rule = _select_lower_cost_class_rule(state)
+    if cost_rule is not None and cost_rule.get("disabled_reason"):
+        return _disabled(cost_rule["disabled_reason"]), []
+    if cost_rule is not None:
+        evidence = list(cost_rule["required_evidence"])
+        if _core_covers_topic(_core_text(state), cost_rule["topic"]):
+            return _disabled("CORE_ALREADY_COVERS_TOPIC"), []
+        return _enabled(cost_rule), evidence
 
     rule = _select_rule(question)
     if rule is None:

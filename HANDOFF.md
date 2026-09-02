@@ -3,6 +3,17 @@
 검수를 부탁드리기 위한 요약 문서입니다. 전체 맥락은 `README.md`에 있고, 이 문서는 구조와
 설계 판단 위주로 핵심만 정리했습니다.
 
+## 2026-09-02 Cost Guard / Guardian 통합 메모
+
+- Cost Guard 비용 데이터는 `fund_class_pension` 전용 canonical dataset으로 분리했습니다. 총보수·비용, 합성총보수·비용, 1,000만원 3년 비용 예시는 서로 다른 지표로 보존하고, lower-cost 비교는 pair 단위로 동일 metric끼리만 수행합니다.
+- `data/processed/fund_class_pension_review.csv`의 P0 review 판정을 반영해 `FROZEN_V1 / cost_guard_v1` dataset을 생성했습니다. 현재 canonical은 64펀드 / 210행이고, STANDARD lower-cost pair는 93건입니다.
+- review 적용으로 167행에서 210행으로 늘어난 이유를 추적하기 위해 `data/processed/fund_class_pension_review_provenance.csv`를 생성합니다. 현재 `RESTORED_TO_CANONICAL` 55건, `EXCLUDED_FROM_CANONICAL` 1건으로 순증 +43행입니다.
+- `prospectus.db`에는 `fund_class_pension`과 `cost_guard_dataset_manifest`를 적재합니다. CSV row count와 DB row count는 210건으로 일치하고, DB manifest hash도 canonical manifest와 일치합니다.
+- Guardian에는 Cost Guard C1을 연결했습니다. 특정 상품/클래스/계좌가 명확하고, 사용자가 비용을 직접 묻지 않았으며, frozen STANDARD lower-cost pair가 있을 때만 `🛡️ 파수꾼 체크`를 최대 1건 추가합니다.
+- Product Agent는 사용자가 `KR...`, `C-P2`, `IRP`처럼 현재 보유 상품 맥락을 명시한 경우 해당 상품을 lock해서 Core 답변을 생성합니다. 명시적으로 "비슷한 다른 상품 추천/비교"를 요청한 경우에만 기존 recommender로 넘깁니다.
+- 직접 비용 질문은 Core가 처리하고 Guardian은 `EXPLICIT_USER_TOPIC`으로 꺼집니다. 예: `IRP KR514X450008 C-P2 보수 더 낮은 클래스 있어?`
+- 검증: `pytest tests -q` 기준 556 passed, 19 skipped. `scripts/chat.py` 대화형 E2E는 로컬 API 연결 문제로 `Connection error`가 발생해 네트워크/API 연결 확인 후 재실행이 필요합니다.
+
 ## 무엇을 만드는가
 
 연금 제도(DB/DC/IRP, 연금저축)·세제·펀드상품 질의에 답하는 에이전트입니다. LLM은 **HyperCLOVA

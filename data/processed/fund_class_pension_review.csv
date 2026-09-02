@@ -1,0 +1,57 @@
+﻿product_code,class_code,field,parser_value,reference_value,review_status,reviewed_value,source_page,note
+KR510902511M,C-P,total_expense_ratio,0.02,1.57,REFERENCE_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR510902511M,C-P2,total_expense_ratio,0.02,1.41,REFERENCE_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5110501016,C-P,total_expense_ratio,0.01,0.34,REFERENCE_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5110601022,C-P,total_expense_ratio,0.0125,0.4825,REFERENCE_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5114420027,CYE,total_expense_ratio,0.2641,,PARSER_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5114420027,CYE,account_type,연금저축,퇴직연금/IRP,PARSER_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5114450270,SP,total_expense_ratio,0.3741,,PARSER_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5114450270,SP,channel,온라인슈퍼,오프라인,PARSER_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5117420097,C-PE,total_expense_ratio,0.2137,,PARSER_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5117420097,C-PE,account_type,연금저축,퇴직연금/IRP,PARSER_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5119450058,C-PE,total_expense_ratio,1.1117,,PARSER_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5119450058,C-PE,channel,온라인,온라인슈퍼,PARSER_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5119450058,C-PE,account_type,연금저축,퇴직연금/IRP,PARSER_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5119520012,C-PE,total_expense_ratio,0.4,,PARSER_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5119520012,C-PE,channel,온라인,온라인슈퍼,PARSER_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5119520012,C-PE,account_type,연금저축,퇴직연금/IRP,PARSER_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5122420005,C-PE2,channel,온라인,오프라인,REFERENCE_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5122420005,O,channel,불명,오프라인,AMBIGUOUS,,,원문에 디폴트옵션·퇴직연금 표기만 있고 판매채널을 특정할 근거 없음
+KR5139420020,C,total_expense_ratio,0.3148,0.0023,PARSER_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5139420020,C-E,total_expense_ratio,0.2198,0.0023,PARSER_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5153420063,C-P,total_expense_ratio,0.02,0.48,REFERENCE_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5153420063,C-P2,total_expense_ratio,0.02,0.47,REFERENCE_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5153420079,C-P,total_expense_ratio,0.01,1.97,BOTH_WRONG,0.49,3,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인 / source_page auto-filled from pdf_review_pack
+KR5153420079,C-P2,total_expense_ratio,0.01,2.0,BOTH_WRONG,0.42,3,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인 / source_page auto-filled from pdf_review_pack
+KR5153420105,C-P,total_expense_ratio,0.02,1.08,BOTH_WRONG,0.44,3,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인 / source_page auto-filled from pdf_review_pack
+KR5153420105,C-P2,total_expense_ratio,0.02,2.0,BOTH_WRONG,0.43,3,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인 / source_page auto-filled from pdf_review_pack
+KR5153420318,C-P,total_expense_ratio,0.02,0.76,REFERENCE_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5153420318,C-P2,total_expense_ratio,0.02,0.71,REFERENCE_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5153420339,C-P,total_expense_ratio,0.01,0.32,REFERENCE_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5153420339,C-P,channel,오프라인,온라인,PARSER_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5153420339,C-P2,total_expense_ratio,0.01,0.26,REFERENCE_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5153420339,C-P2,channel,오프라인,온라인슈퍼,PARSER_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5153450009,C-P2E,total_expense_ratio,0.02,0.73,BOTH_WRONG,0.7,3,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인 / source_page auto-filled from pdf_review_pack
+KR5153450209,C-P2E,total_expense_ratio,0.02,0.795,REFERENCE_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5153450250,C-P2E,total_expense_ratio,0.02,0.805,REFERENCE_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5153450268,C-P,total_expense_ratio,0.02,4.3,BOTH_WRONG,1.54,3,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인 / source_page auto-filled from pdf_review_pack
+KR5153450268,C-P,channel,오프라인,온라인,PARSER_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5153450268,C-P2,total_expense_ratio,0.02,,BOTH_WRONG,1.35,3,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인 / source_page auto-filled from pdf_review_pack
+KR5153450268,C-P2,channel,오프라인,온라인,PARSER_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5153450658,C-P,total_expense_ratio,0.01,0.99,BOTH_WRONG,0.4,4,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인 / source_page auto-filled from pdf_review_pack
+KR5153450658,C-P2,total_expense_ratio,0.01,2.0,BOTH_WRONG,0.39,4,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인 / source_page auto-filled from pdf_review_pack
+KR5153450772,C-P,total_expense_ratio,0.02,-4.62,BOTH_WRONG,1.08,3,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인 / source_page auto-filled from pdf_review_pack
+KR5153450772,C-P2,total_expense_ratio,0.02,2.0,BOTH_WRONG,0.94,3,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인 / source_page auto-filled from pdf_review_pack
+KR5153450785,C-P,total_expense_ratio,0.015,1.555,REFERENCE_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5153450785,C-P2,total_expense_ratio,0.015,1.395,REFERENCE_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5153451009,C-P,total_expense_ratio,0.02,1.75,REFERENCE_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5153451009,C-PE,total_expense_ratio,0.02,1.27,REFERENCE_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5153520012,C-P2E,total_expense_ratio,0.01,0.29,REFERENCE_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5157450017,C-P2,total_expense_ratio,1.302,0.002,PARSER_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5157450017,C-PE1,total_expense_ratio,1.122,0.002,PARSER_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5157450017,C-PE2,total_expense_ratio,1.002,0.002,PARSER_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5157450090,C-PE1,total_expense_ratio,1.012,0.002,PARSER_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5157450090,C-PE1,channel,온라인,오프라인,PARSER_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5157450090,C-PE2,total_expense_ratio,0.842,0.002,PARSER_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR518101002M,C-P2E,total_expense_ratio,0.01,0.28,REFERENCE_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR518102001M,C-P2E,total_expense_ratio,0.02,0.73,BOTH_WRONG,0.7,3,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인 / source_page auto-filled from pdf_review_pack
