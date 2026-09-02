@@ -18,6 +18,7 @@ from src.agents.context import format_conversation_history
 from src.agents.deterministic_info import (
     CODE_OVERRIDABLE_CATEGORIES,
     candidate_categories,
+    deterministic_miss_signal,
     deterministic_response_for,
 )
 from src.agents.in_kind_transfer_intent import has_in_kind_transfer_intent
@@ -607,6 +608,9 @@ def build_router_node():
             decision.is_safe, decision.safety_reason, state["question"]
         )
         withdrawal_context = extract_withdrawal_context(state["question"])
+        # 정형 주제어가 있는데 후보가 0건이면 관측용 신호를 남긴다 — 판정은 바꾸지
+        # 않는다. 이 누락은 지금까지 조용히 넘어가 틀린 답이 나가야만 발견됐다.
+        miss_signal = deterministic_miss_signal(state["question"])
         return {
             "intent": intent,
             "scope": scope,
@@ -614,6 +618,7 @@ def build_router_node():
             "is_safe": is_safe,
             "safety_reason": safety_reason,
             "deterministic_category": deterministic_category,
+            "deterministic_miss_signal": miss_signal,
             "withdrawal_context": withdrawal_context.to_state_dict() if withdrawal_context else None,
         }
 

@@ -196,6 +196,13 @@ def _classification_lines(state: PensionAgentState) -> list[str]:
     ]
     if state.get("scope_note"):
         lines.append(f"- 범위 판단: {state['scope_note']}")
+    # 정형 경로 누락 의심 — 판정에는 영향이 없고, 사후 집계로 어휘 커버리지 구멍을
+    # 찾기 위한 관측 신호다(deterministic_info.deterministic_miss_signal).
+    if state.get("deterministic_miss_signal"):
+        lines.append(
+            f"- ⚠️ 정형 경로 미탐지: 질문에 정형 주제어({state['deterministic_miss_signal']})가 "
+            "있으나 후보 카테고리 0건 — LLM 자유응답으로 진행"
+        )
     withdrawal_context = state.get("withdrawal_context") or {}
     locked_fields = withdrawal_context.get("locked_fields") or []
     if locked_fields:

@@ -169,6 +169,7 @@ def run_one(graph, row: dict) -> dict:
             "is_safe": state.get("is_safe"),
             "safety_reason": state.get("safety_reason"),
             "deterministic_category": state.get("deterministic_category"),
+            "deterministic_miss_signal": state.get("deterministic_miss_signal"),
         },
 
         # ②③ 에이전트 — 어떤 툴을 불렀고 무엇을 근거로 삼았나

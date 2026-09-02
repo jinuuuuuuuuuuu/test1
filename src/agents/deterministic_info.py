@@ -457,6 +457,43 @@ def candidate_categories(question: str) -> list[str]:
     return candidates
 
 
+# ── 정형 경로 누락 관측 (silent miss) ────────────────────────────────────────
+#
+# candidate_categories의 실패는 **조용하다**. 후보가 0건이 되면 아무 신호 없이 LLM
+# 자유응답으로 넘어가고, 틀린 답이 나가야만 비로소 발견된다. 실제로 같은 유형이
+# 세 번 재발했다:
+#   - no.383/no.321  "연금저축 600만원 채우고 IRP 300만원" → 700만원(폐지된 한도)
+#   - V03/V05        "세액공제 대박으로 받는 방법"          → 700만원/400만원/14.6%
+#   - 실사용(65세)    "정년 은퇴 앞두고 절세 방법"           → 700만원
+# 셋 다 정답을 가진 핸들러가 있었는데 어휘 조건이 좁아 도달하지 못한 것이다.
+#
+# 오탐(넓게 잡음)은 라우터와 deterministic_response_for 게이트가 걸러내지만,
+# **누락은 아무도 막지 못한다** — 이 비대칭이 문제의 핵심이다. 그래서 누락을
+# 최소한 "보이게" 만든다: 정형 주제어가 있는데 후보가 0건이면 신호를 남긴다.
+#
+# 이 함수는 판정을 바꾸지 않는다(후보를 추가하지도, 빼지도 않는다). 오직 관측용이다 —
+# think_trace와 평가 로그에 남겨, 다음 누락을 "터진 뒤"가 아니라 집계로 발견한다.
+_DETERMINISTIC_TOPIC_MARKERS = (
+    "세액공제", "절세", "세금혜택", "세제혜택", "연금소득세", "퇴직소득세", "기타소득세",
+    "중도인출", "실물이전", "디폴트옵션", "연금수령한도", "위험자산", "종합과세",
+    "납입한도", "세율", "과세",
+)
+
+
+def deterministic_miss_signal(question: str) -> Optional[str]:
+    """정형 주제어가 있는데 후보가 0건이면 그 주제어를 돌려준다 (없으면 None).
+
+    "정형 답변이 있어야 할 것 같은데 경로가 없다"는 의심 신호다. 확정된 결함이
+    아니라 **점검 대상**이라는 뜻이다 — 정형 카테고리가 아직 없는 주제(DB/DC 운용주체
+    차이 등)도 여기 걸리므로, 이 신호가 곧 버그를 의미하지는 않는다.
+    """
+    if candidate_categories(question):
+        return None
+    text = _compact(question)
+    hit = [marker for marker in _DETERMINISTIC_TOPIC_MARKERS if marker in text]
+    return ", ".join(hit) if hit else None
+
+
 def deterministic_response_for(
     category: str, question: str
 ) -> Optional[tuple[str, list[RetrievedItem]]]:

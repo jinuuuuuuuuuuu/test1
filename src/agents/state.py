@@ -60,6 +60,10 @@ class PensionAgentState(TypedDict, total=False):
     # 분류(카테고리 판정)는 LLM이, 답변 생성(숫자·조건 인용)은 규칙이 맡는 역할 분리 설계
     # (2026-08-25 재점검 — 세액공제+"얼마" 키워드 오분류 사고 재발 방지).
     deterministic_category: str
+    # 관측 전용 — 정형 주제어가 있는데 후보가 0건일 때 그 주제어를 담는다(없으면 None).
+    # 판정에 쓰이지 않고 think_trace/평가 로그에만 남는다. 정형 경로 누락은 지금까지
+    # 아무 신호 없이 LLM 자유응답으로 새어, 틀린 답이 나가야만 발견됐다(실측 3회 재발).
+    deterministic_miss_signal: str | None
     # 중도인출 질문에서 사용자 명시/결정론 확정값을 후속 노드가 잃지 않게 전달한다.
     # Verifier는 이 값을 재분류하지 않고 요구사항 범위와 충돌 여부 확인에만 사용한다.
     withdrawal_context: dict | None
