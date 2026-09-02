@@ -9,6 +9,7 @@ src/rules/, src/storage/의 순수 Python 함수를 LangChain 호환 @tool로 �
 """
 
 import functools
+import re
 from dataclasses import asdict, is_dataclass
 from datetime import date
 from enum import Enum
@@ -613,6 +614,11 @@ def search_funds(
 
 # ── 9. get_fund_detail (③상품 Agent 전용) ────────────────────────────────
 
+# fund_master.product_code는 전부 12자 영숫자 ISIN 형식이다(예: KR514X450008).
+# 이 패턴이 아니면 펀드명(또는 그 일부)이 코드 자리에 들어온 것으로 본다.
+_PRODUCT_CODE_RE = re.compile(r"^[A-Z0-9]{12}$")
+
+
 @tool
 @_safe_tool
 def get_fund_detail(product_code: str) -> dict:
@@ -622,11 +628,47 @@ def get_fund_detail(product_code: str) -> dict:
     이 툴로 전체 상세를 가져온다. 존재하지 않는 상품코드면 빈 결과를 반환한다.
     """
     result = _get_fund_detail(product_code=product_code)
-    if result is None:
-        return {"found": False, "product_code": product_code}
-    payload = _to_jsonable(result)
-    payload["found"] = True
-    return payload
+    if result is not None:
+        payload = _to_jsonable(result)
+        payload["found"] = True
+        return payload
+
+    # ⚠️ 프롬프트는 "search_funds로 후보를 찾은 뒤 호출하라"고 명시하지만, LLM이 이
+    # 순서를 건너뛰고 펀드명 문자열을 코드 자리에 그대로 넣는 경우가 있다(실측
+    # 501문항: no.220 "VIP한국형가치투자증권자투자신탁[주식]", no.470 "한국투자
+    # 퇴직연금 증권 자투자신탁 1호(국공채)" — 둘 다 근거 0건으로 "상품코드 없음"만
+    # 반환되고, LLM은 검색을 재시도하는 대신 그 자리에서 답을 지어냈다). 입력이
+    # 코드 형식이 아니면 그 문자열을 이름으로 간주해 한 번 더 찾아준다 — 프롬프트
+    # 순종에만 의존하지 않고 코드가 실제로 복구한다.
+    if not _PRODUCT_CODE_RE.match(product_code):
+        # search_funds는 판매클래스 단위로 반환하므로(펀드 1개 = 클래스 여러 행),
+        # product_code로 먼저 중복을 제거해야 "같은 펀드의 클래스 3개"가 "펀드 3개"로
+        # 오판되지 않는다.
+        raw_candidates = _search_funds(keyword=product_code, limit=10)
+        unique_codes = {c.product_code: c.fund_name for c in raw_candidates}
+        if len(unique_codes) == 1:
+            (code, _name), = unique_codes.items()
+            result = _get_fund_detail(product_code=code)
+            if result is not None:
+                payload = _to_jsonable(result)
+                payload["found"] = True
+                payload["resolved_from_name"] = product_code
+                return payload
+        elif len(unique_codes) > 1:
+            return {
+                "found": False,
+                "product_code": product_code,
+                "note": (
+                    f"'{product_code}'와(과) 일치하는 상품코드가 없습니다. "
+                    "이름이 비슷한 펀드가 여러 개 있어 자동으로 하나를 고르지 않았습니다 "
+                    "— search_funds로 후보를 확인한 뒤 정확한 product_code로 다시 호출하세요."
+                ),
+                "candidates": [
+                    {"product_code": code, "fund_name": name} for code, name in unique_codes.items()
+                ],
+            }
+
+    return {"found": False, "product_code": product_code}
 
 
 # ── 10. search_prospectus_text (③상품 Agent 전용) ────────────────────────
