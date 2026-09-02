@@ -186,8 +186,27 @@ def find_unsupported_numbers(
     return [
         token
         for token in extract_number_tokens(draft)
-        if _numeric_core(token) not in normalized_support
+        if not _numeric_core_supported(_numeric_core(token), normalized_support)
     ]
+
+
+def _numeric_core_supported(core: str, normalized_support: str) -> bool:
+    """core(예: "60")가 근거 텍스트에 그 자체 숫자로 등장하는지, 다른 숫자에 우연히
+    포함된 것인지 구분한다.
+
+    ⚠️ 예전엔 `core in normalized_support`(부분문자열 포함)로만 판정해서, "60%"가
+    근거의 "6,000,000원"(콤마 제거 후 "6000000")에 "60"이 부분문자열로 들어있다는
+    이유만으로 "지원됨"으로 오판됐다. 실측 no.26/123: DB형 급여 계산식이 근거에
+    없는데도 "평균임금의 60% × 근속연수"라는 지어낸 공식이 검증을 그대로 통과해
+    L0 오버라이드도, ⑤의 디스클레이머도 발동하지 못했다 — 부분문자열 일치가 검증
+    전체를 무력화하는 구멍이었다.
+
+    앞뒤가 숫자가 아닌 위치(단어 경계)에서 core가 등장할 때만 "지원됨"으로 본다.
+    """
+    if not core:
+        return True
+    pattern = re.compile(rf"(?<!\d){re.escape(core)}(?!\d)")
+    return pattern.search(normalized_support) is not None
 
 
 def apply_l0_overrides(verification: dict, suspects: list[str], has_evidence: bool) -> dict:
@@ -478,14 +497,46 @@ def is_benign_condition_statement(text: str) -> bool:
     return any(marker in text for marker in _BENIGN_CONDITION_MARKERS)
 
 
-def split_premise_issues(premise_issues: list[str]) -> tuple[list[str], list[str]]:
-    """premise_issues를 (진짜 전제, 실제로는 요구사항 미충족인 항목)으로 나눈다."""
+def _compact_for_duplicate(text: str) -> str:
+    """중복 판정을 위해 공백·서식·구두점 차이를 제거한다."""
+    return re.sub(r"[\s·,.\-—~()\[\]]", "", strip_inline_markup(text or "")).lower()
+
+
+def split_premise_issues(
+    premise_issues: list[str], missing_requirements: list[str] | None = None
+) -> tuple[list[str], list[str]]:
+    """premise_issues를 (진짜 전제, 실제로는 요구사항 미충족인 항목)으로 나눈다.
+
+    ⚠️ missing_requirements를 함께 넘기면 **같은 항목이 양쪽에 중복 기재된 경우**를
+    무조건 misfiled로 분류한다. 이건 마커 판정보다 강한 신호다 — ④가 "질문이 요구했는데
+    초안이 빠뜨린 항목"이라고 적은 바로 그 문자열을 동시에 "질문의 잘못된 전제"라고
+    부르는 것은 정의상 성립하지 않는다(사용자가 요구한 것이 곧 사용자의 틀린 전제일 수는
+    없다). 둘 중 하나는 오분류이고, 성격상 요구사항 미충족 쪽이 맞다.
+
+    실측(eval no.199 "솔로몬 국공채 단기·중장기·장기, 뭐가 달라요?"):
+      missing_requirements = ["솔로몬 국공채 단기·중장기·장기 펀드의 구체적인 차이점과 특징"]
+      premise_issues       = ["솔로몬 국공채 단기·중장기·장기 펀드의 구체적인 차이점과 특징"]
+    이 항목은 명사구라 _ANSWER_DEFECT_MARKERS("~다루지 않", "누락" 등)에 하나도 걸리지
+    않아 is_answer_defect_statement가 False를 냈고, 진짜 전제로 통과해 ⑤ 프롬프트의
+    "premise_issues가 있으면 답변 시작 부분에서 그 전제를 바로잡아라" 지시를 발동시켰다.
+    그 결과 ③이 8개 펀드를 정확히 조회해 놓고도 최종 답변 첫 문장이 "제공된 자료에서
+    찾을 수 없으므로 정확히 알려드릴 수 없습니다"가 됐다(grounded=True였는데도).
+
+    마커 목록에 명사구 패턴을 더 넣는 방식으로는 막을 수 없다 — 결함 항목은 어떤
+    명사구로도 표현될 수 있어 블랙리스트가 계속 뚫린다. 중복이라는 구조적 사실로 잡는다.
+    """
+    duplicated = {_compact_for_duplicate(m) for m in (missing_requirements or [])}
+    duplicated.discard("")
     real_premises: list[str] = []
     misfiled_defects: list[str] = []
     for issue in premise_issues:
         if is_benign_condition_statement(issue):
             continue
-        (misfiled_defects if is_answer_defect_statement(issue) else real_premises).append(issue)
+        is_duplicate = _compact_for_duplicate(issue) in duplicated
+        if is_duplicate or is_answer_defect_statement(issue):
+            misfiled_defects.append(issue)
+        else:
+            real_premises.append(issue)
     return real_premises, misfiled_defects
 
 
@@ -497,8 +548,8 @@ def apply_premise_issue_normalization(verification: dict) -> dict:
     이후 모든 계층이 같은 해석을 보게 한다.
     """
     result = dict(verification)
-    real, misfiled = split_premise_issues(list(result.get("premise_issues") or []))
     missing = list(result.get("missing_requirements") or [])
+    real, misfiled = split_premise_issues(list(result.get("premise_issues") or []), missing)
     missing.extend(item for item in misfiled if item not in missing)
     result["premise_issues"] = real
     result["missing_requirements"] = missing
@@ -638,7 +689,65 @@ def _missing_is_answered_by_withdrawal_plan_text(item: str, draft: str) -> bool:
     return asks_plan and answers_plan
 
 
-def apply_requirement_scope_override(verification: dict, question: str, draft: str) -> dict:
+# 질문에서 상품 고유명사를 뽑아낼 때 무시할 일반 단어. 이 단어들만으로는 특정 상품을
+# 지목했다고 볼 수 없다(예: "펀드가 뭐예요?"는 특정 상품 질문이 아니다).
+_PRODUCT_NAME_STOPWORDS = {
+    "펀드", "상품", "국공채", "채권", "주식", "연금", "퇴직연금", "연금저축", "증권",
+    "투자", "신탁", "단기", "장기", "중장기", "초단기", "안정", "수익", "위험", "등급",
+    "차이", "특징", "비교", "추천", "가입", "운용", "계좌", "무엇", "뭐", "어떤",
+}
+# 상품 고유명사로 볼 수 있는 한글 토큰(2자 이상). 조사·구두점을 떼고 뽑는다.
+_PRODUCT_TOKEN_RE = re.compile(r"[가-힣A-Za-z][가-힣A-Za-z0-9]{1,}")
+
+
+def _question_names_specific_products(question: str, evidence_sources: list[str]) -> list[str]:
+    """질문이 지목한 상품 고유명사 중 근거 출처명에 실재하는 것을 돌려준다.
+
+    "솔로몬 국공채 단기·중장기·장기, 뭐가 달라요?" → ["솔로몬"]
+    (근거 출처명 "미래에셋솔로몬단기국공채증권자투자신탁1호(채권) (C-P)"에 실재)
+
+    출처명과 대조하는 것이 핵심이다 — 질문에 단어가 있다는 것만으로는 부족하고, ③이
+    실제로 그 상품을 조회해 왔을 때만 "요구사항을 충족했다"고 말할 수 있다.
+    """
+    if not evidence_sources:
+        return []
+    haystack = _compact_for_duplicate(" ".join(evidence_sources))
+    if not haystack:
+        return []
+    named: list[str] = []
+    for token in _PRODUCT_TOKEN_RE.findall(question or ""):
+        if token in _PRODUCT_NAME_STOPWORDS or len(token) < 2:
+            continue
+        compact = _compact_for_duplicate(token)
+        if compact and compact in haystack:
+            named.append(token)
+    return named
+
+
+def _missing_is_named_product_explanation(item: str, named_products: list[str]) -> bool:
+    """지목된 상품의 '차이/특징 설명'을 누락으로 본 항목인지 판정한다.
+
+    ④가 특정 상품 질문을 "일반적 설명 요구"로 잘못 읽어 내는 판정이다. 항목이 그
+    상품명을 그대로 담고 있으면서 설명·비교를 요구하는 형태이면, 근거에 그 상품이
+    실재하는 이상(named_products가 그것을 보증한다) 초안은 답할 재료를 갖고 있었다.
+    """
+    if not named_products:
+        return False
+    text = _compact_for_duplicate(item)
+    if not any(_compact_for_duplicate(name) in text for name in named_products):
+        return False
+    return any(
+        marker in text
+        for marker in ("차이", "특징", "설명", "비교", "구분", "다른점", "무엇이다른")
+    )
+
+
+def apply_requirement_scope_override(
+    verification: dict,
+    question: str,
+    draft: str,
+    evidence_sources: list[str] | None = None,
+) -> dict:
     """④가 선택적 확장정보를 필수 요구사항으로 만든 경우를 정규화한다.
 
     요구사항 검증은 사용자가 직접 요구한 것(EXPLICIT)과 답변에 필수적인 것(NECESSARY)을
@@ -657,9 +766,12 @@ def apply_requirement_scope_override(verification: dict, question: str, draft: s
     explicit_alt_plan_request = _question_explicitly_requests_alternative_withdrawal_plans(question)
     anchored_housing_withdrawal = _question_has_housing_deposit_withdrawal_anchor(question)
     explicit_lease_loan_request = _question_explicitly_requests_lease_loan_info(question)
+    named_products = _question_names_specific_products(question, evidence_sources or [])
     missing: list[str] = []
     for item in original_missing:
         if _missing_is_answered_by_withdrawal_plan_text(item, draft):
+            continue
+        if _missing_is_named_product_explanation(item, named_products):
             continue
         if (
             anchored_housing_withdrawal
@@ -678,6 +790,7 @@ def apply_requirement_scope_override(verification: dict, question: str, draft: s
         issue for issue in original_premises
         if not _premise_is_pension_context_false_negative(issue, question, draft)
         and not _premise_is_inferred_alternative_plan_claim(issue, question)
+        and not _missing_is_named_product_explanation(issue, named_products)
     ]
 
     if missing == original_missing and premises == original_premises:
@@ -735,3 +848,54 @@ def replace_evidence_placeholders(answer: str, context: list[dict]) -> str:
         return ""
 
     return _EVIDENCE_PLACEHOLDER_RE.sub(_sub, answer)
+
+
+# ── ⑤ 출력에서 도구 호출·코드 텍스트 제거 ────────────────────────────────────
+#
+# 실측(정도부사 25문항 V06 "연금저축이랑 IRP에 최대한 많이 넣고 싶어요. 얼마까지 되나요?"):
+# 최종 답변에 아래가 그대로 실려 사용자에게 노출됐다.
+#
+#     연금저축과 IRP의 최대 납입 한도에 대한 정보는 검색을 통해 확인해 보겠습니다.
+#     ```python
+#     search_result = search_pension_docs("연금저축 IRP 연간 납입 한도 및 세액공제 비율")
+#     ```
+#
+# 원인은 프롬프트 누락이 아니라 **구조적 공백**이다. 이 파이프라인의 도구 호출은
+# LangChain tool-calling으로 이뤄지므로 정상 경로에서는 코드가 텍스트로 나올 일이 없다.
+# 그런데 LLM이 "도구를 쓰는 시늉"을 텍스트로 흉내내면(HCX 계열에서 실측됨) 그 텍스트는
+# 그냥 평범한 답변 문자열이라 어떤 계층도 걸러내지 않는다 — grounded 검증은 수치만 보고,
+# enforce_* 계열은 덧붙이기만 한다.
+#
+# 프롬프트에 "코드를 쓰지 마세요"를 넣는 방식은 이 프로젝트가 반복 확인한 대로 확률적으로
+# 실패한다. 사용자에게 내부 구현이 노출되는 것은 확률적으로도 허용할 수 없으므로 코드로
+# 제거한다 — 모든 최종 답변이 통과하는 _finalize_answer 한 곳에서 강제한다.
+_FENCED_CODE_RE = re.compile(r"```[\s\S]*?```|~~~[\s\S]*?~~~")
+# 우리 도구 이름을 그대로 호출문 형태로 쓴 줄. 펜스 없이 맨줄로 나오는 경우가 있다.
+_TOOL_CALL_LINE_RE = re.compile(
+    r"^[^\n]*\b(?:search_pension_docs|search_funds|get_fund_detail|search_prospectus)\s*\([^\n]*$",
+    re.MULTILINE,
+)
+# "~해 보겠습니다/확인해 보겠습니다"처럼 도구를 쓰겠다고 예고하는 문장만 남으면 어색하므로
+# 코드 제거 후 함께 지운다. 답변 본문의 정보성 문장은 건드리지 않는다.
+_TOOL_PREAMBLE_RE = re.compile(
+    r"^[^\n]*(?:검색을 통해|툴을 사용해|도구를 사용해|아래 코드|다음 코드)[^\n]*"
+    r"(?:확인해 보겠습니다|알아보겠습니다|조회하겠습니다|실행하겠습니다)[^\n]*$",
+    re.MULTILINE,
+)
+
+
+def strip_tool_call_artifacts(answer: str) -> str:
+    """최종 답변에서 코드블록·도구 호출 텍스트를 제거한다.
+
+    내부 구현(도구 이름·파라미터)이 사용자에게 노출되는 것을 코드로 차단한다.
+    제거 후 공백 줄이 연달아 남지 않도록 정리한다.
+    """
+    if not answer:
+        return answer
+    cleaned = _FENCED_CODE_RE.sub("", answer)
+    cleaned = _TOOL_CALL_LINE_RE.sub("", cleaned)
+    cleaned = _TOOL_PREAMBLE_RE.sub("", cleaned)
+    if cleaned == answer:
+        return answer
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()

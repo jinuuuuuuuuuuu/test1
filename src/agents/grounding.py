@@ -87,7 +87,21 @@ GROUNDING_SYSTEM_PROMPT = """당신은 연금 상담 AI의 답변 검증기입�
 
 3. requirements_met / missing_requirements: 질문이 요구한 항목(여러 개를 동시에 물었다면 그
    전부)을 초안이 빠짐없이 다뤘는지 확인하세요. 하나라도 빠졌다면 requirements_met=False로
-   표시하고 missing_requirements에 빠진 항목을 구체적으로 적으세요."""
+   표시하고 missing_requirements에 빠진 항목을 구체적으로 적으세요.
+
+   ⚠️ 질문이 **특정 상품명·고유명사를 지목**했다면(예: "솔로몬 국공채 단기·중장기·장기",
+   "TDF2045", "○○증권 디폴트옵션"), 그 상품들의 실제 데이터(위험등급·수익률·보수·운용규모
+   등)를 제시한 초안은 **요구사항을 충족한 것입니다**. 이를 "일반적인 설명을 요구했는데
+   특정 펀드 정보만 준다"고 판정하지 마세요 — 사용자가 그 상품을 콕 집어 물었으므로 그
+   상품의 정보가 곧 정답입니다.
+   위 1번의 "근거 적격성"과 혼동하지 마세요. 1번이 막는 것은 **좁은 근거로 넓은 결론**을
+   내는 경우(특정 펀드 3개로 "연금저축 펀드 일반"을 단정)입니다. 질문 자체가 좁으면
+   (특정 상품 지목) 좁은 근거가 정확히 맞는 근거이며, 위반이 아닙니다.
+
+   ⚠️ **같은 내용을 premise_issues와 missing_requirements에 동시에 적지 마세요.**
+   "초안이 ○○을 다루지 않았다"는 요구사항 미충족(3번)이지 질문의 잘못된 전제(2번)가
+   아닙니다. premise_issues는 오직 **사용자가 질문에서 말한 내용 중 사실과 다른 것**만
+   담습니다 — 초안·답변의 결함은 절대 여기 넣지 마세요."""
 
 
 class GroundingResult(BaseModel):
@@ -209,7 +223,12 @@ def build_grounding_node():
             draft=draft,
             evidence_texts=[c["content"] for c in context],
         )
-        verification = apply_requirement_scope_override(verification, state["question"], draft)
+        verification = apply_requirement_scope_override(
+            verification,
+            state["question"],
+            draft,
+            evidence_sources=[c["source"] for c in context],
+        )
         verification = apply_withdrawal_context_override(
             verification,
             withdrawal_context,

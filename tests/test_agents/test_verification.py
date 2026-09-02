@@ -117,6 +117,27 @@ def test_prior_answer_numbers_do_not_legitimize_reuse():
     assert find_unsupported_numbers(draft, [], user_texts=["그 한도 다시 알려줘"]) == ["900만원"]
 
 
+def test_short_number_is_not_hidden_by_unrelated_longer_number():
+    """짧은 숫자가 근거 속 다른 숫자의 부분문자열이라는 이유로 "지원됨"이 되면 안 된다.
+
+    실측 no.26/123: "DB형은 퇴직 전 평균임금의 60% × 근속연수를 보장합니다"는 근거
+    어디에도 없는 지어낸 공식(정답은 "평균임금 30일분 × 계속근로기간")인데, 근거
+    문서 중 하나에 우연히 "6,000,000원"(콤마 제거 후 "6000000")이 있어 "60"이 그
+    부분문자열로 매치되며 지원된 것으로 오판됐다 — L0 오버라이드도 ⑤의 디스클레이머도
+    발동하지 못했다.
+    """
+    draft = "세율은 60%입니다."
+    evidence = ["납입액 6,000,000원을 기준으로 계산합니다."]
+    assert find_unsupported_numbers(draft, evidence) == ["60%"]
+
+
+def test_number_matches_only_at_word_boundary():
+    """근거에 진짜로 그 숫자가 단독으로 등장하면 정상적으로 지원됨 처리돼야 한다(회귀 방지)."""
+    draft = "한도는 600만원입니다."
+    evidence = ["연금저축 세액공제 한도는 600만원이다."]
+    assert find_unsupported_numbers(draft, evidence) == []
+
+
 def test_empty_evidence_flags_all_numbers():
     draft = "비용처리와 함께 노란우산공제 연 500만원, 공제율 16.5%가 대표적입니다."
     suspects = find_unsupported_numbers(draft, [])
@@ -664,3 +685,120 @@ def test_enforce_unsupported_numbers_skips_negation_context():
 def test_enforce_unsupported_numbers_no_confirmed_list_is_noop():
     answer = "세액공제 한도는 900만원입니다."
     assert enforce_unsupported_numbers(answer, []) == answer
+
+
+# ── eval no.199 회귀 (솔로몬 국공채 비교 질문) ──────────────────────────────────
+# ④가 동일 문자열을 missing_requirements와 premise_issues 양쪽에 넣어, ⑤ 프롬프트의
+# "전제를 바로잡아라" 지시가 발동 → grounded=True에 근거 8건을 갖고도 최종 답변이
+# "제공된 자료에서 찾을 수 없다"로 나간 사건.
+_Q199 = "솔로몬 국공채 단기·중장기·장기, 뭐가 달라요? 안정적인 걸 원해요."
+_ITEM199 = "솔로몬 국공채 단기·중장기·장기 펀드의 구체적인 차이점과 특징"
+_SRC199 = [
+    "미래에셋솔로몬단기국공채증권자투자신탁1호(채권) (C-P)",
+    "미래에셋솔로몬중장기국공채증권자투자신탁1호(채권) (C)",
+    "미래에셋솔로몬장기국공채증권자투자신탁1호(채권) (C-e)",
+]
+
+
+def test_split_premise_issues_treats_duplicate_of_missing_as_misfiled():
+    """missing_requirements와 글자가 같은 premise_issues 항목은 전제가 아니라 결함이다."""
+    from src.agents.verification import split_premise_issues
+
+    real, misfiled = split_premise_issues([_ITEM199], [_ITEM199])
+
+    assert real == []          # ⑤ 프롬프트에 "전제"로 넘어가면 안 된다
+    assert misfiled == [_ITEM199]
+
+
+def test_split_premise_issues_keeps_real_premise_when_not_duplicated():
+    """중복이 아니면 진짜 전제는 그대로 남는다 (과잉 제거 방지)."""
+    from src.agents.verification import split_premise_issues
+
+    real, misfiled = split_premise_issues(["세금 감면이 어마어마하다던데"], [_ITEM199])
+
+    assert real == ["세금 감면이 어마어마하다던데"]
+    assert misfiled == []
+
+
+def test_requirement_scope_override_keeps_named_product_comparison():
+    """질문이 지목한 상품이 근거 출처에 실재하면 '차이점 미설명'은 누락이 아니다."""
+    from src.agents.verification import apply_requirement_scope_override
+
+    result = apply_requirement_scope_override(
+        {"missing_requirements": [_ITEM199], "premise_issues": [], "issues": [],
+         "requirements_met": False},
+        _Q199,
+        "draft",
+        evidence_sources=_SRC199,
+    )
+
+    assert result["missing_requirements"] == []
+    assert result["requirements_met"] is True
+
+
+def test_requirement_scope_override_ignores_products_absent_from_evidence():
+    """근거에 그 상품이 없으면 누락 판정을 지우지 않는다 — ③이 조회하지 못한 경우다."""
+    from src.agents.verification import apply_requirement_scope_override
+
+    result = apply_requirement_scope_override(
+        {"missing_requirements": [_ITEM199], "premise_issues": [], "issues": [],
+         "requirements_met": False},
+        _Q199,
+        "draft",
+        evidence_sources=["퇴직연금 적립금 운용 및 투자한도 안내"],
+    )
+
+    assert result["missing_requirements"] == [_ITEM199]
+
+
+def test_requirement_scope_override_does_not_fire_on_generic_question():
+    """제도 일반 질문은 특정 상품 지목이 아니다 — 근거적격성 규칙과 충돌하면 안 된다."""
+    from src.agents.verification import apply_requirement_scope_override
+
+    item = "연금저축 펀드 전반의 환매 제한 여부에 대한 설명"
+    result = apply_requirement_scope_override(
+        {"missing_requirements": [item], "premise_issues": [], "issues": [],
+         "requirements_met": False},
+        "연금저축 펀드 환매 제한이 있나요?",
+        "draft",
+        evidence_sources=_SRC199,
+    )
+
+    assert result["missing_requirements"] == [item]
+
+
+# ── 정도부사 25문항 회귀: 도구 호출 텍스트 노출 (V06) ────────────────────────
+# LLM이 도구 사용을 텍스트로 흉내내 최종 답변에 Python 코드블록이 그대로 노출됐다.
+# 정상 도구 호출은 tool-calling으로 이뤄지므로, 답변 본문의 코드는 항상 오염이다.
+
+
+def test_strip_tool_call_artifacts_removes_code_block():
+    from src.agents.verification import strip_tool_call_artifacts
+
+    answer = (
+        "연금저축과 IRP의 납입 한도를 검색을 통해 확인해 보겠습니다.\n\n"
+        '```python\nsearch_result = search_pension_docs("연금저축 IRP 납입 한도")\n```\n\n'
+        "세액공제 비율은 다음과 같습니다: 16.5%"
+    )
+    out = strip_tool_call_artifacts(answer)
+
+    assert "```" not in out
+    assert "search_pension_docs" not in out
+    assert "16.5%" in out            # 본문 정보는 보존한다
+    assert "확인해 보겠습니다" not in out  # 도구 예고 문장도 함께 제거
+
+
+def test_strip_tool_call_artifacts_removes_bare_tool_call_line():
+    from src.agents.verification import strip_tool_call_artifacts
+
+    out = strip_tool_call_artifacts('결과입니다.\nsearch_funds(keyword="채권형")\n위험등급은 4등급입니다.')
+
+    assert "search_funds" not in out
+    assert "4등급" in out
+
+
+def test_strip_tool_call_artifacts_preserves_clean_answer():
+    from src.agents.verification import strip_tool_call_artifacts
+
+    answer = "연금저축 세액공제 한도는 연 600만원입니다.\n\n참고 근거: 세액공제 안내"
+    assert strip_tool_call_artifacts(answer) == answer

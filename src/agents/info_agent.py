@@ -258,7 +258,21 @@ def build_info_agent_node():
         draft, needs_clarification = split_clarification_marker(
             final_ai.content if final_ai else ""
         )
-        if not needs_clarification and not retrieved_context:
+        # 근거가 하나도 없으면 역질문 여부와 무관하게 한 번은 직접 검색한다.
+        #
+        # ⚠️ 예전에는 `not needs_clarification` 조건이 함께 걸려 있어, LLM이 답변에
+        # [추가 확인 필요] 마커만 붙이면 이 안전망을 통째로 건너뛰었다. 그런데 위
+        # 시스템 프롬프트는 조건이 부족한 질문에도 "현재 답변 가능한 일반 기준"을
+        # 함께 쓰라고 지시한다 — 즉 역질문 답변에도 사실 서술이 들어가도록 설계돼
+        # 있다. 안전망만 "역질문이면 근거가 필요 없다"고 가정한 셈이라, 되묻기 직전에
+        # 쓴 일반 기준이 근거 0건인 채로 나갔다.
+        #
+        # 실측(501문항): 근거 0건 + 툴 호출 0건인데 ④가 "근거에 없다"고 확정한 수치가
+        # 답변에 남은 문항 6건(no.86/99/104/140/321/483)이 **전부** 이 경로였다.
+        # no.86 "55세 미만인데 연금 받을 수 있나요"는 사적연금 서비스인데 국민연금
+        # 조기노령연금 수치(10년·6%·30%)를 지어냈고, no.483은 연금수령한도 계산에
+        # 필요한 값이 질문에 다 있는데도 검색조차 없이 연령별 세율표를 창작했다.
+        if not retrieved_context:
             forced_context, forced_trace = _doc_search_context(state["question"])
             retrieved_context = forced_context
             tool_trace = [*tool_trace, *forced_trace]

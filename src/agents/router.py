@@ -9,6 +9,7 @@ retrieved_context를 State에서 그대로 읽어 쓸 수 있어야 하기 때�
 Outputs와 동시 사용이 안 되므로 thinking_effort="none"으로 꺼서 써야 한다.
 """
 
+import re
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
@@ -107,6 +108,21 @@ ROUTER_SYSTEM_PROMPT = """당신은 연금 상담 AI의 질문 분류 게이트�
      아니라 안전성 문제입니다. is_safe=False로 판정하고, safety_reason에 왜 그런
      상품이 존재할 수 없는지(원금보장과 고수익은 양립 불가 등) 짧게 적어, 사용자가
      "범위 밖이라 모른다"가 아니라 "그 조건 자체가 성립하지 않는다"는 답을 받게 하세요.
+     ⚠️ 여기서 막는 것은 **"보장해 달라"는 요구**이지 최상급·과장 표현 자체가 아닙니다.
+     "제일/가장/엄청/완전히" 같은 말은 한국어에서 그냥 강조일 뿐이며, 그 자체로는
+     차단 사유가 전혀 아닙니다. 아래는 모두 **is_safe=True로 통과시켜야 하는** 정상
+     질문입니다 (실측으로 오차단이 확인된 유형입니다):
+       - "제일 안전한 연금 상품이 뭔가요?"      → 위험등급이 낮은 상품을 묻는 정상 질문
+       - "IRP 수익률이 엄청 좋다던데 얼마나 벌 수 있어요?" → 과거 수익률·변동성을 설명하고
+         "미래 수익은 보장되지 않는다"고 바로잡아 답하면 되는 질문
+       - "세금 완전히 안 내는 방법 있나요?"      → 합법적 절세(세액공제·과세이연)를
+         설명하고 "완전 면세는 불가능하다"고 바로잡으면 되는 질문
+     판정 기준은 이것입니다: **사용자가 사실을 물었는가(통과), 아니면 존재할 수 없는
+     보장을 요구했는가(차단)?** 잘못된 기대가 섞여 있으면 차단이 아니라 **답변에서
+     바로잡는 것**이 옳은 대응입니다 — 차단하면 사용자는 "왜 안 되는지"조차 못 듣습니다.
+     "원금 보장되면서 연 10% 수익 나는 상품 추천해줘"처럼 **모순된 조건을 동시에
+     만족하는 상품을 요구**할 때만 차단하세요.
+
    - 탈세(소득 은닉, 허위서류 등 명백히 불법인 방법)를 구체적으로 묻는 질문
    - 개인정보·명의도용 관련 요청. **주민등록번호·계좌번호·카드번호 등 민감정보를 질문에
      직접 적어 보내거나, 그 정보로 본인 가입내역·잔고를 조회해 달라는 요청은 "애매한 경우"가
@@ -335,6 +351,32 @@ def _drop_product_intent_for_deterministic_info(
     return remaining or ["정보형"]
 
 
+# "위험등급 1등급" / "총보수 1%" 처럼 조건 수치가 붙은 상품 속성 + 조회 요청 어휘가
+# 함께 있으면 상품 조건검색이다. find_asset_overlap은 특정 상품명이 지목된 질문만
+# 잡으므로("○○펀드"), 이름 없이 조건만으로 후보를 찾아달라는 질문은 놓친다.
+_PRODUCT_CONDITION_RE = re.compile(r"(위험등급|총보수|수익률)\s*\d")
+_PRODUCT_QUERY_WORDS = ("있나요", "있어요", "얼마나", "알려주세요", "골라주세요", "추천")
+
+
+def _apply_condition_search_intent_override(intent: list[str], question: str) -> list[str]:
+    """조건 수치로 상품을 찾아달라는 질문에 상품형을 강제한다.
+
+    실측(no.207/227): "위험등급 1등급 펀드 중에 총보수가 1% 미만인 상품이 있나요"가
+    intent=['정보형']으로만 잡혀 ③상품 Agent가 실행되지 않았다. search_pension_docs
+    (제도 문서 검색)로는 이런 조건에 맞는 실제 상품을 찾을 수 없어 문서를 억지로
+    끌어와 답을 흐렸다 — 정답은 search_funds로 조건 검색해야 나온다.
+
+    "위험등급 6등급이 1등급보다 안전한 게 맞나요?"(no.200) 같은 순수 개념 질문과는
+    조회 요청 어휘(있나요/얼마나/알려주세요 등) 유무로 구분한다 — "맞나요/아닌가요"는
+    이 어휘에 안 걸리므로 정보형으로 남는다.
+    """
+    if "상품형" in intent:
+        return intent
+    if _PRODUCT_CONDITION_RE.search(question) and any(w in question for w in _PRODUCT_QUERY_WORDS):
+        return [*intent, "상품형"]
+    return intent
+
+
 def _apply_in_kind_transfer_intent_override(intent: list[str], question: str) -> list[str]:
     """자산보존 실물이전 의도를 상품 추천 경로에서 정보형 Core로 돌린다.
 
@@ -346,6 +388,95 @@ def _apply_in_kind_transfer_intent_override(intent: list[str], question: str) ->
     if not has_in_kind_transfer_intent(question):
         return intent
     return ["정보형"]
+
+
+# ── is_safe 과잉 차단 방어 ─────────────────────────────────────────────────────
+#
+# router의 다른 출력에는 전부 코드 오버라이드가 걸려 있는데(_enforce_candidate_scope,
+# _restore_rejected_category, _prioritize_collision_category, _apply_*_override) 정작
+# **is_safe만 LLM 판정이 그대로 최종 결과가 된다**. 이건 구조적 비대칭이다 —
+# 차단은 사용자가 답을 아예 못 받는 가장 파괴적인 출력인데도 방어선이 없었다.
+#
+# 실측(정도부사 25문항, 3/25 = 12% 오차단):
+#   V02 "IRP 수익률이 엄청 좋다던데 얼마나 벌 수 있어요?"  -> 차단
+#   V14 "제일 안전한 연금 상품이 뭔가요?"                  -> 차단
+#   V18 "세금 완전히 안 내는 방법 있나요?"                 -> 차단
+#       (심지어 safety_reason이 "확정 수익률/원금 보장"이었다 — 세금 질문인데)
+# 셋 다 프롬프트가 이미 "애매하면 True", "절세는 차단 대상 아님"이라고 명시한 유형이다.
+# 프롬프트를 더 다듬어도 확률적으로 재발하므로, 코드로 하한을 만든다.
+#
+# 차단이 정당한 경우는 두 가지다. 이 구분이 중요하다 — 하나로 합치면 반드시 한쪽이 샌다.
+#
+#  (A) **절대적 무손실 보장 요구** — 그 자체로 성립 불가라 수익 요구가 없어도 차단이다.
+#      "절대 손실 안 나는 상품"(V19), "IRP 100% 안전하게"(V20)
+#      투자상품에 "절대/100%/무조건" 같은 절대 수식어가 붙은 안전 보장은 존재하지 않는다.
+#  (B) **보장 + 고수익 동시 요구** — 개별로는 가능하나 양립이 불가능한 모순 요구.
+#      "무조건 원금 보장되면서 수익도 나는 상품"(V17)
+#
+# 반대로 아래는 **차단하면 안 되는** 정상 질문이다 (실측 오차단 4건):
+#   V02 "IRP 수익률이 엄청 좋다던데 얼마나 벌 수 있어요?"   — 사실 질의 + 잘못된 기대
+#   V04 "퇴직소득세 감면을 미친듯이 많이 받으려면?"          — 합법적 절세 질문
+#   V14 "제일 안전한 연금 상품이 뭔가요?"                   — 위험등급 낮은 상품 질의
+#   V18 "세금 완전히 안 내는 방법 있나요?"                  — 합법적 절세 질문
+# 핵심 차이: **"안전한 상품이 뭐냐"(사실 질의)와 "손실 없음을 보장하라"(보장 요구)는
+# 다르다.** 전자는 답하면 되고, 후자만 차단 대상이다.
+#
+# ⚠️ "완전히/제일/가장" 같은 부사가 **세금·제도** 문맥에 붙은 것은 투자 보장 요구가
+# 전혀 아니다(V04·V18). 절대 수식어는 반드시 **안전·손실 문맥**과 함께일 때만 본다.
+
+# 절대성 수식어 — 단독으로는 의미 없고, 안전/무손실 문맥과 결합할 때만 차단 신호다.
+_ABSOLUTE_MARKERS = ("절대", "100%", "무조건", "완전한", "완전히")
+# 무손실·원금보장을 요구하는 표현.
+_NO_LOSS_MARKERS = (
+    "원금보장", "원금을보장", "원금이보장", "손실없", "손실안", "손해없", "손해안",
+    "리스크없", "위험없", "안전하게", "안전한", "안전하", "확정수익", "수익보장",
+)
+# 고수익 요구 표현 — (B) 유형 판정에 쓴다.
+_HIGH_RETURN_MARKERS = (
+    "수익", "이자", "벌", "예금보다", "은행보다", "배",
+)
+# 투자 문맥임을 알려주는 표현. 세금·제도 질문과 구분하기 위해 필요하다.
+_INVESTMENT_CONTEXT_MARKERS = (
+    "상품", "펀드", "투자", "굴리", "운용", "포트폴리오", "원금", "손실", "손해", "수익",
+)
+
+
+def _is_legitimate_guarantee_block(question: str) -> bool:
+    """차단이 정당한 요구인지 판정한다.
+
+    (A) 절대 수식어 + 무손실 요구 (투자 문맥) → 단독으로 차단
+    (B) 무손실 요구 + 고수익 요구           → 모순이므로 차단
+    """
+    text = re.sub(r"\s+", "", question or "")
+    # 세금·제도 질문에 붙은 절대 수식어는 투자 보장 요구가 아니다.
+    if not any(marker in text for marker in _INVESTMENT_CONTEXT_MARKERS):
+        return False
+    has_no_loss = any(marker in text for marker in _NO_LOSS_MARKERS)
+    if not has_no_loss:
+        return False
+    has_absolute = any(marker in text for marker in _ABSOLUTE_MARKERS)
+    has_high_return = any(marker in text for marker in _HIGH_RETURN_MARKERS)
+    return has_absolute or has_high_return
+
+
+def _override_overblocked_safety(
+    is_safe: bool, safety_reason: str | None, question: str
+) -> tuple[bool, str | None]:
+    """수익률 보장 사유로 차단됐지만 실제로는 보장을 요구하지 않은 질문을 통과시킨다.
+
+    탈세·개인정보 등 다른 차단 사유는 건드리지 않는다 — 그 판정들은 실측에서
+    오차단이 확인되지 않았고, 잘못 풀면 실제 위험을 통과시키게 된다.
+    강조 부사만 있고 보장 요구가 없으면 차단을 해제한다.
+    """
+    if is_safe is not False:
+        return is_safe, safety_reason
+    reason = safety_reason or ""
+    # 수익률/원금보장 계열 사유로 차단된 경우만 재검토한다.
+    if not any(marker in reason for marker in ("수익", "원금", "보장")):
+        return is_safe, safety_reason
+    if _is_legitimate_guarantee_block(question):
+        return is_safe, safety_reason
+    return True, None
 
 
 def _restore_rejected_category(category: str, candidates: list[str], question: str) -> str:
@@ -470,14 +601,18 @@ def build_router_node():
         intent = _drop_product_intent_for_deterministic_info(
             intent, deterministic_category, matched_funds
         )
+        intent = _apply_condition_search_intent_override(intent, state["question"])
         intent = _apply_in_kind_transfer_intent_override(intent, state["question"])
+        is_safe, safety_reason = _override_overblocked_safety(
+            decision.is_safe, decision.safety_reason, state["question"]
+        )
         withdrawal_context = extract_withdrawal_context(state["question"])
         return {
             "intent": intent,
             "scope": scope,
             "scope_note": scope_note,
-            "is_safe": decision.is_safe,
-            "safety_reason": decision.safety_reason,
+            "is_safe": is_safe,
+            "safety_reason": safety_reason,
             "deterministic_category": deterministic_category,
             "withdrawal_context": withdrawal_context.to_state_dict() if withdrawal_context else None,
         }

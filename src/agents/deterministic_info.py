@@ -180,6 +180,16 @@ CODE_OVERRIDABLE_CATEGORIES: frozenset[str] = frozenset({
     # 재현되지 않도록 코드가 되살릴 수 있어야 한다.
     "투자가능여부_상품유형",
     "퇴직시_IRP의무이전",
+    # ⚠️ 세액공제 한도는 **틀린 답이 가장 잦은 주제**다. 2023년 개정 전 수치(400만원/
+    # 700만원/13.2%)가 학습 데이터에 대량으로 남아 있어, 정형 경로를 못 타면 LLM이
+    # 옛 수치를 자신 있게 답한다.
+    # 실측(정도부사 25문항):
+    #   V03 "세액공제 대박으로 받을 수 있는 방법 있나요?"    -> 700만원, 50세 (오답)
+    #   V05 "세액공제를 많이 받고 싶은데 얼마나 넣어야 하나요?" -> 400만원, 14.6%, 700만원 (오답)
+    # 정답(600만원/900만원/16.5%·13.2%)은 _tax_credit_limit_response가 이미 갖고 있었다 —
+    # 라우터가 "얼마/한도" 형태가 아닌 질문("~받는 방법", "~많이 받고 싶은데")을
+    # 기각하면서 답을 못 쓴 것이다. 핸들러가 스스로 None을 내므로 되살려도 안전하다.
+    "세액공제_한도",
 })
 
 
@@ -237,7 +247,28 @@ def candidate_categories(question: str) -> list[str]:
         candidates.append("복합정보_태스크플랜")
     if personal_tax_response(question) is not None:
         candidates.append("개인세금_입력충분성")
-    if "세액공제" in text:
+    # ⚠️ "세액공제"라는 단어가 없어도 **납입 한도**를 묻는 질문은 같은 정형 답변이
+    # 정답이다(_tax_credit_limit_response가 연금저축+IRP 합산 납입한도와 세액공제
+    # 대상 한도를 함께 제시한다). 이 어휘를 빠뜨려서 생긴 구멍이 실측으로 확인됐다 —
+    # V06("연금저축이랑 IRP에 최대한 많이 넣고 싶어요. 얼마까지 되나요?")은 후보가
+    # 0건이라 결정론 경로를 못 타고 LLM 자유응답으로 새서, 13.2%·5,500만원을
+    # 근거 없이 지어냈다(grounded=False로 디스클레이머까지 붙었다).
+    #
+    # 이 함수의 docstring이 경고하는 실패 유형("표면 어휘 조합으로 판정하려다 표현이
+    # 조금만 달라지면 무너진다")과 같은 클래스다. 정도부사("최대한 많이")가 원인이
+    # 아니라는 점이 중요하다 — 부사를 빼도("연금저축이랑 IRP에 넣고 싶어요. 얼마까지
+    # 되나요?") 여전히 후보가 0건이었다. 원인은 "넣다/납입"이라는 어휘 자체의 누락이다.
+    asks_contribution_limit = (
+        any(word in text for word in ("납입한도", "납입limit", "불입한도"))
+        or (
+            # ⚠️ _compact는 소문자화를 하지 않는다 — "IRP"(대문자)가 실제 표기라
+            # "irp"만 검사하면 영원히 안 걸린다. 두 표기를 함께 본다.
+            any(word in text for word in ("연금저축", "IRP", "irp", "연금계좌"))
+            and any(word in text for word in ("넣", "납입", "불입", "저축", "가입", "얼마까지"))
+            and any(word in text for word in ("얼마", "한도", "최대", "까지"))
+        )
+    )
+    if "세액공제" in text or asks_contribution_limit:
         candidates.append("세액공제_계산_입력부족")
         candidates.append("세액공제_한도")
     if any(word in text for word in ("세금혜택", "세제혜택", "절세혜택", "세금상혜택")) or (
@@ -310,7 +341,42 @@ def candidate_categories(question: str) -> list[str]:
     # 반드시 IRP로"라며 55세 이후 퇴직 예외를 빠뜨렸다.
     if _asks_irp_mandatory_transfer(text):
         candidates.append("퇴직시_IRP의무이전")
-    if "연금수령한도" in text or ("연금" in text and "한도" in text):
+    # ⚠️ "한도"라는 단어를 요구하면 이 카테고리가 실제로 답할 수 있는 질문의 상당수가
+    # 후보에조차 오르지 못한다. _withdrawal_limit_response는 한도 공식뿐 아니라
+    # **연금수령연차 기산**(2013.3.1 이전 가입 계좌의 6년차 특례), 11년차 한도 소멸,
+    # 연금수령 요건(가입 5년·만 55세)까지 근거와 함께 답하는데, 이것들은 "한도"라는
+    # 단어 없이 물어보는 게 오히려 자연스럽다.
+    #
+    # 실측(501문항): 후보가 빈 리스트로 나와 라우터가 고를 선택지조차 없었던 문항들 —
+    #   no.104 "2013년 3월 1일 이전 가입인데 연금수령연차를 어떻게 계산하나요"
+    #          (정답은 6년차 특례. 근거 0건으로 연령별 수령시기표를 창작했다)
+    #   no.99  "연금 실제수령연차랑 연금수령연차가 같은 말 아닌가요"
+    #   no.86  "55세 미만인데 연금을 받을 수 있나요"
+    #          (사적연금 서비스인데 국민연금 조기노령연금 수치를 지어냈다)
+    # 후보에 올린다고 이 카테고리로 확정되는 건 아니다 — 라우터가 최종 판단하므로,
+    # 답할 수 있는 범위를 빠짐없이 후보로 올리는 쪽이 안전하다.
+    #
+    # ⚠️ "실제수령연차"는 이 카테고리가 아니라 퇴직소득세감면 소관이다 — 두 연차는
+    # 이름만 비슷할 뿐 서로 다른 값이고(수령연차=한도 산정, 실제수령연차=감면율 산정),
+    # _extract_withdrawal_limit_inputs도 "실제수령연차"가 보이면 명시적으로 손을 뗀다.
+    # 이 구분을 안 하면 no.92~97·345·346 같은 감면율 질문이 한도 후보로 잘못 올라온다.
+    asks_actual_receipt_year = "실제수령연차" in text
+    # ⚠️ "연금"+"한도"만으로 잡으면 **납입**한도 질문까지 수령한도로 끌려온다.
+    # 납입(넣는 것)과 수령(받는 것)은 정반대 개념이라 정형 답변도 완전히 다르다 —
+    # 실측: "연금저축이랑 IRP 납입한도가 얼마인가요?"가 연금수령한도 후보로만 올라왔다.
+    asks_contribution_not_receipt = any(
+        word in text for word in ("납입한도", "불입한도")
+    ) or (
+        any(word in text for word in ("넣", "납입", "불입"))
+        and not any(word in text for word in ("수령", "받", "인출", "연차"))
+    )
+    if not asks_contribution_not_receipt and (
+        "연금수령한도" in text
+        or ("연금" in text and "한도" in text)
+        or (not asks_actual_receipt_year and "수령연차" in text)
+        or (not asks_actual_receipt_year and "연금" in text and "연차" in text)
+        or ("연금" in text and "55세" in text)
+    ):
         candidates.append("연금수령한도")
     if any(word in text for word in ("퇴직소득세", "이연퇴직소득세")):
         candidates.append("퇴직소득세감면")
@@ -2130,6 +2196,14 @@ def _extract_withdrawal_limit_inputs(question: str) -> tuple[Optional[int], Opti
     return account_value, payment_year
 
 
+_OVERAGE_TAX_QUESTION_MARKERS = ("넘겨서", "넘게", "초과해서", "초과하면", "초과인출", "한도넘")
+_OVERAGE_TAX_NOTE = (
+    "\n\n한도를 초과해 인출하는 부분은 연금수령이 아니라 연금외수령으로 분류되어, "
+    "세액공제 받은 납입금·운용수익 재원이라면 전액 16.5% 기타소득세가 부과됩니다 "
+    "(한도 이내 인출분에 적용되는 연령별 연금소득세율보다 높습니다)."
+)
+
+
 def _withdrawal_limit_response(question: str) -> tuple[str, list[RetrievedItem]]:
     source = "doc39 연금수령한도 규칙"
     content = (
@@ -2142,6 +2216,15 @@ def _withdrawal_limit_response(question: str) -> tuple[str, list[RetrievedItem]]
         "다만 연금수령연차 11년차 이상부터는 한도가 없어져 전액 인출해도 연금수령으로 인정될 수 있습니다. "
         "또 2013.3.1 이전 가입한 연금계좌는 1년차가 아니라 6년차부터 기산하는 특례가 있습니다."
     )
+    # ⚠️ 이 핸들러는 원래 "한도가 얼마인지"만 답했다. 그런데 "한도를 넘겨서 인출하면
+    # 세금이 얼마나 더 나오나요"(실측 no.142)처럼 **초과분의 세금**을 묻는 질문도
+    # 같은 카테고리(연금수령한도)로 들어온다 — 정답(16.5% 기타소득세)이 이미 doc38
+    # 근거 문서에 있는데(no.106 수정 때 확인한 것과 같은 문서), 한도 공식만 반복
+    # 답하고 정작 질문의 핵심(초과 시 세금)에는 답하지 못했다.
+    asks_overage_tax = any(marker in question for marker in _OVERAGE_TAX_QUESTION_MARKERS)
+    overage_note = _OVERAGE_TAX_NOTE if asks_overage_tax else ""
+    if asks_overage_tax:
+        content += " 한도 초과 인출분은 연금외수령으로 분류되어 전액 16.5% 기타소득세가 부과됩니다."
 
     # 질문에 평가액과 연차가 모두 있으면 규칙엔진으로 실제 금액을 계산한다.
     # ⚠️ 예전에는 question을 아예 읽지 않고 항상 공식만 안내해서, 계산에 필요한 값이
@@ -2163,7 +2246,7 @@ def _withdrawal_limit_response(question: str) -> tuple[str, list[RetrievedItem]]
                 f"입력해주신 조건(평가액 {_won(account_value)}, 연금수령 {payment_year}년차)의 "
                 f"올해 연금수령한도는 **{_won(result.limit_amount)}**입니다.\n\n"
                 f"계산식: {_won(account_value)} ÷ (11 - {payment_year}) × 120% = "
-                f"{_won(result.limit_amount)}\n\n{formula_note}"
+                f"{_won(result.limit_amount)}\n\n{formula_note}{overage_note}"
             )
         content += (
             f" 입력 조건에서는 평가액 {_won(account_value)}, 연금수령 {payment_year}년차이며 "
@@ -2178,7 +2261,7 @@ def _withdrawal_limit_response(question: str) -> tuple[str, list[RetrievedItem]]
     draft = (
         "연금수령한도는 다음 공식으로 계산합니다.\n\n"
         "연금수령한도 = 연금계좌 평가액 ÷ (11 - 연금수령연차) × 120%\n\n"
-        f"{formula_note}\n\n"
+        f"{formula_note}{overage_note}\n\n"
         "구체적인 금액 계산을 하려면 연금계좌 평가액과 현재 연금수령연차가 필요합니다."
     )
     return draft, _context(source, content)

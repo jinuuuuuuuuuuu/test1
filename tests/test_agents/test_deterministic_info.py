@@ -1236,6 +1236,29 @@ def test_withdrawal_limit_falls_back_to_formula_without_inputs():
     assert "필요합니다" in draft
 
 
+def test_withdrawal_limit_overage_question_states_16_5_percent():
+    """한도를 넘겨서 인출하면 세금이 얼마나 더 나오는지 물으면 16.5%를 명시해야 한다.
+
+    실측 no.142: 이 핸들러는 "한도가 얼마인지"만 답하고 정작 질문의 핵심(초과분의
+    세금)에는 답하지 못했다 — 한도 초과 인출분이 연금외수령으로 분류되어 16.5%
+    기타소득세가 부과된다는 사실이 이미 근거 문서(doc38, no.106 수정 때 확인한 것과
+    같은 문서)에 있는데도 그 사실을 안내하지 않았다.
+    """
+    draft, _ = deterministic_response_for(
+        "연금수령한도", "연금수령한도를 넘겨서 인출하면 세금이 얼마나 더 나오나요?"
+    )
+
+    assert "16.5%" in draft
+    assert "기타소득세" in draft
+
+
+def test_withdrawal_limit_plain_question_does_not_mention_overage_tax():
+    """초과 여부를 안 물으면 초과세금 안내를 덧붙이지 않는다(불필요한 정보 추가 방지)."""
+    draft, _ = deterministic_response_for("연금수령한도", "연금수령한도가 어떻게 계산되나요?")
+
+    assert "기타소득세" not in draft
+
+
 def test_withdrawal_limit_does_not_hijack_actual_receipt_year_question():
     """'연금실제수령연차'는 이연퇴직소득세 감면율용이라 한도 계산에 쓰면 안 된다.
 
@@ -1292,3 +1315,120 @@ def test_annual_contribution_is_not_multiplied():
     assert values["pension_savings_paid"] == 6_000_000
     assert values["irp_paid"] == 3_000_000
     assert values["total_salary"] == 50_000_000
+
+
+def test_withdrawal_year_questions_offer_limit_category():
+    """연금수령'연차'·55세 요건 질문도 연금수령한도 후보에 올라야 한다.
+
+    후보 조건이 "한도"라는 단어를 요구하던 시절, _withdrawal_limit_response가
+    근거와 함께 답할 수 있는 질문들이 후보에조차 못 올라 라우터에게 선택지가
+    없었다(실측 501문항: no.104는 6년차 특례가 정답인데 근거 0건으로 연령별
+    수령시기표를 창작했고, no.86은 사적연금 서비스인데 국민연금 수치를 지어냈다).
+    """
+    for question in (
+        "2013년 3월 1일 이전에 가입한 연금계좌인데 연금수령연차를 어떻게 계산하나요?",
+        "55세 미만인데 연금을 받을 수 있나요?",
+    ):
+        assert "연금수령한도" in candidate_categories(question), question
+
+
+def test_actual_receipt_year_stays_out_of_limit_category():
+    """'연금실제수령연차'는 퇴직소득세감면 소관이므로 한도 후보로 새면 안 된다.
+
+    수령연차(한도 산정용)와 실제수령연차(감면율 산정용)는 이름만 비슷한 다른 값이다.
+    연차 키워드를 넓힐 때 이 경계를 지키지 않으면 감면율 질문(no.92~97 등)이 전부
+    한도 후보로 잘못 올라와 라우터를 헷갈리게 한다.
+    """
+    for question in (
+        "연금실제수령연차 5년차인데 이연퇴직소득세 감면율이 얼마인가요?",
+        "연금실제수령연차는 어떻게 늘리나요?",
+    ):
+        assert "연금수령한도" not in candidate_categories(question), question
+
+
+# ── 정도부사 25문항 회귀: 납입한도 질문의 결정론 경로 누락 (V06) ──────────────
+# "세액공제"라는 단어가 없는 납입한도 질문이 후보 0건이라 LLM 자유응답으로 새면서
+# 13.2%·5,500만원을 근거 없이 지어냈다. 원인은 정도부사가 아니라 어휘 누락이다.
+
+
+def test_contribution_limit_question_routes_to_deterministic():
+    from src.agents.deterministic_info import candidate_categories
+
+    for question in (
+        "연금저축이랑 IRP에 최대한 많이 넣고 싶어요. 얼마까지 되나요?",
+        "연금저축이랑 IRP에 넣고 싶어요. 얼마까지 되나요?",   # 부사를 빼도 동일해야 한다
+        "IRP에 얼마까지 넣을 수 있나요?",
+        "연금저축이랑 IRP 납입한도가 얼마인가요?",
+    ):
+        assert "세액공제_한도" in candidate_categories(question), question
+
+
+def test_contribution_limit_is_not_confused_with_withdrawal_limit():
+    """납입(넣는 것)과 수령(받는 것)은 정반대 개념 — 후보가 섞이면 안 된다."""
+    from src.agents.deterministic_info import candidate_categories
+
+    assert "연금수령한도" not in candidate_categories("연금저축이랑 IRP 납입한도가 얼마인가요?")
+    # 진짜 수령한도 질문은 그대로 잡혀야 한다
+    assert "연금수령한도" in candidate_categories("연금수령한도가 얼마인가요?")
+
+
+def test_unrelated_question_still_has_no_candidate():
+    from src.agents.deterministic_info import candidate_categories
+
+    assert candidate_categories("연금 개시 나이가 언제인가요?") == []
+
+
+# ── 정도부사 25문항 회귀: 세액공제 한도 정형 경로 기각 (V03/V05) ──────────────
+# 2023년 개정 전 수치(400만원/700만원/13.2%)가 학습 데이터에 남아 있어, 정형 경로를
+# 못 타면 LLM이 옛 수치를 자신 있게 답한다. 정답은 핸들러가 이미 갖고 있었다.
+
+
+def test_tax_credit_limit_is_code_overridable():
+    """라우터가 기각해도 코드가 되살릴 수 있어야 한다."""
+    from src.agents.deterministic_info import CODE_OVERRIDABLE_CATEGORIES
+
+    assert "세액공제_한도" in CODE_OVERRIDABLE_CATEGORIES
+
+
+def test_maximize_phrasing_restores_tax_credit_category():
+    """'얼마/한도' 형태가 아닌 '많이 받는 방법' 질문도 정형 경로로 되살아난다."""
+    from src.agents.deterministic_info import candidate_categories
+    from src.agents.router import _restore_rejected_category
+
+    for question in (
+        "세액공제 대박으로 받을 수 있는 방법 있나요?",
+        "세액공제를 많이 받고 싶은데 얼마나 넣어야 하나요?",
+    ):
+        restored = _restore_rejected_category("해당없음", candidate_categories(question), question)
+        assert restored == "세액공제_한도", question
+
+
+def test_restored_tax_credit_answer_uses_current_limits():
+    """되살아난 정형 답변은 현행 수치(600/900만원)를 쓰고 폐지 수치를 쓰지 않는다."""
+    from src.agents.deterministic_info import deterministic_response_for
+
+    content, _ = deterministic_response_for("세액공제_한도", "세액공제 대박으로 받을 수 있는 방법 있나요?")
+
+    assert "900만원" in content
+    assert "600만원" in content
+    assert "700만원" not in content   # 2023년 개정 전 폐지된 한도
+    assert "400만원" not in content
+
+
+def test_tax_credit_handler_declines_unrelated_question():
+    """되살리기가 안전한 근거 — 핸들러가 무관한 질문에는 None을 낸다."""
+    from src.agents.deterministic_info import deterministic_response_for
+
+    assert deterministic_response_for("세액공제_한도", "연금 개시 나이가 언제인가요?") is None
+    assert deterministic_response_for("세액공제_한도", "퇴직연금 중도인출 되나요?") is None
+
+
+def test_calculable_question_still_computes_amount():
+    """납입액·소득이 다 주어지면 일반 한도 안내가 아니라 실제 계산액을 낸다."""
+    from src.agents.deterministic_info import deterministic_response_for
+
+    content, _ = deterministic_response_for(
+        "세액공제_한도", "연금저축에 600만원 넣었고 총급여 5000만원인데 세액공제 얼마 받나요?"
+    )
+
+    assert "99만원" in content

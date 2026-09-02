@@ -186,3 +186,50 @@ def test_receipt_type_ignores_contribution_context_lump_sum():
         "매달 나눠 넣지 않고 한번에 납입해도 되나요?",
     ):
         assert _extract_receipt_type(_compact(question)) is None, question
+
+
+def test_receipt_type_detects_jungdo_withdrawal():
+    """"중도에 찾다/중도인출"도 연금외수령 문맥으로 판정해야 한다.
+
+    회귀 방지: 실측 no.106 "세액공제 받은 원금과 운용수익을 중도에 찾으면 세금이
+    얼마나 나오나요?"는 source_type은 잡히는데 receipt_type만 None이라 branch가
+    확정되지 못해 역질문으로 빠졌다 — 명백히 연금외수령인데도.
+    """
+    from src.agents.tax_context import _compact, _extract_receipt_type
+
+    assert _extract_receipt_type(_compact("세액공제 받은 원금을 중도에 찾으면 세금이 얼마나 나오나요?")) == "non_pension"
+
+
+def test_jungdo_alone_does_not_confirm_a_tax_branch():
+    """재원 언급 없는 단순 "중도인출 가능한가요" 질문은 branch가 확정되면 안 된다.
+
+    "중도"를 애매어 목록에 추가하면 receipt_type 자체는 "인출"과 맞물려 non_pension으로
+    잡힌다(그 자체는 문제 아님). 하지만 determine_tax_branch는 receipt_type뿐 아니라
+    source_type(재원 종류)도 요구하므로, 재원이 없는 자격 질문 47건 대다수는 이 기존
+    게이트에서 여전히 branch=None으로 걸러진다 — "중도" 추가가 세율 질문이 아닌
+    "가능한가요" 질문들까지 확정 답변으로 새게 하면 안 된다.
+    """
+    from src.agents.tax_context import determine_tax_branch, extract_tax_context
+
+    for question in (
+        "DB형 퇴직연금도 중도인출이 가능한가요?",
+        "6개월간 요양 중인데 DC형 중도인출이 가능한지, 인출하면 세금은 얼마나 되는지 알려주세요.",
+    ):
+        assert determine_tax_branch(extract_tax_context(question)) is None, question
+
+
+def test_tax_deducted_non_pension_states_16_5_percent():
+    """세액공제 재원 연금외수령은 16.5% 기타소득세를 명시해야 한다.
+
+    이전에는 tax_deducted_non_pension 분기가 _complete_tax_response의 if/elif
+    체인에 없어 catch-all 안내문("구체 세액 계산을 단정하지 않고...")으로
+    떨어졌다 — 정답(16.5% 기타소득세)이 이미 근거 문서에 있는데도 답하지 못했다.
+    """
+    from src.agents.tax_context import personal_tax_response
+
+    result = personal_tax_response("세액공제 받은 원금과 운용수익을 중도에 찾으면 세금이 얼마나 나오나요?")
+    assert result is not None
+    draft, context = result
+    assert "16.5%" in draft
+    assert "기타소득세" in draft
+    assert context[0]["source"] == "doc38 연금수령한도 초과 기타소득세·인출순서 표"

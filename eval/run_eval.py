@@ -204,6 +204,12 @@ def run_one(graph, row: dict) -> dict:
             "clarification_questions": state.get("clarification_questions"),
         },
 
+        # 파수꾼(Guardian) — Core 답변 뒤에 붙는 별도 경고/기회 안내가 무엇을,
+        # 왜 붙였는지(또는 왜 안 붙였는지)를 남긴다. guardian_result가 없으면
+        # 이 문항에서 Guardian 후보가 아예 없었다는 뜻이다.
+        "guardian": state.get("guardian_result"),
+        "guardian_evidence": state.get("guardian_evidence") or [],
+
         # ⑤ 최종 산출물
         "answer": state.get("answer"),
         "think_trace": state.get("think_trace"),

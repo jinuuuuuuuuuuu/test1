@@ -1,31 +1,38 @@
+# 버전은 로컬에서 스모크 테스트까지 통과한 실측 조합으로 고정한다.
+#
+# 핀을 박는 이유: langchain 계열은 마이너 버전에서도 API가 바뀌는 일이 잦다.
+# 핀이 없으면 배포 서버가 `pip install` 시점의 최신 버전을 받아가고, 로컬에서
+# 검증한 동작과 갈라진다 — 평가기간(09.07~09.20) 중에 서버에서만 터지는 사고는
+# 재현도 복구도 어렵다. 업그레이드가 필요하면 로컬에서 먼저 검증하고 핀을 옮긴다.
+
 # --- LLM / Agent orchestration ---
-langgraph
-langchain
-langchain-core
-langchain-naver   # ChatClovaX (HyperCLOVA X). CLOVASTUDIO_API_KEY 환경변수 필요 (.env.sample 참고)
+langgraph==1.2.11
+langchain==1.3.15
+langchain-core==1.6.1
+langchain-naver==0.1.1   # ChatClovaX (HyperCLOVA X). CLOVASTUDIO_API_KEY 환경변수 필요 (.env.sample 참고)
 
 # --- API server ---
-fastapi
-uvicorn[standard]
-pydantic
-python-dotenv
+fastapi==0.141.1
+uvicorn[standard]==0.52.2
+pydantic==2.13.4
+python-dotenv==1.2.2
 
 # --- Document parsing (Phase 1) ---
-pymupdf         # PDF
-python-docx     # DOCX
-python-pptx     # PPTX
-openpyxl        # XLSX
+pymupdf==1.28.2         # PDF
+python-docx==1.2.0      # DOCX
+python-pptx==1.0.2      # PPTX
+openpyxl==3.1.5         # XLSX
 
 # --- Storage ---
-chromadb        # 벡터DB (docs.zip 서술형 문서 색인)
-langchain-chroma  # LangChain <-> Chroma 연동
-langchain-text-splitters  # 임베딩 API 컨텍스트 길이 제한 대응 긴 청크 분할
-sqlalchemy      # 구조화 DB (투자설명서 6축, doc29/doc34 lookup)
+chromadb==1.5.9         # 벡터DB (docs.zip 서술형 문서 색인)
+langchain-chroma==1.1.0  # LangChain <-> Chroma 연동
+langchain-text-splitters==1.1.2  # 임베딩 API 컨텍스트 길이 제한 대응 긴 청크 분할
+sqlalchemy==2.0.52      # 구조화 DB (투자설명서 6축, doc29/doc34 lookup)
 
 # --- Data handling ---
-pandas
-numpy
+pandas==3.0.5
+numpy==2.5.2
 
 # --- Testing ---
-pytest
-httpx           # fastapi TestClient가 요구 (API 서버 테스트용)
+pytest==9.1.1
+httpx==0.28.1           # fastapi TestClient가 요구 (API 서버 테스트용)

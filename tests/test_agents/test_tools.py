@@ -239,6 +239,26 @@ def test_get_fund_detail_tool_known_and_unknown_code():
     assert missing["found"] is False
 
 
+@pytest.mark.skipif(not _HAS_PROSPECTUS_DB, reason="data/processed/prospectus.db가 아직 없습니다")
+def test_get_fund_detail_falls_back_to_name_search():
+    """product_code 자리에 펀드명이 들어와도 이름으로 재조회해 복구해야 한다.
+
+    프롬프트는 "search_funds로 후보를 찾은 뒤 get_fund_detail을 호출하라"고 명시하지만,
+    LLM이 이 순서를 건너뛰고 펀드명 문자열을 코드 자리에 그대로 넣는 경우가 있다(실측
+    501문항: no.220/470이 "상품코드 없음"만 받고 검색을 재시도하는 대신 답을 지어냈다).
+    """
+    known = search_funds.invoke({"limit": 1})[0]
+    by_name = get_fund_detail.invoke({"product_code": known["fund_name"]})
+
+    assert by_name["found"] is True
+    assert by_name["master"]["product_code"] == known["product_code"]
+    assert by_name["resolved_from_name"] == known["fund_name"]
+
+    # 진짜로 없는 이름은 여전히 실패해야 한다 — 아무 펀드나 골라주면 안 된다.
+    unknown = get_fund_detail.invoke({"product_code": "존재하지않는펀드이름아무거나"})
+    assert unknown["found"] is False
+
+
 @pytest.mark.skipif(
     not (_HAS_CHROMA_DOCS and _HAS_REAL_API_KEY and _RUN_LIVE_AGENT_TESTS),
     reason="임베딩 API 네트워크 호출이 필요하므로 RUN_LIVE_AGENT_TESTS=1일 때만 실행합니다",
