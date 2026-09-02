@@ -1610,3 +1610,33 @@ def test_contribution_amounts_do_not_trigger_comprehensive_tax():
         "연금저축 한도가 얼마야?",
     ):
         assert "연금소득세_종합과세" not in candidate_categories(question), question
+
+
+def test_retirement_tax_reduction_uses_stated_receipt_year():
+    """연금실제수령연차를 밝히면 해당 구간의 감면율을 확정해 준다.
+
+    실측 T09/T10: 이 핸들러가 question을 받고도 전혀 읽지 않아, 사용자가 무엇을
+    말하든 항상 같은 일반표만 반환했다. 같은 질문이 라우터 선택에 따라
+    개인세금_입력충분성으로 가면 연차를 되묻는데(personal_tax_response) 이쪽으로 오면
+    되묻지도 확정하지도 않아, 답변 완결성이 라우터의 비결정적 선택에 좌우됐다.
+    """
+    draft, _ = deterministic_response_for("퇴직소득세감면", "연금실제수령연차 15년차면 퇴직금 감면율이 얼마인가요")
+
+    assert "15년차" in draft
+    assert "40%" in draft  # 11~20년차 = 60% 납부 / 40% 감면
+
+
+def test_retirement_tax_reduction_asks_for_year_when_missing():
+    """연차를 모르면 일반 규칙은 답하되 확정은 하지 않고 되묻는다."""
+    draft, _ = deterministic_response_for("퇴직소득세감면", "퇴직금 3억을 IRP로 받아서 연금으로 수령하면 세금이 어떻게 되나요")
+
+    assert "연금실제수령연차가 몇 년차인지 알려주세요" in draft
+
+
+def test_actual_receipt_year_question_reaches_reduction_category():
+    """"연금실제수령연차"는 이 카테고리 고유 개념어이므로 후보에 올라야 한다."""
+    for question in (
+        "연금실제수령연차 5년차인데 퇴직금 세금 얼마나 감면돼?",
+        "퇴직금 감면 얼마나 받나요",
+    ):
+        assert "퇴직소득세감면" in candidate_categories(question), question

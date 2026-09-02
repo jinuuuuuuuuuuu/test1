@@ -980,6 +980,53 @@ def apply_requirement_scope_override(
     return result
 
 
+# 세제 효과를 과장하는 유도성 표현 + 그 표현이 인용임을 드러내는 어미.
+# 대회 요강 평가지표 "정확성"이 명시적으로 요구하는 항목이다 — "고객의 잘못된 전제나
+# 유도성 질문을 그대로 수용하지 않고 바로잡는가". 요강의 참고 질의에도
+# "명퇴수당을 연금계좌에 넣으면 세금 감면이 어마어마하다던데"가 예시로 들어 있다.
+_EXAGGERATED_TAX_CLAIM_MARKERS = (
+    "어마어마", "엄청", "무제한", "완전히 안", "하나도 안", "거의 안", "안 낸다", "안낸다",
+    "전혀 안", "공짜", "면제된다",
+)
+# "세금이 없다"/"세금도 없다"/"세금 없다"처럼 조사만 달라지는 형태를 하나로 잡는다 —
+# 조사를 리터럴로 하나씩 늘리면 표현이 조금만 달라져도 계속 뚫린다(실측: "세금도 없다던데"가
+# "세금이 없"·"세금 없" 두 마커를 모두 비껴갔다).
+_NO_TAX_CLAIM_RE = re.compile(r"세금[이가도는을]?없")
+# 사용자가 남의 말을 옮기는 어미 — 이게 있으면 본인 주장이 아니라 "들은 이야기"라
+# 확인을 구하는 것이므로, 바로잡아 주는 것이 정확히 요강이 요구하는 대응이다.
+_HEARSAY_ENDINGS = ("다던데", "라던데", "다는데", "라는데", "다고 하", "라고 하", "들었", "맞나요", "맞죠", "사실인가요")
+_TAX_TOPIC_MARKERS = ("세금", "세액공제", "절세", "감면", "과세", "세율", "혜택")
+
+
+def detect_exaggerated_tax_premise(question: str) -> list[str]:
+    """질문에 담긴 "세금이 거의 없다"류 과장 전제를 결정론적으로 찾아낸다.
+
+    ⚠️ 결정론 답변 경로는 ④grounding을 건너뛰므로(불필요한 repair 47/184건을 막기
+    위한 의도된 우회), premise_issues가 항상 빈 리스트로 고정된다. 그 부작용으로
+    **전제 교정이 결정론 경로에서 아예 작동하지 않았다** — 실측 T18("퇴직금 받아서
+    연금으로 굴리면 세금 거의 안 낸다던데 맞나요?")과 요강 참고질의("세금 감면이
+    어마어마하다던데")가 모두 이 경로라 과장을 그대로 통과시켰다.
+
+    LLM을 다시 부르지 않고 코드로 잡는다 — 우회의 이점(속도·비용·불필요한 repair 제거)을
+    유지하면서 교정만 되살리는 방법이다. 과장 표현 + 세금 주제 + 인용 어미가 모두
+    있을 때만 잡아 오탐을 억제한다(본인이 단정하는 게 아니라 "들었다"고 확인을 구하는
+    형태여야 한다).
+    """
+    compact = re.sub(r"\s+", "", question or "")
+    if not compact:
+        return []
+    has_exaggeration = any(
+        re.sub(r"\s+", "", m) in compact for m in _EXAGGERATED_TAX_CLAIM_MARKERS
+    ) or _NO_TAX_CLAIM_RE.search(compact) is not None
+    has_tax_topic = any(m in compact for m in _TAX_TOPIC_MARKERS)
+    has_hearsay = any(re.sub(r"\s+", "", m) in compact for m in _HEARSAY_ENDINGS)
+    if has_exaggeration and has_tax_topic and has_hearsay:
+        return [
+            "연금계좌의 세제 혜택이 세금을 거의 내지 않아도 될 만큼 크다는 전제"
+        ]
+    return []
+
+
 def enforce_premise_issues(answer: str, premise_issues: list[str]) -> str:
     """④가 짚은 '질문의 잘못된 전제'를 답변이 바로잡지 않았으면 앞머리에 교정문을 붙인다.
 

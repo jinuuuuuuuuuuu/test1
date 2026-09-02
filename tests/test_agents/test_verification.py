@@ -1007,3 +1007,44 @@ def test_user_supplied_conditions_are_still_filtered():
     ):
         real, _misfiled = split_premise_issues([item], [])
         assert real == [], f"사용자 조건이 교정 대상으로 남았다: {item}"
+
+
+# ── 결정론 경로의 과장 전제 교정 ────────────────────────────────────────────
+#
+# ④grounding은 결정론 답변에서 통째로 우회된다(불필요한 repair 47/184건을 막기 위한
+# 의도된 설계). 그 부작용으로 premise_issues가 항상 빈 리스트로 고정돼 **전제 교정이
+# 결정론 경로에서 아예 작동하지 않았다** — 실측 T18("세금 거의 안 낸다던데")과
+# 요강 참고질의("세금 감면이 어마어마하다던데")가 모두 이 경로였다.
+# 요강 평가지표 "정확성"이 명시적으로 요구하는 항목이라, LLM을 다시 부르지 않고
+# 코드로 과장 전제만 찾아 채운다.
+
+
+def test_detects_exaggerated_tax_premise():
+    """"세금 거의 안 낸다더라"류 과장 전제를 결정론적으로 잡는다."""
+    from src.agents.verification import detect_exaggerated_tax_premise
+
+    for question in (
+        "58세인데 퇴직금 받아서 연금으로 굴리면 세금 거의 안 낸다던데 맞나요?",
+        "명퇴수당을 연금계좌에 넣으면 세금 감면이 어마어마하다던데, 절세법만 알려주세요",
+        "연금저축은 세금 혜택이 무제한이라던데, 노후 준비로 최대한 활용하고 싶어요",
+        "IRP에 퇴직금 넣으면 세액공제도 되고 세금도 없다던데 사실인가요?",
+    ):
+        assert detect_exaggerated_tax_premise(question), question
+
+
+def test_normal_tax_questions_are_not_flagged_as_exaggeration():
+    """과장 표현·인용 어미가 없으면 잡지 않는다(정상 질문에 교정문을 붙이면 안 된다).
+
+    "세금 거의 안 내는 방법이 있나요?"는 **질문**이지 들은 이야기의 확인이 아니라
+    과장 전제가 아니다 — 인용 어미를 함께 요구하는 이유다.
+    """
+    from src.agents.verification import detect_exaggerated_tax_premise
+
+    for question in (
+        "연금저축 세액공제 얼마까지 되나요?",
+        "65세인데 노후 절세 방법 알려줘",
+        "세금 거의 안 내는 방법이 있나요?",
+        "퇴직금 세금이 얼마나 나오나요?",
+        "세금 없는 상품이 있나요?",
+    ):
+        assert detect_exaggerated_tax_premise(question) == [], question

@@ -36,6 +36,7 @@ from src.agents.verification import (
     apply_requirement_scope_override,
     apply_withdrawal_context_override,
     apply_source_limited_override,
+    detect_exaggerated_tax_premise,
     find_unsupported_numbers,
 )
 
@@ -165,12 +166,18 @@ def build_grounding_node():
         # 이렇게 불필요한 repair를 돌았다 — repair는 같은 결정론 함수를 다시 불러
         # 100% 동일한 draft를 재생산하므로 LLM 호출만 낭비되고 결과는 바뀌지 않는다.
         if state.get("deterministic_info") and not state.get("product_draft"):
+            # ⚠️ 이 우회는 premise_issues까지 빈 리스트로 고정하는데, 그 부작용으로
+            # **전제 교정이 결정론 경로에서 아예 작동하지 않았다**(실측 T18 "세금 거의
+            # 안 낸다던데", 요강 참고질의 "세금 감면이 어마어마하다던데" 모두 이 경로).
+            # 요강 평가지표 "정확성"이 명시적으로 요구하는 항목이라 그냥 둘 수 없다.
+            # LLM을 다시 부르지 않고 코드로 과장 전제만 찾아 채운다 — 우회의 이점
+            # (불필요한 repair 47/184건 제거)은 그대로 두면서 교정만 되살린다.
             return {
                 "verification": {
                     "grounded": True,
                     "issues": [],
                     "unsupported_numbers_confirmed": [],
-                    "premise_issues": [],
+                    "premise_issues": detect_exaggerated_tax_premise(state["question"]),
                     "requirements_met": True,
                     "missing_requirements": [],
                 }

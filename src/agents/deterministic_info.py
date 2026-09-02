@@ -428,7 +428,20 @@ def candidate_categories(question: str) -> list[str]:
         and any(word in text for word in ("연금으로", "연금수령", "연금으로받", "연금개시"))
         and any(word in text for word in ("세금", "세율", "과세", "감면"))
     )
-    if any(word in text for word in ("퇴직소득세", "이연퇴직소득세")) or asks_retirement_pay_pension_tax:
+    # "연금실제수령연차"는 이 카테고리 고유의 개념어다(감면율 산정 전용 — 한도 산정용
+    # "연금수령연차"와 다른 값). 이 단어를 쓴 질문은 감면율을 묻는 것이 거의 확실한데
+    # 조건에 없어 후보에조차 못 올랐다(실측: "연금실제수령연차 5년차인데 퇴직금 세금
+    # 얼마나 감면돼?" -> 후보 ['개인세금_입력충분성']). 퇴직금 + 감면 조합도 같은 이유로
+    # 넣는다 — "연금으로"라는 표현 없이도 감면을 물으면 이 카테고리다.
+    asks_actual_receipt_year_reduction = "실제수령연차" in text or (
+        any(word in text for word in ("퇴직금", "퇴직급여", "명예퇴직금", "명퇴금"))
+        and "감면" in text
+    )
+    if (
+        any(word in text for word in ("퇴직소득세", "이연퇴직소득세"))
+        or asks_retirement_pay_pension_tax
+        or asks_actual_receipt_year_reduction
+    ):
         candidates.append("퇴직소득세감면")
     # ⚠️ "연금소득세"는 부분문자열 매칭이라 "연금소득세율"("세율" 부분)에도 걸린다.
     # 그러면 "연령별 연금소득세율 표 알려줘"가 종합과세로만 후보를 잡고 정작 아래
@@ -2410,6 +2423,14 @@ def _retirement_tax_reduction_response(question: str) -> tuple[str, list[Retriev
         f"{_pct(r11.reduction_ratio)}를 감면합니다. 21년차 이상은 {_pct(r21.payment_ratio)}를 납부하고 "
         f"{_pct(r21.reduction_ratio)}를 감면합니다. 연금외수령은 감면 없이 전액 납부합니다."
     )
+    # ⚠️ 예전에는 question을 받고도 전혀 읽지 않아, 사용자가 연금실제수령연차를 밝혀도
+    # 항상 같은 일반표만 반환했다. 같은 질문이 라우터의 선택에 따라 개인세금_입력충분성으로
+    # 가면 연차를 정직하게 되묻는데(personal_tax_response), 이 카테고리로 오면 되묻지도
+    # 확정하지도 않고 일반표로 끝나 답변 완결성이 라우터의 비결정적 선택에 좌우됐다
+    # (실측 T09/T10 vs T12/T18). 다른 결정론 핸들러(_pension_income_tax_rate_response,
+    # _withdrawal_limit_response)는 이미 질문에서 값을 읽어 확정하는 패턴을 쓴다.
+    actual_receipt_year = extract_tax_context(question).actual_pension_year
+
     draft = (
         "퇴직금을 연금으로 수령하면 이연퇴직소득세가 연차에 따라 감면됩니다.\n\n"
         "- 연금실제수령연차 1~10년차: 이연퇴직소득세의 70% 납부, 30% 감면\n"
@@ -2418,6 +2439,27 @@ def _retirement_tax_reduction_response(question: str) -> tuple[str, list[Retriev
         "주의할 점은 여기서 쓰는 기준이 '연금수령연차'가 아니라 실제로 인출한 해만 세는 "
         "'연금실제수령연차'라는 점입니다. 연금외수령이면 감면 없이 이연퇴직소득세 전액을 납부합니다."
     )
+
+    if actual_receipt_year is not None:
+        applied = get_deferred_retirement_tax_rate(actual_receipt_year, is_pension_receipt=True)
+        draft += (
+            f"\n\n말씀하신 연금실제수령연차 {actual_receipt_year}년차는 이연퇴직소득세의 "
+            f"{_pct(applied.payment_ratio)}를 납부하고 {_pct(applied.reduction_ratio)}를 감면받는 구간입니다.\n"
+            "실제 납부세액은 원래 부과될 이연퇴직소득세 금액에 이 비율을 적용해 계산합니다 — "
+            "그 금액은 퇴직 시점에 확정되므로 퇴직금 수령 기관에서 확인하실 수 있습니다."
+        )
+        content += (
+            f" 입력 조건의 연금실제수령연차 {actual_receipt_year}년차는 "
+            f"{_pct(applied.payment_ratio)} 납부, {_pct(applied.reduction_ratio)} 감면 구간입니다."
+        )
+    else:
+        # 연차를 모르면 감면율을 확정할 수 없다 — 되묻되, 위 일반 규칙은 이미 답했으므로
+        # 답변 자체를 막지는 않는다(알고 있는 것은 답하고 모르는 것만 묻는다).
+        draft += (
+            "\n\n본인에게 적용될 감면율을 확정하려면 연금실제수령연차가 몇 년차인지 알려주세요. "
+            "정확한 세액까지 계산하려면 원래 부과될 이연퇴직소득세 금액도 함께 필요합니다."
+        )
+
     return draft, _context(source, content)
 
 
