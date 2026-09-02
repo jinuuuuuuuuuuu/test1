@@ -45,7 +45,7 @@ NFD 분해형으로 저장돼 있어 NFC 경로 문자열로는 못 열렸던 �
 컬럼 수가 하나 줄어드는 펀드 대응, _pick_ter/_TER_INDEX_CANDIDATES)을 더해
 늘어났다. VIP한국형가치투자 6개 클래스 값은 이 라운드에서도 100% 유지됨(회귀 없음).
 
-나머지 43개는 파서가 커버하지 못하는 펀드로, "추가 검토 필요"(정의 충돌 있음) 3건과
+나머지 36개는 파서가 커버하지 못하는 펀드로, "추가 검토 필요"(정의 충돌 있음) 3건과
 "정의는 있으나 숫자 매칭 실패"로 나뉜다. 확인된 실패 유형:
   - 전치형 표: 클래스 코드가 열로 먼저 나열되고 숫자가 행 단위로 뒤따름
     (지금 로직이 가정하는 "코드 뒤 숫자" 구조와 다름). 예: KR5118201004
@@ -86,6 +86,7 @@ import io
 import os
 import re
 import sys
+from typing import Iterable
 
 BASE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prospectus_check")
 
@@ -151,6 +152,11 @@ def _looks_like_class_code(code: str) -> bool:
     return bool(_VALID_CODE_CORE_RE.match(core))
 
 
+def normalize_class_code(code: str) -> str:
+    """Strip whitespace and explanatory suffixes such as C-P(연금저축)."""
+    return re.sub(r"\s+", "", code).split("(")[0]
+
+
 def build_code_to_definition(text: str) -> tuple[dict[str, dict], list]:
     """문서 전체에서 "전체명(코드)" 패턴을 모아 코드 -> {계좌유형, 채널, 전체명} 매핑을 만든다.
 
@@ -165,7 +171,7 @@ def build_code_to_definition(text: str) -> tuple[dict[str, dict], list]:
     for m in CLASS_DEF_RE.finditer(text):
         label_raw, code_raw = m.group(1), m.group(2)
         label = re.sub(r"\s+", "", label_raw)
-        code = re.sub(r"\s+", "", code_raw)
+        code = normalize_class_code(code_raw)
         if not _looks_like_class_code(code):
             continue
         account_type = classify_account_type(label)
@@ -207,40 +213,100 @@ def find_fee_rate_sections(text: str) -> list[str]:
 # 않으므로, 범위를 벗어난 값은 조용히 버려 오염된 값을 신뢰 목록에 넣지 않는다.
 _PLAUSIBLE_TER_RANGE = (0.01, 3.0)
 
-# 총보수·비용의 컬럼 위치(7번째, 인덱스 6)가 기본값이지만, "기타비용" 칸이
-# "없음" 대신 아예 빈칸으로 빠지는 펀드(예: KR5119520012)는 컬럼 수 자체가
-# 하나 줄어 위치가 밀린다. 인덱스 6이 비타당하면 인접 인덱스를 순서대로
-# 시도한다 — 4(총보수), 7·8(총보수비용/합성총보수비용)도 실측상 같은 값이거나
-# 근접한 값이라 안전한 폴백이다.
-_TER_INDEX_CANDIDATES = (6, 7, 8, 4)
-
-
-def _pick_ter(nums: list[str]) -> float | None:
-    for idx in _TER_INDEX_CANDIDATES:
-        if idx >= len(nums):
-            continue
-        try:
-            ter = float(nums[idx])
-        except ValueError:
-            continue
-        if _PLAUSIBLE_TER_RANGE[0] <= ter <= _PLAUSIBLE_TER_RANGE[1]:
-            return ter
+# 보수율 표는 펀드마다 컬럼 수가 조금씩 다르다. 기존에는 한 숫자만 골랐지만,
+# Cost Guard에서는 총보수·비용과 합성총보수·비용을 서로 다른 metric으로 보존한다.
+def _float_token(token: str | None) -> float | None:
+    if token in (None, "", "-", "없음", "실비"):
+        return None
+    try:
+        value = float(token)
+    except ValueError:
+        return None
+    if _PLAUSIBLE_TER_RANGE[0] <= value <= _PLAUSIBLE_TER_RANGE[1]:
+        return value
     return None
 
 
-def extract_numeric_rows(section: str, known_codes: set[str]) -> list[tuple[str, float]]:
-    """숫자표 안에서 "코드(또는 전체명(코드))" 뒤에 오는 총보수·비용을 뽑는다."""
+def _raw_float_token(token: str | None) -> float | None:
+    if token in (None, "", "-", "없음", "실비"):
+        return None
+    try:
+        return float(token)
+    except ValueError:
+        return None
+
+
+def _close_enough(left: float | None, right: float | None, *, max_gap: float = 0.2) -> bool:
+    if left is None or right is None:
+        return False
+    return right + 0.0001 >= left and abs(right - left) <= max_gap
+
+
+def _pick_cost_metrics(tokens: list[str]) -> dict[str, float | None]:
+    """Return separated annual cost metrics from a fee-table numeric token row.
+
+    The common layouts observed in the prospectuses are:
+    - ... 총보수, 기타비용, 총보수·비용, 동종유형, 합성총보수·비용 ...
+    - ... 기타비용, 총보수·비용, 합성총보수·비용, 증권거래비용 ...
+
+    Without reliable table headers in extracted text, this is intentionally
+    conservative: synthetic is filled only when it appears as the same or a
+    slightly higher adjacent cost metric, never from an unrelated later value.
+    """
+    values = [_float_token(token) for token in tokens]
+    raw_values = [_raw_float_token(token) for token in tokens]
+    total: float | None = None
+    synthetic: float | None = None
+
+    # Layout where 기타비용 precedes total/synthetic directly.
+    if len(values) >= 7 and raw_values[4] is not None and raw_values[4] <= 0.05:
+        total = values[5]
+        synthetic = values[6] if _close_enough(total, values[6]) else None
+
+    # Layout where 총보수·비용 is after a small 기타비용 column.
+    if total is None and len(values) >= 8 and (
+        raw_values[6] is None or raw_values[6] <= 0.01
+    ):
+        total = values[7]
+        synthetic = values[8] if len(values) > 8 and _close_enough(total, values[8]) else None
+
+    # Layout where index 6 is total and index 8 is synthetic, with a separator
+    # or 동종유형 column between them.
+    if total is None and len(values) >= 7:
+        total = values[6]
+        if len(values) > 8 and _close_enough(total, values[8]):
+            synthetic = values[8]
+
+    # Some compact summary rows omit the small 기타비용 column and put total
+    # around index 4.  Use this only as a fallback to avoid losing rows.
+    if total is None and len(values) >= 5:
+        total = values[4]
+        if len(values) > 6 and _close_enough(total, values[6]):
+            synthetic = values[6]
+
+    return {
+        "total_expense_ratio": total,
+        "synthetic_total_expense_ratio": synthetic,
+        "cost_3y_per_10m_krw": None,
+        "total_expense_source_page": "",
+        "synthetic_expense_source_page": "",
+        "cost_3y_source_page": "",
+    }
+
+
+def extract_numeric_rows(section: str, known_codes: set[str]) -> list[tuple[str, dict[str, float | None]]]:
+    """숫자표 안에서 "코드(또는 전체명(코드))" 뒤에 오는 비용 metric을 뽑는다."""
     results = []
     for m in CLASS_DEF_RE.finditer(section):
-        code = re.sub(r"\s+", "", m.group(2))
+        code = normalize_class_code(m.group(2))
         tail = section[m.end(): m.end() + 400]
         nums = NUM_TOKEN_RE.findall(tail)
         if len(nums) < 5:
             continue
-        ter = _pick_ter(nums)
-        if ter is None:
+        metrics = _pick_cost_metrics(nums)
+        if metrics["total_expense_ratio"] is None and metrics["synthetic_total_expense_ratio"] is None:
             continue
-        results.append((code, ter))
+        results.append((code, metrics))
 
     already = {c for c, _ in results}
     for code in sorted(known_codes - already, key=len, reverse=True):
@@ -252,10 +318,10 @@ def extract_numeric_rows(section: str, known_codes: set[str]) -> list[tuple[str,
         nums = NUM_TOKEN_RE.findall(tail)
         if len(nums) < 5:
             continue
-        ter = _pick_ter(nums)
-        if ter is None:
+        metrics = _pick_cost_metrics(nums)
+        if metrics["total_expense_ratio"] is None and metrics["synthetic_total_expense_ratio"] is None:
             continue
-        results.append((code, ter))
+        results.append((code, metrics))
     return results
 
 
@@ -269,14 +335,14 @@ def extract_pension_classes(text: str) -> tuple[list[dict], list]:
     if not definitions:
         return [], conflicts
 
-    best_rows: dict[str, float] = {}
+    best_rows: dict[str, dict[str, float | None]] = {}
     for section in find_fee_rate_sections(text):
         rows = extract_numeric_rows(section, set(definitions.keys()))
         if len(rows) > len(best_rows):
             best_rows = dict(rows)
 
     results = []
-    for code, ter in best_rows.items():
+    for code, metrics in best_rows.items():
         if code not in definitions:
             continue
         d = definitions[code]
@@ -285,7 +351,12 @@ def extract_pension_classes(text: str) -> tuple[list[dict], list]:
             "label": d["label"],
             "account_type": d["account_type"],
             "channel": d["channel"],
-            "total_expense_ratio": ter,
+            "total_expense_ratio": metrics["total_expense_ratio"],
+            "synthetic_total_expense_ratio": metrics["synthetic_total_expense_ratio"],
+            "cost_3y_per_10m_krw": metrics["cost_3y_per_10m_krw"],
+            "total_expense_source_page": metrics.get("total_expense_source_page", ""),
+            "synthetic_expense_source_page": metrics.get("synthetic_expense_source_page", ""),
+            "cost_3y_source_page": metrics.get("cost_3y_source_page", ""),
         })
     return results, conflicts
 
@@ -304,30 +375,73 @@ def is_clean(classes: list[dict], conflicts: list) -> bool:
     return not any("PAGE" in c["label"] or "=====" in c["label"] for c in classes)
 
 
-def main() -> None:
-    stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
-    clean_funds, clean_rows = [], 0
-    dirty_funds = []
-
-    for path in sorted(glob.glob(os.path.join(BASE, "*.txt"))):
+def iter_text_files(base_dir: str = BASE) -> Iterable[tuple[str, str]]:
+    for path in sorted(glob.glob(os.path.join(base_dir, "*.txt"))):
         name = os.path.basename(path)
         if "_p1-12" in name or name.startswith("_") or "_narrow" in name:
             continue
-        text = open(path, encoding="utf-8", errors="ignore").read()
+        yield name, path
+
+
+def collect_clean_rows_from_text_dir(base_dir: str = BASE) -> tuple[list[dict], list[dict]]:
+    """Return clean parser rows and non-clean fund summaries from extracted text files."""
+    clean_rows: list[dict] = []
+    dirty_funds: list[dict] = []
+    for name, path in iter_text_files(base_dir):
+        with open(path, encoding="utf-8", errors="ignore") as f:
+            text = f.read()
+        classes, conflicts = extract_pension_classes(text)
+        if is_clean(classes, conflicts):
+            product_code = os.path.splitext(name)[0]
+            for c in classes:
+                clean_rows.append({
+                    "product_code": product_code,
+                    "source_file": name,
+                    "class_code": c["code"],
+                    "account_type": c["account_type"],
+                    "channel": c["channel"],
+                    "total_expense_ratio": c["total_expense_ratio"],
+                    "synthetic_total_expense_ratio": c["synthetic_total_expense_ratio"],
+                    "cost_3y_per_10m_krw": c["cost_3y_per_10m_krw"],
+                    "total_expense_source_page": c.get("total_expense_source_page", ""),
+                    "synthetic_expense_source_page": c.get("synthetic_expense_source_page", ""),
+                    "cost_3y_source_page": c.get("cost_3y_source_page", ""),
+                    "class_label": c["label"],
+                    "parse_status": "clean",
+                })
+        elif classes or conflicts:
+            dirty_funds.append({
+                "source_file": name,
+                "class_count": len(classes),
+                "conflict_count": len(conflicts),
+                "parse_status": "review_required",
+            })
+    return clean_rows, dirty_funds
+
+
+def main() -> None:
+    stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+    clean_funds, clean_rows_count = [], 0
+    dirty_funds = []
+
+    for name, path in iter_text_files(BASE):
+        with open(path, encoding="utf-8", errors="ignore") as f:
+            text = f.read()
         classes, conflicts = extract_pension_classes(text)
         if is_clean(classes, conflicts):
             clean_funds.append((name, classes))
-            clean_rows += len(classes)
+            clean_rows_count += len(classes)
         elif classes or conflicts:
             dirty_funds.append((name, classes, conflicts))
 
-    stdout.write(f"=== 신뢰 가능(충돌 0, 오염 없음): {len(clean_funds)}개 펀드, {clean_rows}건 ===\n")
+    stdout.write(f"=== 신뢰 가능(충돌 0, 오염 없음): {len(clean_funds)}개 펀드, {clean_rows_count}건 ===\n")
     for name, classes in clean_funds:
         stdout.write(f"\n{name}\n")
         for c in classes:
             stdout.write(
                 f"  {c['code']:8} {c['label']:35} {c['account_type']:10} "
-                f"{c['channel']:8} {c['total_expense_ratio']}%\n"
+                f"{c['channel']:8} total={c['total_expense_ratio']}% "
+                f"synthetic={c['synthetic_total_expense_ratio']}%\n"
             )
 
     stdout.write(f"\n=== 추가 검토 필요(충돌 있거나 오염 의심): {len(dirty_funds)}개 펀드 ===\n")

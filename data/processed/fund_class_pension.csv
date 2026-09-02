@@ -1,0 +1,211 @@
+﻿product_code,class_code,account_type,channel,total_expense_ratio,synthetic_total_expense_ratio,cost_3y_per_10m_krw,total_expense_source_page,synthetic_expense_source_page,cost_3y_source_page,class_label,source_file,parse_status,validation_status,validation_status_before_review,review_source_page,review_note
+KR510902511M,C-P,연금저축,오프라인,1.57,,,,,,오프라인-개인연금,KR510902511M.txt,clean,REVIEWED_REFERENCE_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR510902511M,C-P2,퇴직연금/IRP,오프라인,1.41,,,,,,오프라인-퇴직연금,KR510902511M.txt,clean,REVIEWED_REFERENCE_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR510902773M,C,연금저축,오프라인,0.02,,,,,,오프라인-개인연금,KR510902773M.txt,clean,EXTRA_IN_PARSER,,,
+KR510902773M,C-E,연금저축,온라인,0.02,,,,,,온라인-개인연금,KR510902773M.txt,clean,EXTRA_IN_PARSER,,,
+KR510902777M,C,연금저축,오프라인,0.02,,,,,,오프라인-개인연금,KR510902777M.txt,clean,EXTRA_IN_PARSER,,,
+KR510902777M,C-E,연금저축,온라인,0.02,,,,,,온라인-개인연금,KR510902777M.txt,clean,EXTRA_IN_PARSER,,,
+KR5110501016,C-P,연금저축,오프라인,0.34,,,,,,오프라인-개인연금,KR5110501016.txt,clean,REVIEWED_REFERENCE_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5110601022,C-P,연금저축,오프라인,0.4825,,,,,,오프라인-개인연금,KR5110601022.txt,clean,REVIEWED_REFERENCE_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5111420047,C-P,연금저축,오프라인,0.012,0.177,,,,,오프라인-개인연금,KR5111420047.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5111420047,C-P2,퇴직연금/IRP,오프라인,0.012,0.1736,,,,,오프라인-퇴직연금,KR5111420047.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5111450067,C-P,연금저축,오프라인,0.018,,,,,,오프라인-개인연금,KR5111450067.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5113420012,C,연금저축,오프라인,0.5517,,,,,,오프라인-개인연금,KR5113420012.txt,clean,EXTRA_IN_PARSER,,,
+KR5113420012,C-E,연금저축,온라인,0.3564,,,,,,온라인-개인연금,KR5113420012.txt,clean,MATCH,,,
+KR5113420013,C,연금저축,오프라인,0.5468,0.5556,,,,,오프라인-개인연금,KR5113420013.txt,clean,EXTRA_IN_PARSER,,,
+KR5113420013,C-E,연금저축,온라인,0.3517,0.3605,,,,,온라인-개인연금,KR5113420013.txt,clean,METRIC_SEMANTIC_MISMATCH,,,
+KR5113420013,C-F,연금저축,오프라인,0.184,0.184,,,,,"오프라인-개인연금,기관",KR5113420013.txt,clean,EXTRA_IN_PARSER,,,
+KR5113420013,C-R,퇴직연금/IRP,오프라인,0.539,0.539,,,,,오프라인-퇴직연금,KR5113420013.txt,clean,MATCH,,,
+KR5113420013,C-RF,퇴직연금/IRP,오프라인,0.174,0.174,,,,,"오프라인-퇴직연금,기관",KR5113420013.txt,clean,EXTRA_IN_PARSER,,,
+KR5113420013,C-RJ,퇴직연금/IRP,직판,0.154,0.154,,,,,직판-퇴직연금,KR5113420013.txt,clean,MATCH,,,
+KR5113420015,C,연금저축,오프라인,0.5468,0.5556,,,,,오프라인-개인연금,KR5113420015.txt,clean,EXTRA_IN_PARSER,,,
+KR5113420015,C-E,연금저축,온라인,0.3517,0.3605,,,,,온라인-개인연금,KR5113420015.txt,clean,METRIC_SEMANTIC_MISMATCH,,,
+KR5113420015,C-F,연금저축,오프라인,0.184,0.184,,,,,"오프라인-개인연금,기관",KR5113420015.txt,clean,EXTRA_IN_PARSER,,,
+KR5113420015,C-R,퇴직연금/IRP,오프라인,0.539,0.539,,,,,오프라인-퇴직연금,KR5113420015.txt,clean,MATCH,,,
+KR5113420015,C-RF,퇴직연금/IRP,오프라인,0.174,0.174,,,,,"오프라인-퇴직연금,기관",KR5113420015.txt,clean,EXTRA_IN_PARSER,,,
+KR5113420015,C-RJ,퇴직연금/IRP,직판,0.154,0.154,,,,,직판-퇴직연금,KR5113420015.txt,clean,MATCH,,,
+KR5113420069,C-P,연금저축,오프라인,0.4084,0.4169,,,,,오프라인-개인연금,KR5113420069.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5113420069,C-PE,연금저축,온라인,0.2964,0.3048,,,,,온라인-개인연금,KR5113420069.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5113420069,C-R,퇴직연금/IRP,오프라인,0.4034,0.4119,,,,,오프라인-퇴직연금,KR5113420069.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5113420069,C-RE,퇴직연금/IRP,온라인,0.2935,0.3018,,,,,온라인-퇴직연금,KR5113420069.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5113450111,C,연금저축,오프라인,1.1856,,,,,,오프라인-개인연금,KR5113450111.txt,clean,EXTRA_IN_PARSER,,,
+KR5113450111,C-E,연금저축,온라인,0.7104,,,,,,온라인-개인연금,KR5113450111.txt,clean,MATCH,,,
+KR5113450401,C-P,연금저축,오프라인,1.5219,1.5254,,,,,오프라인-개인연금,KR5113450401.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5113450401,C-PE,연금저축,온라인,1.047,1.0504,,,,,온라인-개인연금,KR5113450401.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5113450401,C-R,퇴직연금/IRP,오프라인,1.2019,1.2054,,,,,오프라인-퇴직연금,KR5113450401.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5113450401,C-RE,퇴직연금/IRP,온라인,0.8872,0.8906,,,,,온라인-퇴직연금,KR5113450401.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5113470030,C-P,연금저축,오프라인,0.6615,,,,,,오프라인-개인연금,KR5113470030.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5113470030,C-PE,연금저축,온라인,0.4167,,,,,,온라인-개인연금,KR5113470030.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5113470030,S-P,연금저축,온라인슈퍼,0.3169,,,,,,온라인슈퍼-개인연금,KR5113470030.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5113470031,C-P,연금저축,오프라인,0.6615,,,,,,오프라인-개인연금,KR5113470031.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5113470031,C-PE,연금저축,온라인,0.4167,,,,,,온라인-개인연금,KR5113470031.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5113470031,S-P,연금저축,온라인슈퍼,0.3169,,,,,,온라인슈퍼-개인연금,KR5113470031.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5114420022,C,연금저축,오프라인,0.9607,0.9607,,,,,오프라인-개인연금,KR5114420022.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5114420022,CE,연금저축,온라인,0.6356,0.6356,,,,,온라인-개인연금,KR5114420022.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5114420027,C-P,연금저축,오프라인,0.4444,0.4444,,,,,오프라인-개인연금,KR5114420027.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5114420027,C-PE,연금저축,온라인,0.3047,0.3047,,,,,온라인-개인연금,KR5114420027.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5114420027,CP,퇴직연금/IRP,오프라인,0.35,0.35,,,,,오프라인-퇴직연금,KR5114420027.txt,clean,EXTRA_IN_PARSER,,,
+KR5114420027,CYE,연금저축,온라인,0.2641,0.2641,,,,,"온라인-무권유저비용,개인연금",KR5114420027.txt,clean,REVIEWED_PARSER_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5114420046,C,퇴직연금/IRP,오프라인,0.4313,0.4313,,,,,오프라인-퇴직연금,KR5114420046.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5114420046,CE,퇴직연금/IRP,온라인,0.2913,0.2913,,,,,온라인-퇴직연금,KR5114420046.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5114420046,CF,퇴직연금/IRP,오프라인,0.17,0.17,,,,,"오프라인-기관,퇴직연금",KR5114420046.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5114450222,C,연금저축,오프라인,1.4742,1.4742,,,,,오프라인-개인연금,KR5114450222.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5114450222,CE,연금저축,온라인,0.999,0.999,,,,,온라인-개인연금,KR5114450222.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5114450270,C,퇴직연금/IRP,오프라인,0.6146,0.6146,,,,,오프라인-퇴직연금,KR5114450270.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5114450270,CE,퇴직연금/IRP,온라인,0.4148,0.4148,,,,,온라인-퇴직연금,KR5114450270.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5114450270,CF,퇴직연금/IRP,오프라인,0.22,0.22,,,,,"오프라인-기관,퇴직연금",KR5114450270.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5114450270,SP,퇴직연금/IRP,온라인슈퍼,0.3741,0.3741,,,,,온라인슈퍼-퇴직연금,KR5114450270.txt,clean,REVIEWED_PARSER_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5117420097,C-P,연금저축,오프라인,0.3376,0.3376,,,,,오프라인-개인연금,KR5117420097.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5117420097,C-PE,연금저축,온라인,0.2137,0.2137,,,,,온라인-개인연금,KR5117420097.txt,clean,REVIEWED_PARSER_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5117420097,C-R,퇴직연금/IRP,오프라인,0.3172,0.3172,,,,,오프라인-퇴직연금,KR5117420097.txt,clean,EXTRA_IN_PARSER,,,
+KR5117420097,C-RE,퇴직연금/IRP,온라인,0.2037,0.2037,,,,,온라인-퇴직연금,KR5117420097.txt,clean,EXTRA_IN_PARSER,,,
+KR5119450058,C-P,연금저축,오프라인,1.53,1.5928,,,,,오프라인-개인연금,KR5119450058.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5119450058,C-PE,연금저축,온라인,1.1117,1.1745,,,,,온라인-개인연금,KR5119450058.txt,clean,REVIEWED_PARSER_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5119450058,C-R,퇴직연금/IRP,오프라인,1.4716,1.5344,,,,,오프라인-퇴직연금,KR5119450058.txt,clean,EXTRA_IN_PARSER,,,
+KR5119450058,C-RE,퇴직연금/IRP,온라인,1.0821,1.1449,,,,,온라인-퇴직연금,KR5119450058.txt,clean,EXTRA_IN_PARSER,,,
+KR5119450058,S-P,연금저축,온라인슈퍼,0.94,1.0028,,,,,온라인슈퍼-개인연금,KR5119450058.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5119501001,C-E,퇴직연금/IRP,온라인,0.316,0.3222,,,,,온라인-퇴직연금,KR5119501001.txt,clean,EXTRA_IN_PARSER,,,
+KR5119501001,C1,퇴직연금/IRP,오프라인,0.4523,0.4586,,,,,오프라인-퇴직연금,KR5119501001.txt,clean,EXTRA_IN_PARSER,,,
+KR5119520012,C-I2,퇴직연금/IRP,오프라인,0.26,0.2623,,,,,"오프라인-퇴직연금,고액",KR5119520012.txt,clean,EXTRA_IN_PARSER,,,
+KR5119520012,C-P,연금저축,오프라인,0.55,0.5523,,,,,오프라인-개인연금,KR5119520012.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5119520012,C-PE,연금저축,온라인,0.4,0.4023,,,,,온라인-개인연금,KR5119520012.txt,clean,REVIEWED_PARSER_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5119520012,C-R,퇴직연금/IRP,오프라인,0.4535,0.463,,,,,오프라인-퇴직연금,KR5119520012.txt,clean,EXTRA_IN_PARSER,,,
+KR5119520012,C-RE,퇴직연금/IRP,온라인,0.3536,0.3631,,,,,온라인-퇴직연금,KR5119520012.txt,clean,EXTRA_IN_PARSER,,,
+KR5119520012,S-P,연금저축,온라인슈퍼,0.334,0.3431,,,,,온라인슈퍼-개인연금,KR5119520012.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5119520012,S-R,퇴직연금/IRP,온라인슈퍼,0.324,0.3331,,,,,온라인슈퍼-퇴직연금,KR5119520012.txt,clean,EXTRA_IN_PARSER,,,
+KR5120420091,C-P,연금저축,오프라인,0.29,,,,,,오프라인-개인연금,KR5120420091.txt,clean,EXTRA_IN_PARSER,,,
+KR5120420091,C-PE,연금저축,온라인,0.2101,,,,,,온라인-개인연금,KR5120420091.txt,clean,EXTRA_IN_PARSER,,,
+KR5120420091,S-P,연금저축,온라인슈퍼,0.2073,,,,,,온라인슈퍼-개인연금,KR5120420091.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5120450015,C-P2,연금저축,오프라인,0.7869,,,,,,오프라인-개인연금,KR5120450015.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5120450015,C-P2E,연금저축,온라인,0.4771,,,,,,온라인-개인연금,KR5120450015.txt,clean,EXTRA_IN_PARSER,,,
+KR5120450015,C-PE,퇴직연금/IRP,온라인,0.467,,,,,,온라인-퇴직연금,KR5120450015.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5120450015,CP,퇴직연금/IRP,오프라인,0.7667,,,,,,오프라인-퇴직연금,KR5120450015.txt,clean,MATCH,,,
+KR5120450015,S-P,퇴직연금/IRP,온라인슈퍼,0.2966,,,,,,온라인슈퍼-퇴직연금,KR5120450015.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5120450018,C-P2,연금저축,오프라인,0.7869,,,,,,오프라인-개인연금,KR5120450018.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5120450018,C-P2E,연금저축,온라인,0.4771,,,,,,온라인-개인연금,KR5120450018.txt,clean,EXTRA_IN_PARSER,,,
+KR5120450018,C-PE,퇴직연금/IRP,온라인,0.467,,,,,,온라인-퇴직연금,KR5120450018.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5120450018,CP,퇴직연금/IRP,오프라인,0.7667,,,,,,오프라인-퇴직연금,KR5120450018.txt,clean,MATCH,,,
+KR5120450018,S-P,퇴직연금/IRP,온라인슈퍼,0.2966,,,,,,온라인슈퍼-퇴직연금,KR5120450018.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5120451001,C-R,퇴직연금/IRP,오프라인,0.8671,,,,,,오프라인-퇴직연금,KR5120451001.txt,clean,MATCH,,,
+KR5120451001,C-RE,퇴직연금/IRP,온라인,0.5171,,,,,,온라인-퇴직연금,KR5120451001.txt,clean,MATCH,,,
+KR5122420005,C-P1,연금저축,오프라인,0.3324,0.339,,,,,오프라인-개인연금형,KR5122420005.txt,clean,METRIC_SEMANTIC_MISMATCH,,,
+KR5122420005,C-P2,퇴직연금/IRP,오프라인,0.3224,0.329,,,,,오프라인-퇴직연금형,KR5122420005.txt,clean,METRIC_SEMANTIC_MISMATCH,,,
+KR5122420005,C-PE,연금저축,온라인,0.2124,0.2189,,,,,온라인-개인연금형,KR5122420005.txt,clean,METRIC_SEMANTIC_MISMATCH,,,
+KR5122420005,C-PE2,퇴직연금/IRP,오프라인,0.2074,0.2139,,,,,온라인-퇴직연금형,KR5122420005.txt,clean,REVIEWED_REFERENCE_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5122420005,S-P,연금저축,온라인슈퍼,0.1622,0.1688,,,,,온라인슈퍼-개인연금형,KR5122420005.txt,clean,METRIC_SEMANTIC_MISMATCH,,,
+KR5122420005,S-R,퇴직연금/IRP,온라인슈퍼,0.1423,0.1489,,,,,온라인슈퍼-퇴직연금형,KR5122420005.txt,clean,METRIC_SEMANTIC_MISMATCH,,,
+KR5129420025,C-P,연금저축,오프라인,0.2093,0.2165,,,,,오프라인-개인연금,KR5129420025.txt,clean,EXTRA_IN_PARSER,,,
+KR5129420025,C-PE,연금저축,온라인,0.1544,0.1616,,,,,온라인-개인연금,KR5129420025.txt,clean,EXTRA_IN_PARSER,,,
+KR5129420025,C-RP,퇴직연금/IRP,오프라인,0.1993,0.2065,,,,,오프라인-퇴직연금,KR5129420025.txt,clean,EXTRA_IN_PARSER,,,
+KR5129420025,C-RPE,퇴직연금/IRP,온라인,0.1494,0.1566,,,,,온라인-퇴직연금,KR5129420025.txt,clean,EXTRA_IN_PARSER,,,
+KR5129420031,C-P,연금저축,오프라인,0.3544,,,,,,오프라인-개인연금,KR5129420031.txt,clean,EXTRA_IN_PARSER,,,
+KR5129420031,C-PE,연금저축,온라인,0.2693,,,,,,온라인-개인연금,KR5129420031.txt,clean,EXTRA_IN_PARSER,,,
+KR5129420031,C-RP,퇴직연금/IRP,오프라인,0.3444,,,,,,오프라인-퇴직연금,KR5129420031.txt,clean,EXTRA_IN_PARSER,,,
+KR5129420031,C-RPE,퇴직연금/IRP,온라인,0.2645,,,,,,온라인-퇴직연금,KR5129420031.txt,clean,EXTRA_IN_PARSER,,,
+KR5129420031,CF-RP,퇴직연금/IRP,오프라인,0.202,,,,,,"오프라인-퇴직연금,펀드등",KR5129420031.txt,clean,EXTRA_IN_PARSER,,,
+KR5129420031,CI-RP,퇴직연금/IRP,오프라인,0.2595,,,,,,"오프라인-퇴직연금,고액",KR5129420031.txt,clean,EXTRA_IN_PARSER,,,
+KR5129420031,J-PE,연금저축,온라인,0.227,,,,,,온라인직접판매-개인연금,KR5129420031.txt,clean,EXTRA_IN_PARSER,,,
+KR5129420031,J-RPE,퇴직연금/IRP,온라인,0.2195,,,,,,온라인직접판매-퇴직연금,KR5129420031.txt,clean,EXTRA_IN_PARSER,,,
+KR5129420031,S-P,연금저축,온라인슈퍼,0.302,,,,,,온라인슈퍼-개인연금,KR5129420031.txt,clean,EXTRA_IN_PARSER,,,
+KR5129420031,S-RP,퇴직연금/IRP,온라인슈퍼,0.292,,,,,,온라인슈퍼-퇴직연금,KR5129420031.txt,clean,EXTRA_IN_PARSER,,,
+KR5131420007,C-P,연금저축,오프라인,0.34,,,,,,오프라인-개인연금,KR5131420007.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5131420007,C-P2,퇴직연금/IRP,오프라인,0.37,,,,,,오프라인-퇴직연금,KR5131420007.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5131420007,C-P2E,퇴직연금/IRP,온라인,0.2474,,,,,,온라인-퇴직연금,KR5131420007.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5131420007,C-PE,연금저축,온라인,0.2319,,,,,,온라인-개인연금,KR5131420007.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5131420025,C-P2,퇴직연금/IRP,오프라인,0.34,,,,,,오프라인-퇴직연금,KR5131420025.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5131420025,C-P2E,퇴직연금/IRP,온라인,0.2223,,,,,,온라인-퇴직연금,KR5131420025.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5131420025,C-PE,연금저축,온라인,0.2066,,,,,,온라인-개인연금,KR5131420025.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5139420015,C-P,연금저축,오프라인,0.3249,0.3342,,,,,오프라인-개인연금,KR5139420015.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5139420015,C-P2,퇴직연금/IRP,오프라인,0.3125,0.3125,,,,,오프라인-퇴직연금,KR5139420015.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5139420015,C-P2E,퇴직연금/IRP,온라인,0.2175,0.2277,,,,,온라인-퇴직연금,KR5139420015.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5139420015,C-PE,연금저축,온라인,0.2248,0.2343,,,,,온라인-개인연금,KR5139420015.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5139420015,S-P,연금저축,온라인슈퍼,0.1748,0.1842,,,,,온라인슈퍼-개인연금,KR5139420015.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5139420020,C,퇴직연금/IRP,오프라인,0.3148,0.3248,,,,,오프라인-퇴직연금,KR5139420020.txt,clean,REVIEWED_PARSER_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5139420020,C-E,퇴직연금/IRP,온라인,0.2198,0.2298,,,,,온라인-퇴직연금,KR5139420020.txt,clean,REVIEWED_PARSER_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5139420020,C-I,퇴직연금/IRP,오프라인,0.2025,0.2025,,,,,"오프라인-퇴직연금,고액",KR5139420020.txt,clean,MATCH,,,
+KR5139420020,S-PR,퇴직연금/IRP,온라인슈퍼,0.2128,0.2227,,,,,온라인슈퍼-퇴직연금,KR5139420020.txt,clean,METRIC_SEMANTIC_MISMATCH,,,
+KR5144420020,C-P1,연금저축,오프라인,0.3725,,,,,,오프라인-개인연금,KR5144420020.txt,clean,EXTRA_IN_PARSER,,,
+KR5144420020,C-P1E,연금저축,온라인,0.2474,,,,,,온라인-개인연금,KR5144420020.txt,clean,EXTRA_IN_PARSER,,,
+KR5144420020,C-P2E,퇴직연금/IRP,온라인,0.2374,,,,,,온라인-퇴직연금,KR5144420020.txt,clean,EXTRA_IN_PARSER,,,
+KR5144420020,S-P2,퇴직연금/IRP,온라인슈퍼,0.1574,,,,,,온라인슈퍼-퇴직연금,KR5144420020.txt,clean,EXTRA_IN_PARSER,,,
+KR514X450008,C-P,연금저축,오프라인,1.66,1.66,,,,,오프라인-개인연금형,KR514X450008.txt,clean,REFERENCE_INCOMPLETE,,,
+KR514X450008,C-P2,퇴직연금/IRP,오프라인,1.56,1.56,,,,,오프라인-퇴직연금형,KR514X450008.txt,clean,REFERENCE_INCOMPLETE,,,
+KR514X450008,C-P2E,퇴직연금/IRP,온라인,1.21,1.21,,,,,온라인-퇴직연금형,KR514X450008.txt,clean,EXTRA_IN_PARSER,,,
+KR514X450008,C-PE,연금저축,온라인,1.26,1.26,,,,,온라인-개인연금형,KR514X450008.txt,clean,REFERENCE_INCOMPLETE,,,
+KR514X450008,S-P,연금저축,온라인슈퍼,1.13,1.13,,,,,온라인슈퍼-개인연금형,KR514X450008.txt,clean,REFERENCE_INCOMPLETE,,,
+KR514X450008,S-P2,퇴직연금/IRP,온라인슈퍼,1.12,1.12,,,,,온라인슈퍼-퇴직연금형,KR514X450008.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5153420022,C,연금저축,오프라인,0.02,,,,,,오프라인-개인연금,KR5153420022.txt,clean,EXTRA_IN_PARSER,,,
+KR5153420022,C-E,연금저축,온라인,0.02,,,,,,온라인-개인연금,KR5153420022.txt,clean,EXTRA_IN_PARSER,,,
+KR5153420063,C-P,연금저축,오프라인,0.48,,,,,,오프라인-개인연금,KR5153420063.txt,clean,REVIEWED_REFERENCE_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5153420063,C-P2,퇴직연금/IRP,오프라인,0.47,,,,,,오프라인-퇴직연금,KR5153420063.txt,clean,REVIEWED_REFERENCE_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5153420079,C-P,연금저축,오프라인,0.49,,,,,,오프라인-개인연금,KR5153420079.txt,clean,REVIEWED_BOTH_WRONG,FIELD_MISMATCH,3,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인 / source_page auto-filled from pdf_review_pack
+KR5153420079,C-P2,퇴직연금/IRP,오프라인,0.42,,,,,,오프라인-퇴직연금,KR5153420079.txt,clean,REVIEWED_BOTH_WRONG,FIELD_MISMATCH,3,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인 / source_page auto-filled from pdf_review_pack
+KR5153420105,C-P,연금저축,오프라인,0.44,,,,,,오프라인-개인연금,KR5153420105.txt,clean,REVIEWED_BOTH_WRONG,FIELD_MISMATCH,3,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인 / source_page auto-filled from pdf_review_pack
+KR5153420105,C-P2,퇴직연금/IRP,오프라인,0.43,,,,,,오프라인-퇴직연금,KR5153420105.txt,clean,REVIEWED_BOTH_WRONG,FIELD_MISMATCH,3,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인 / source_page auto-filled from pdf_review_pack
+KR5153420318,C-P,연금저축,오프라인,0.76,,,,,,오프라인-개인연금,KR5153420318.txt,clean,REVIEWED_REFERENCE_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5153420318,C-P2,퇴직연금/IRP,오프라인,0.71,,,,,,오프라인-퇴직연금,KR5153420318.txt,clean,REVIEWED_REFERENCE_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5153420339,C-P,연금저축,오프라인,0.32,,,,,,오프라인-개인연금,KR5153420339.txt,clean,REVIEWED_PARSER_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5153420339,C-P2,퇴직연금/IRP,오프라인,0.26,,,,,,오프라인-퇴직연금,KR5153420339.txt,clean,REVIEWED_PARSER_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5153450009,C,퇴직연금/IRP,오프라인,0.02,,,,,,오프라인-퇴직연금,KR5153450009.txt,clean,EXTRA_IN_PARSER,,,
+KR5153450009,C-P2E,퇴직연금/IRP,온라인,0.7,,,,,,온라인-퇴직연금,KR5153450009.txt,clean,REVIEWED_BOTH_WRONG,FIELD_MISMATCH,3,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인 / source_page auto-filled from pdf_review_pack
+KR5153450112,C,연금저축,오프라인,0.02,,,,,,오프라인-개인연금,KR5153450112.txt,clean,EXTRA_IN_PARSER,,,
+KR5153450112,C-E,연금저축,온라인,0.02,,,,,,온라인-개인연금,KR5153450112.txt,clean,EXTRA_IN_PARSER,,,
+KR5153450209,C,퇴직연금/IRP,오프라인,0.02,,,,,,오프라인-퇴직연금,KR5153450209.txt,clean,EXTRA_IN_PARSER,,,
+KR5153450209,C-P2E,퇴직연금/IRP,온라인,0.795,,,,,,온라인-퇴직연금,KR5153450209.txt,clean,REVIEWED_REFERENCE_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5153450250,C,퇴직연금/IRP,오프라인,0.02,,,,,,오프라인-퇴직연금,KR5153450250.txt,clean,EXTRA_IN_PARSER,,,
+KR5153450250,C-P2E,퇴직연금/IRP,온라인,0.805,,,,,,온라인-퇴직연금,KR5153450250.txt,clean,REVIEWED_REFERENCE_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5153450268,C-P,연금저축,오프라인,1.54,,,,,,오프라인-개인연금,KR5153450268.txt,clean,REVIEWED_PARSER_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5153450268,C-P2,퇴직연금/IRP,오프라인,1.35,,,,,,오프라인-퇴직연금,KR5153450268.txt,clean,REVIEWED_PARSER_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5153450431,C,연금저축,오프라인,0.01,,,,,,오프라인-개인연금,KR5153450431.txt,clean,EXTRA_IN_PARSER,,,
+KR5153450431,C-E,연금저축,온라인,0.01,,,,,,온라인-개인연금,KR5153450431.txt,clean,EXTRA_IN_PARSER,,,
+KR5153450658,C-P,연금저축,오프라인,0.4,,,,,,오프라인-개인연금,KR5153450658.txt,clean,REVIEWED_BOTH_WRONG,FIELD_MISMATCH,4,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인 / source_page auto-filled from pdf_review_pack
+KR5153450658,C-P2,퇴직연금/IRP,오프라인,0.39,,,,,,오프라인-퇴직연금,KR5153450658.txt,clean,REVIEWED_BOTH_WRONG,FIELD_MISMATCH,4,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인 / source_page auto-filled from pdf_review_pack
+KR5153450772,C-P,연금저축,오프라인,1.08,,,,,,오프라인-개인연금,KR5153450772.txt,clean,REVIEWED_BOTH_WRONG,FIELD_MISMATCH,3,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인 / source_page auto-filled from pdf_review_pack
+KR5153450772,C-P2,퇴직연금/IRP,오프라인,0.94,,,,,,오프라인-퇴직연금,KR5153450772.txt,clean,REVIEWED_BOTH_WRONG,FIELD_MISMATCH,3,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인 / source_page auto-filled from pdf_review_pack
+KR5153450785,C-P,연금저축,오프라인,1.555,,,,,,오프라인-개인연금,KR5153450785.txt,clean,REVIEWED_REFERENCE_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5153450785,C-P2,퇴직연금/IRP,오프라인,1.395,,,,,,오프라인-퇴직연금,KR5153450785.txt,clean,REVIEWED_REFERENCE_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5153450791,C,퇴직연금/IRP,오프라인,0.02,,,,,,오프라인-퇴직연금,KR5153450791.txt,clean,EXTRA_IN_PARSER,,,
+KR5153450791,C-P2E,퇴직연금/IRP,온라인,0.02,,,,,,온라인-퇴직연금,KR5153450791.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5153451009,C-P,연금저축,오프라인,1.75,,,,,,오프라인-개인연금,KR5153451009.txt,clean,REVIEWED_REFERENCE_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5153451009,C-P2,퇴직연금/IRP,오프라인,0.02,,,,,,오프라인-퇴직연금,KR5153451009.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5153451009,C-P2E,퇴직연금/IRP,온라인,0.02,,,,,,온라인-퇴직연금,KR5153451009.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5153451009,C-PE,연금저축,온라인,1.27,,,,,,온라인-개인연금,KR5153451009.txt,clean,REVIEWED_REFERENCE_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5153520012,C,퇴직연금/IRP,오프라인,0.01,,,,,,오프라인-퇴직연금,KR5153520012.txt,clean,EXTRA_IN_PARSER,,,
+KR5153520012,C-P2E,퇴직연금/IRP,온라인,0.29,,,,,,온라인-퇴직연금,KR5153520012.txt,clean,REVIEWED_REFERENCE_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5157420003,C-P1,연금저축,오프라인,0.235,,,,,,오프라인-개인연금,KR5157420003.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5157420003,C-P2,퇴직연금/IRP,오프라인,0.3524,0.3621,,,,,오프라인-퇴직연금,KR5157420003.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5157420003,C-PE1,연금저축,온라인,0.2373,0.247,,,,,온라인-개인연금,KR5157420003.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5157420003,C-PE2,퇴직연금/IRP,온라인,0.2324,0.2421,,,,,온라인-퇴직연금,KR5157420003.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5157420003,S-P,연금저축,온라인슈퍼,0.185,0.1947,,,,,온라인슈퍼-개인연금,KR5157420003.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5157450017,C-P1,연금저축,오프라인,1.542,,,,,,오프라인-개인연금,KR5157450017.txt,clean,EXTRA_IN_PARSER,,,
+KR5157450017,C-P2,퇴직연금/IRP,오프라인,1.302,,,,,,오프라인-퇴직연금,KR5157450017.txt,clean,REVIEWED_PARSER_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5157450017,C-P2I,퇴직연금/IRP,오프라인,0.7,,,,,,"오프라인-퇴직연금,고액",KR5157450017.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5157450017,C-PE1,연금저축,온라인,1.122,,,,,,온라인-개인연금,KR5157450017.txt,clean,REVIEWED_PARSER_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5157450017,C-PE2,퇴직연금/IRP,온라인,1.002,,,,,,온라인-퇴직연금,KR5157450017.txt,clean,REVIEWED_PARSER_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5157450017,S-P,연금저축,온라인슈퍼,0.952,,,,,,온라인슈퍼-개인연금,KR5157450017.txt,clean,EXTRA_IN_PARSER,,,
+KR5157450090,C-P1,연금저축,오프라인,1.43,1.458,,,,,오프라인-개인연금,KR5157450090.txt,clean,METRIC_SEMANTIC_MISMATCH,,,
+KR5157450090,C-P2,퇴직연금/IRP,오프라인,1.19,1.217,,,,,오프라인-퇴직연금,KR5157450090.txt,clean,METRIC_SEMANTIC_MISMATCH,,,
+KR5157450090,C-PE1,연금저축,온라인,1.012,1.04,,,,,온라인-개인연금,KR5157450090.txt,clean,REVIEWED_PARSER_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5157450090,C-PE2,퇴직연금/IRP,온라인,0.842,0.872,,,,,온라인-퇴직연금,KR5157450090.txt,clean,REVIEWED_PARSER_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5157450090,S-P,연금저축,온라인슈퍼,0.87,0.897,,,,,온라인슈퍼-개인연금,KR5157450090.txt,clean,METRIC_SEMANTIC_MISMATCH,,,
+KR5157450090,S-R,퇴직연금/IRP,온라인슈퍼,0.83,0.861,,,,,온라인슈퍼-퇴직연금,KR5157450090.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5160420009,C-P,연금저축,오프라인,0.3323,,,,,,오프라인-개인연금,KR5160420009.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5160420009,C-P2,퇴직연금/IRP,오프라인,0.3224,,,,,,오프라인-퇴직연금,KR5160420009.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5160420009,C-P2E,퇴직연금/IRP,온라인,0.2224,,,,,,온라인-퇴직연금,KR5160420009.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5160420009,C-PE,연금저축,온라인,0.2274,,,,,,온라인-개인연금,KR5160420009.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5160420009,S-P,연금저축,온라인슈퍼,0.1823,,,,,,온라인슈퍼-개인연금,KR5160420009.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5172450019,CP,연금저축,오프라인,1.518,,,,,,오프라인-개인연금,KR5172450019.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5172450019,CP-E,연금저축,온라인,1.158,,,,,,온라인-개인연금,KR5172450019.txt,clean,REFERENCE_INCOMPLETE,,,
+KR5172450019,CP2,퇴직연금/IRP,오프라인,1.648,,,,,,오프라인-퇴직연금,KR5172450019.txt,clean,EXTRA_IN_PARSER,,,
+KR5172450019,CP2-E,퇴직연금/IRP,온라인,1.223,,,,,,온라인-퇴직연금,KR5172450019.txt,clean,EXTRA_IN_PARSER,,,
+KR5172450019,CP2-F,퇴직연금/IRP,오프라인,0.823,,,,,,"오프라인-퇴직연금,기관",KR5172450019.txt,clean,EXTRA_IN_PARSER,,,
+KR5172450019,S-P,연금저축,온라인슈퍼,1.078,,,,,,온라인슈퍼-개인연금,KR5172450019.txt,clean,REFERENCE_INCOMPLETE,,,
+KR518101002M,C,퇴직연금/IRP,오프라인,0.01,,,,,,오프라인-퇴직연금,KR518101002M.txt,clean,EXTRA_IN_PARSER,,,
+KR518101002M,C-P2E,퇴직연금/IRP,온라인,0.28,,,,,,온라인-퇴직연금,KR518101002M.txt,clean,REVIEWED_REFERENCE_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR518101012M,C,퇴직연금/IRP,오프라인,0.5427,0.5517,,,,,오프라인-퇴직연금,KR518101012M.txt,clean,METRIC_SEMANTIC_MISMATCH,,,
+KR518101012M,C-E,퇴직연금/IRP,온라인,0.3457,0.3546,,,,,온라인-퇴직연금,KR518101012M.txt,clean,METRIC_SEMANTIC_MISMATCH,,,
+KR518102001M,C,퇴직연금/IRP,오프라인,0.02,,,,,,오프라인-퇴직연금,KR518102001M.txt,clean,EXTRA_IN_PARSER,,,
+KR518102001M,C-P2E,퇴직연금/IRP,온라인,0.7,,,,,,온라인-퇴직연금,KR518102001M.txt,clean,REVIEWED_BOTH_WRONG,FIELD_MISMATCH,3,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인 / source_page auto-filled from pdf_review_pack
+KR555202013M,C-P,연금저축,오프라인,1.516,1.516,,,,,오프라인-개인연금형,KR555202013M.txt,clean,REFERENCE_INCOMPLETE,,,
+KR555202013M,P-F,연금저축,오프라인,0.794,0.794,,,,,"오프라인-개인연금,기관형",KR555202013M.txt,clean,REFERENCE_INCOMPLETE,,,
+KR555202013M,S-P,연금저축,온라인슈퍼,0.966,0.966,,,,,온라인슈퍼-개인연금형,KR555202013M.txt,clean,REFERENCE_INCOMPLETE,,,

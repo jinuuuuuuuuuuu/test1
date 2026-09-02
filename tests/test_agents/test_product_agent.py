@@ -309,6 +309,119 @@ def test_recommendation_flow_does_not_capture_specific_product_question():
     assert _recommendation_flow_response({"question": "미래에셋솔로몬단기국공채 펀드는 어때?"}) is None
 
 
+def test_explicit_product_class_context_locks_core_to_current_holding(monkeypatch):
+    """상품코드/클래스/계좌가 명시되면 다른 추천 후보로 새지 않고 해당 상품만 답한다."""
+    import src.agents.product_agent as product_agent_module
+
+    monkeypatch.setattr(
+        product_agent_module,
+        "get_pension_class_detail",
+        lambda product_code, class_code, account_type: {
+            "product_code": product_code,
+            "class_code": "C-P2",
+            "account_type": "퇴직연금/IRP",
+            "channel": "오프라인",
+            "fund_name": "VIP한국형가치투자증권자투자신탁[주식]",
+            "risk_grade": "2등급[높은 위험]",
+            "fund_category": "투자신탁, 증권(주식형)",
+            "total_expense_ratio": 1.56,
+            "synthetic_total_expense_ratio": 1.56,
+            "cost_3y_per_10m_krw": "",
+            "investment_objective": "국내 주식에 주로 투자합니다.",
+            "investment_strategy": "",
+            "dataset_version": "cost_guard_v1",
+            "dataset_status": "FROZEN_V1",
+        },
+    )
+
+    draft, context, profile, needs_clarification = _recommendation_flow_response({
+        "question": "월 30만원, IRP, 20년 이상, 중립형이고 KR514X450008 C-P2 상품 추천해줘"
+    })
+
+    assert "VIP한국형가치투자증권자투자신탁[주식] (C-P2)" in draft
+    assert "아래는 투자설명서 DB의 구조화 수치로 비교한 후보입니다" not in draft
+    assert "미래에셋스마트롱숏70" not in draft
+    assert context[0]["node"] == "product_agent"
+    assert "상품코드=KR514X450008" in context[0]["content"]
+    assert "클래스=C-P2" in context[0]["content"]
+    assert profile["account_type"] == "IRP"
+    assert needs_clarification is False
+
+
+def test_explicit_product_direct_cost_query_is_core_not_guardian_work(monkeypatch):
+    """직접 비용 질문은 Core에서 canonical 비용 비교를 답할 수 있어야 한다."""
+    import src.agents.product_agent as product_agent_module
+    from src.storage.queries import LowerCostPensionClass
+
+    monkeypatch.setattr(
+        product_agent_module,
+        "get_pension_class_detail",
+        lambda product_code, class_code, account_type: {
+            "product_code": product_code,
+            "class_code": "C-P2",
+            "account_type": "퇴직연금/IRP",
+            "channel": "오프라인",
+            "fund_name": "VIP한국형가치투자증권자투자신탁[주식]",
+            "risk_grade": "2등급[높은 위험]",
+            "fund_category": "투자신탁, 증권(주식형)",
+            "total_expense_ratio": 1.56,
+            "synthetic_total_expense_ratio": 1.56,
+            "dataset_version": "cost_guard_v1",
+            "dataset_status": "FROZEN_V1",
+        },
+    )
+    monkeypatch.setattr(
+        product_agent_module,
+        "find_lower_cost_pension_class",
+        lambda product_code, class_code, account_type: LowerCostPensionClass(
+            found=True,
+            product_code=product_code,
+            account_type="퇴직연금/IRP",
+            current_class_code="C-P2",
+            target_class_code="C-P2E",
+            comparison_metric="synthetic_total_expense_ratio",
+            current_value=1.56,
+            target_value=1.21,
+            eligibility="STANDARD",
+            eligibility_type="STANDARD",
+            dataset_version="cost_guard_v1",
+            dataset_status="FROZEN_V1",
+        ),
+    )
+
+    draft, _, _, needs_clarification = _recommendation_flow_response({
+        "question": "IRP KR514X450008 C-P2 보수 더 낮은 클래스 있어?"
+    })
+
+    assert "동일 펀드 클래스 비용 확인" in draft
+    assert "C-P2 클래스는 1.56%" in draft
+    assert "C-P2E 클래스는 1.21%" in draft
+    assert "선택하시는 것이 유리" not in draft
+    assert needs_clarification is False
+
+
+def test_explicit_product_allows_alternative_recommendation(monkeypatch):
+    """비슷한 다른 상품 추천은 현재 상품 lock이 아니라 recommender 영역이다."""
+    import src.agents.product_agent as product_agent_module
+
+    called = {"value": False}
+
+    def fake_detail(*_args, **_kwargs):
+        called["value"] = True
+        return {}
+
+    monkeypatch.setattr(product_agent_module, "get_pension_class_detail", fake_detail)
+
+    draft, context, profile, needs_clarification = _recommendation_flow_response({
+        "question": "IRP KR514X450008 C-P2와 비슷한 다른 상품 추천해줘"
+    })
+
+    assert called["value"] is False
+    assert "투자성향" in draft
+    assert context == []
+    assert needs_clarification is True
+
+
 def test_specific_recommendation_with_missing_info_asks_only_needed_question():
     draft, context, profile, needs_clarification = _recommendation_flow_response({
         "question": "위험등급 낮고 수수료 적은 상품을 구체적으로 추천해줘"

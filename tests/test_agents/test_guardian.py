@@ -1,4 +1,5 @@
 from src.agents.guardian import GUARD_HEADING, evaluate_guardian
+from src.storage.queries import LowerCostPensionClass
 
 
 def _verified_state(question: str, *, draft: str = "필요서류는 다음과 같습니다.") -> dict:
@@ -372,3 +373,137 @@ def test_guardian_stays_off_without_contribution_amount():
 
         assert result["enabled"] is False, question
         assert evidence == [], question
+
+
+# ── C1: 동일 펀드 lower-cost class Cost Guard ───────────────────────────
+
+
+def _lower_cost_result(*, found=True, eligibility="STANDARD"):
+    return LowerCostPensionClass(
+        found=found,
+        product_code="KR000",
+        account_type="퇴직연금/IRP",
+        current_class_code="C-P2",
+        target_class_code="C-P2E" if found else "",
+        comparison_metric="synthetic_total_expense_ratio" if found else "",
+        current_value=1.56 if found else None,
+        target_value=1.21 if found else None,
+        difference_pct_point=0.35 if found else None,
+        eligibility=eligibility if found else "",
+        eligibility_type=eligibility if found else "",
+        current_channel="오프라인" if found else "",
+        target_channel="온라인" if found else "",
+        current_source_page="42" if found else "",
+        target_source_page="42" if found else "",
+        current_validation_status="MATCH" if found else "",
+        target_validation_status="MATCH" if found else "",
+        fund_name="테스트펀드" if found else "",
+    )
+
+
+def test_cost_guard_turns_on_for_identified_product_class(monkeypatch):
+    monkeypatch.setattr(
+        "src.agents.guardian.find_lower_cost_pension_class",
+        lambda product_code, class_code, account_type: _lower_cost_result(),
+    )
+
+    result, evidence = evaluate_guardian(_verified_state("IRP KR000 C-P2 상품 추천해줘"))
+
+    assert result["enabled"] is True
+    assert result["candidate_id"] == "lower_cost_pension_class"
+    assert result["guard_type"] == "COST"
+    assert "합성총보수·비용 기준" in result["message"]
+    assert "C-P2 클래스는 1.56%" in result["message"]
+    assert "C-P2E 클래스는 1.21%" in result["message"]
+    assert evidence
+    assert evidence[0]["node"] == "guardian"
+    assert "Cost Guard canonical" in evidence[0]["source"]
+
+
+def test_cost_guard_stays_off_when_user_asks_cost_directly(monkeypatch):
+    called = {"value": False}
+
+    def fake_find(product_code, class_code, account_type):
+        called["value"] = True
+        return _lower_cost_result()
+
+    monkeypatch.setattr("src.agents.guardian.find_lower_cost_pension_class", fake_find)
+
+    result, evidence = evaluate_guardian(_verified_state("IRP KR000 C-P2 보수 더 낮은 클래스 있어?"))
+
+    assert result["enabled"] is False
+    assert result["disabled_reason"] == "EXPLICIT_USER_TOPIC"
+    assert evidence == []
+    assert called["value"] is False
+
+
+def test_cost_guard_uses_first_product_context_candidate(monkeypatch):
+    seen = {}
+
+    def fake_find(product_code, class_code, account_type):
+        seen.update({
+            "product_code": product_code,
+            "class_code": class_code,
+            "account_type": account_type,
+        })
+        return _lower_cost_result()
+
+    monkeypatch.setattr("src.agents.guardian.find_lower_cost_pension_class", fake_find)
+    state = _verified_state("IRP 중립형 20년 상품 추천해줘")
+    state["recommendation_profile"] = {"account_type": "IRP"}
+    state["retrieved_context"] = [
+        {
+            "source": "테스트펀드 (C-P2)",
+            "content": "상품코드=KR000, 위험등급=4등급, 총보수=1.56%",
+            "node": "product_agent",
+        }
+    ]
+
+    result, _ = evaluate_guardian(state)
+
+    assert result["enabled"] is True
+    assert seen == {
+        "product_code": "KR000",
+        "class_code": "C-P2",
+        "account_type": "퇴직연금/IRP",
+    }
+
+
+def test_cost_guard_stays_off_without_identified_product_or_class(monkeypatch):
+    called = {"value": False}
+
+    def fake_find(product_code, class_code, account_type):
+        called["value"] = True
+        return _lower_cost_result()
+
+    monkeypatch.setattr("src.agents.guardian.find_lower_cost_pension_class", fake_find)
+
+    result, evidence = evaluate_guardian(_verified_state("IRP 상품 추천해줘"))
+
+    assert result["enabled"] is False
+    assert result["disabled_reason"] == "NO_CANDIDATE"
+    assert evidence == []
+    assert called["value"] is False
+
+
+def test_cost_guard_stays_off_when_dataset_is_not_frozen(monkeypatch):
+    """C1은 provisional canonical dataset에서는 제출용으로 켜지면 안 된다."""
+
+    def fake_find(product_code, class_code, account_type):
+        return LowerCostPensionClass(
+            found=False,
+            product_code=product_code,
+            account_type=account_type,
+            current_class_code=class_code,
+            dataset_version="cost_guard_provisional",
+            dataset_status="PROVISIONAL",
+            reason="DATASET_NOT_FROZEN",
+        )
+
+    monkeypatch.setattr("src.agents.guardian.find_lower_cost_pension_class", fake_find)
+
+    result, evidence = evaluate_guardian(_verified_state("IRP KR000 C-P2 상품 추천해줘"))
+
+    assert result["enabled"] is False
+    assert result["disabled_reason"] == "DATASET_NOT_FROZEN"
+    assert evidence == []

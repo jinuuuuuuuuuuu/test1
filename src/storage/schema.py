@@ -62,12 +62,57 @@ CREATE TABLE IF NOT EXISTS fund_class (
 );
 
 CREATE INDEX IF NOT EXISTS idx_fund_class_product_code ON fund_class(product_code);
+
+CREATE TABLE IF NOT EXISTS fund_class_pension (
+    product_code TEXT NOT NULL,
+    class_code TEXT NOT NULL,
+    account_type TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    eligibility_type TEXT NOT NULL,
+    total_expense_ratio REAL,
+    synthetic_total_expense_ratio REAL,
+    cost_3y_per_10m_krw REAL,
+    total_expense_source_page TEXT,
+    synthetic_expense_source_page TEXT,
+    cost_3y_source_page TEXT,
+    class_label TEXT,
+    source_file TEXT NOT NULL,
+    parse_status TEXT,
+    validation_status TEXT,
+    validation_status_before_review TEXT,
+    review_source_page TEXT,
+    review_note TEXT,
+    dataset_version TEXT,
+    dataset_status TEXT,
+    PRIMARY KEY (product_code, class_code, account_type),
+    FOREIGN KEY (product_code) REFERENCES fund_master(product_code)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fund_class_pension_lookup
+ON fund_class_pension(product_code, account_type, class_code);
+
+CREATE TABLE IF NOT EXISTS cost_guard_dataset_manifest (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    dataset_version TEXT NOT NULL,
+    dataset_status TEXT NOT NULL,
+    canonical_sha256 TEXT,
+    generated_at TEXT,
+    canonical_row_count INTEGER,
+    canonical_fund_count INTEGER,
+    standard_pair_count INTEGER,
+    channel_conditional_pair_count INTEGER,
+    review_override_count INTEGER,
+    p0_review_required_case_count INTEGER,
+    p0_review_required_field_row_count INTEGER,
+    p0_review_unresolved_field_row_count INTEGER
+);
 """
 
 
 # AUM(시장잔고) 3개 컬럼 — 대회 6축 중 마지막 축. xlsm이 아니라 투자설명서 PDF의
 # "요약 재무상태표"에서 추출한다 (scripts/extract_aum.py). 단위: 백만원.
 AUM_COLUMNS = ("aum_krw_million REAL", "aum_base_date TEXT", "aum_period_label TEXT")
+FUND_CLASS_PENSION_COLUMNS = ("dataset_version TEXT", "dataset_status TEXT")
 
 
 def ensure_aum_columns(conn: sqlite3.Connection) -> list[str]:
@@ -82,9 +127,22 @@ def ensure_aum_columns(conn: sqlite3.Connection) -> list[str]:
     return added
 
 
+def ensure_fund_class_pension_columns(conn: sqlite3.Connection) -> list[str]:
+    """기존 DB에 Cost Guard dataset metadata 컬럼이 없으면 추가한다."""
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(fund_class_pension)")}
+    added = []
+    for column_def in FUND_CLASS_PENSION_COLUMNS:
+        name = column_def.split()[0]
+        if name not in existing:
+            conn.execute(f"ALTER TABLE fund_class_pension ADD COLUMN {column_def}")
+            added.append(name)
+    return added
+
+
 def connect(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA_SQL)
     ensure_aum_columns(conn)
+    ensure_fund_class_pension_columns(conn)
     return conn
