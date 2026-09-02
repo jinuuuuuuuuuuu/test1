@@ -1493,3 +1493,80 @@ def test_widened_conditions_do_not_match_unrelated_questions():
 
     for question in ("점심 뭐 먹지", "펀드 추천해줘", "안녕하세요"):
         assert candidate_categories(question) == [], question
+
+
+# ── 세제 답변의 scope qualifier 보존 (실측: "65세 정년퇴직 절세 방법") ──────────
+#
+# 5.5%/4.4%/3.3%는 **세액공제 받은 납입금·운용수익을 연금으로 수령**할 때의 세율이다.
+# 퇴직금(이연퇴직소득) 재원은 별도 감면 체계라, 숫자만 남기고 적용범위를 지우면
+# 재원이 뒤섞인 오답이 된다. 1,500만원 기준도 "과세대상 사적연금소득"이 조건이다.
+
+
+def test_tax_benefit_overview_uses_known_age_for_bracket():
+    """사용자가 나이를 밝혔으면 적용 구간을 확정해 준다(알고 있는 것을 되묻지 않는다)."""
+    draft, _ = deterministic_response_for(
+        "세금혜택_개요", "나 이제 정년 퇴직하는 65세인데, 노후를 위해서 절세를 많이 하고 싶어. 방법 알려줘"
+    )
+
+    assert "65세" in draft
+    assert "5.5%" in draft
+
+
+def test_tax_benefit_overview_scopes_age_rate_to_tax_credited_source():
+    """연령별 세율을 쓸 때 그 세율이 붙는 재원을 함께 밝히고, 퇴직금 재원과 구분한다."""
+    draft, _ = deterministic_response_for("세금혜택_개요", "65세인데 노후 절세 방법 알려줘")
+
+    assert "세액공제 받은 납입금과 운용수익" in draft
+    # 퇴직금 재원에는 이 세율이 적용되지 않는다는 점을 명시해야 한다
+    assert "퇴직금 재원에는 적용되지 않습니다" in draft
+
+
+def test_tax_benefit_overview_keeps_threshold_qualifier():
+    """1,500만원 기준에서 "과세대상 사적연금소득" 수식어를 지우지 않는다."""
+    draft, context = deterministic_response_for("세금혜택_개요", "노후를 위해 절세하고 싶어")
+
+    assert "과세대상 사적연금소득" in draft
+    assert "과세대상 사적연금소득" in context[0]["content"]
+
+
+def test_tax_benefit_overview_without_age_omits_bracket_line():
+    """나이를 안 밝혔으면 구간을 지어내지 않는다(과잉 확정 방지)."""
+    draft, _ = deterministic_response_for("세금혜택_개요", "노후를 위해 절세하고 싶어")
+
+    assert "말씀하신 만" not in draft
+
+
+def test_tax_benefit_overview_asks_only_for_missing_inputs():
+    """일반 전략은 먼저 답하고, 개인 계산에 필요한 것만 마지막에 되묻는다."""
+    draft, _ = deterministic_response_for("세금혜택_개요", "65세인데 노후 절세 방법 알려줘")
+
+    # 알고 있는 나이는 다시 묻지 않는다
+    assert "나이를 알려주세요" not in draft
+    # 재원 구분에 필요한 정보만 요청한다
+    assert "퇴직금 규모" in draft
+
+
+def test_retirement_pay_pension_tax_reaches_reduction_category():
+    """"퇴직금을 연금으로 받으면 세금?"은 이연퇴직소득세 감면 카테고리로 가야 한다.
+
+    실측 CASE 6("퇴직금 1억원을 연금으로 받으려고 해. 세금은?"): 제도 용어
+    "퇴직소득세"를 요구하는 조건 탓에 후보가 ['연금소득세율_연령별']뿐이었고,
+    **퇴직금 재원인데 사적연금소득 세율표(5.5/4.4/3.3%)**로 답하는 재원 혼동이 났다.
+    퇴직금은 이연퇴직소득세 감면 체계라 세율 체계 자체가 다르다.
+    """
+    for question in (
+        "퇴직금 1억원을 연금으로 받으려고 해. 세금은?",
+        "퇴직금을 연금으로 받으면 세금 얼마나 감면돼?",
+        "명퇴금을 연금으로 받으면 과세는?",
+    ):
+        assert "퇴직소득세감면" in candidate_categories(question), question
+
+
+def test_retirement_pay_without_pension_receipt_is_not_reduction_category():
+    """퇴직금을 말해도 연금수령 문맥이 없으면 감면 카테고리로 끌어오지 않는다."""
+    for question in (
+        "퇴직금을 일시금으로 받으면 얼마야?",
+        "퇴직금 중도인출 가능한가요?",
+        "퇴직금은 언제 받나요?",
+    ):
+        assert "퇴직소득세감면" not in candidate_categories(question), question

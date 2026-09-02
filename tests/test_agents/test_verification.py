@@ -909,3 +909,59 @@ def test_correct_institution_terms_is_noop_for_correct_text():
     answer = "DC(Defined Contribution)형은 확정기여형입니다."
 
     assert correct_institution_terms(answer) == answer
+
+
+# ── premise_issues: 사용자의 요청·목표를 "잘못된 전제"로 오인하지 않는다 ──────────
+#
+# 실측 2건(같은 클래스, 표현만 다름 — 1차 수정 후에도 2차가 재발했다):
+#   "안정적인 것을 원한다"        (Q-4 "솔로몬 국공채... 안정적인 걸 원해요")
+#   "노후를 위한 절세 방법이 필요함" ("65세 정년퇴직... 절세를 많이 하고 싶어")
+# 둘 다 최종 답변이 "다음 내용은 사실과 다르거나 과장된 부분이 있어 그대로 전제하기
+# 어렵습니다: 노후를 위한 절세 방법이 필요함"으로 시작해 사용자의 요청을 반박했다.
+
+
+def test_want_statements_are_not_treated_as_premises():
+    """요청·목표·선호·희망은 참·거짓이 없으므로 premise correction 대상이 아니다."""
+    from src.agents.verification import split_premise_issues
+
+    for item in (
+        "노후를 위한 절세 방법이 필요함",
+        "안정적인 것을 원한다",
+        "절세를 많이 하고 싶어함",
+        "노후 준비를 하고 싶다",
+        "수익률 높은 상품을 원해",
+        "상품 추천 요청",
+    ):
+        real, _misfiled = split_premise_issues([item], [])
+        assert real == [], f"요청/목표가 전제로 남았다: {item}"
+
+
+def test_factual_false_premises_are_still_kept():
+    """참·거짓을 따질 수 있는 사실 주장은 그대로 교정 대상으로 남는다(과잉 필터 방지).
+
+    CASE 3(IRP 원금보장)·CASE 4(위험등급 6등급)에 해당한다 — 이쪽까지 걸러내면
+    정작 바로잡아야 할 오해를 그냥 통과시키게 된다.
+    """
+    from src.agents.verification import split_premise_issues
+
+    for item in (
+        "IRP가 원금보장 상품이라고 전제하고 있으나 실적배당형도 편입 가능함",
+        "위험등급 6등급이 가장 위험하다고 보고 있으나 1등급이 가장 위험함",
+        "세금 감면이 어마어마하다는 과장된 전제",
+        "중도인출이 자유롭다는 잘못된 전제",
+    ):
+        real, _misfiled = split_premise_issues([item], [])
+        assert real == [item], f"진짜 전제 오류가 걸러졌다: {item}"
+
+
+def test_want_ending_with_factual_claim_stays_a_premise():
+    """욕구 어미로 끝나도 사실 주장이 섞여 있으면 교정 대상으로 남긴다.
+
+    _FALSE_PREMISE_MARKERS 확인이 is_want_statement보다 먼저 와야 한다는 순서 보장.
+    """
+    from src.agents.verification import split_premise_issues
+
+    item = "원금보장이 된다고 잘못 알고 원함"
+    real, _misfiled = split_premise_issues([item], [])
+
+    assert real == [item]

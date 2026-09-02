@@ -534,6 +534,44 @@ _BENIGN_CONDITION_MARKERS = (
 _FALSE_PREMISE_MARKERS = ("사실과 다", "과장", "잘못", "오해", "자유롭", "무조건", "반드시")
 
 
+# 사용자의 요청·목표·선호·희망을 서술하는 종결 표현. premise_issues는 "참·거짓을 따질 수
+# 있는 사실 주장"만 담아야 하는데, ④가 사용자의 **바람**을 여기에 넣는 사고가 반복됐다.
+#
+# 실측 2건(같은 클래스, 표현만 다름):
+#   "안정적인 것을 원한다"        (Q-4 "솔로몬 국공채... 안정적인 걸 원해요")
+#   "노후를 위한 절세 방법이 필요함" ("65세 정년퇴직... 절세를 많이 하고 싶어")
+# 둘 다 최종 답변이 "다음 내용은 사실과 다르거나 과장된 부분이 있어 그대로 전제하기
+# 어렵습니다: 노후를 위한 절세 방법이 필요함"으로 시작해 사용자의 요청을 반박했다.
+#
+# 개별 문구를 _BENIGN_CONDITION_MARKERS에 추가하는 방식으로는 못 막는다 — 1차 사고 뒤에도
+# 표현만 바뀐 2차 사고가 났다. 어휘가 아니라 **문장의 종류**로 판정한다: 욕구·필요·의향
+# 서술어는 유한한 문법 범주라 어휘 목록보다 표현 변형에 견고하다.
+_WANT_STATEMENT_ENDINGS = (
+    "원한다", "원함", "원해", "원하심", "원하십니다",
+    "하고싶다", "하고싶음", "하고싶어", "싶다", "싶음", "싶어", "싶어함", "싶어한다",
+    "필요하다", "필요함", "필요해", "필요로한다", "필요성",
+    "바란다", "바람", "희망한다", "희망함", "희망",
+    "요청", "요청함", "문의", "문의함", "알고싶다", "알고싶음",
+)
+
+
+def is_want_statement(text: str) -> bool:
+    """사용자의 요청·목표·선호를 담은 문장인지(= 참·거짓이 없는 진술인지) 판정한다.
+
+    사용자가 무언가를 원한다는 사실 자체는 틀릴 수가 없으므로, 이런 항목은 "잘못된
+    전제"가 될 수 없다. 종결부로 판정한다 — "노후를 위한 절세 방법이 필요함"처럼
+    명사구로 끝나도 마지막 서술어가 욕구·필요를 나타내면 요청 진술이다.
+
+    ⚠️ 호출부는 _FALSE_PREMISE_MARKERS("사실과 다"·"과장"·"잘못" 등)를 먼저 확인해야
+    한다 — "안전하다고 잘못 알고 원함"처럼 사실 주장이 섞인 항목까지 걷어내면 진짜
+    전제 오류를 놓친다.
+    """
+    compact = re.sub(r"\s+", "", text or "")
+    if not compact:
+        return False
+    return any(compact.endswith(ending) for ending in _WANT_STATEMENT_ENDINGS)
+
+
 def is_answer_defect_statement(text: str) -> bool:
     """premise_issues 항목이 '질문의 전제'가 아니라 '답변의 결함'을 서술하는지 판정한다."""
     has_defect = any(marker in text for marker in _ANSWER_DEFECT_MARKERS)
@@ -556,6 +594,10 @@ def is_benign_condition_statement(text: str) -> bool:
     """
     if any(marker in text for marker in _FALSE_PREMISE_MARKERS):
         return False
+    # 사용자의 요청·목표·선호는 참·거짓이 없으므로 교정 대상이 될 수 없다.
+    # (_FALSE_PREMISE_MARKERS 확인 뒤에 둔다 — 사실 주장이 섞였으면 그쪽이 우선)
+    if is_want_statement(text):
+        return True
     if re.search(r"\d", text) and any(
         marker in text
         for marker in (
