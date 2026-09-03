@@ -874,3 +874,36 @@ def test_profile_summary_discloses_interpretation():
 
     assert "위험등급 5~6등급" in summary
     assert "IRP" in summary
+
+
+def test_no_income_status_confirms_pension_savings_without_asking():
+    """소득이 없는 신분(학생 등)이면 계좌유형을 되묻지 않고 연금저축으로 확정한다.
+
+    실측: "이제 막 대학 입학한 학생인데 안정적인 노후 대비 상품 추천해줘"가 "IRP,
+    DC, DB, 연금저축 중 선택해 주세요"라는 답할 수 없는 질문을 받았다. 근거
+    문서에 이미 답이 있다 — 연금저축은 소득이 없어도 가입 가능하지만 IRP/DC/DB는
+    직장인·재직 근로자 등 가입대상이 정해져 있다.
+    """
+    draft, context, profile, needs_clarification = _recommendation_flow_response({
+        "question": "나 이제 막 대학 입학한 학생이야. 지금부터 안정적인 노후 대비를 시작하고 싶은데 상품 추천해줘."
+    })
+
+    assert profile["account_type"] == "연금저축"
+    assert profile.get("no_income_status") is True
+    # 더 이상 계좌유형을 되묻지 않아야 한다
+    assert "IRP, DC, DB, 연금저축 중" not in draft
+    # 가입 자격 근거와 세액공제 한계를 함께 안내해야 한다
+    assert "소득이 없는 신분이면 연금저축만 가입할 수 있습니다" in draft
+    assert "세액공제 혜택은 받을 수 없습니다" in draft
+    assert context and context[0]["source"] == "연금저축계좌·IRP 세액공제 안내 — 연금계좌 종류와 가입대상"
+    assert needs_clarification is True
+
+
+def test_income_mention_overrides_no_income_status():
+    """학생이라도 소득이 있다고 밝히면 계좌유형을 강제로 좁히지 않는다(과잉 확정 방지)."""
+    draft, context, profile, needs_clarification = _recommendation_flow_response({
+        "question": "대학생인데 아르바이트로 소득이 있어요. 연금 상품 추천해주세요."
+    })
+
+    assert profile.get("no_income_status") is not True
+    assert profile.get("account_type") is None

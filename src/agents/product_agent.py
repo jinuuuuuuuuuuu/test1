@@ -134,6 +134,15 @@ _INVESTMENT_LIMIT_CONTENT = (
     "TDF는 감독원장이 정한 조건을 충족하면 DC/IRP에 한해 100%까지 투자할 수 있습니다."
 )
 
+# 연금계좌 가입대상 — 소득 유무로 갈린다. 원문(연금저축계좌·IRP 세액공제 안내 —
+# 연금계좌 종류와 가입대상)의 핵심 문장을 그대로 옮긴다.
+_ACCOUNT_ELIGIBILITY_SOURCE = "연금저축계좌·IRP 세액공제 안내 — 연금계좌 종류와 가입대상"
+_ACCOUNT_ELIGIBILITY_CONTENT = (
+    "연금계좌는 연금저축과 IRP, 두 종류다. 연금저축은 누구나 가입할 수 있다. "
+    "소득이 없어도 가입이 가능하지만 직장인, 자영업자 등 종합소득이 있어야 세액공제 "
+    "혜택을 볼 수 있다. IRP는 직장인, 자영업자, 직역연금가입자 등 가입대상이 정해져 있다."
+)
+
 _SCENARIO_RULE_SOURCE = "상품 시나리오 규칙 — 후보 속성 기반 점검"
 _SCENARIO_RULE_CONTENT = (
     "상품 후보의 구조화 속성에 주식형이 확인되면 주식형 가격 변동 위험을 점검합니다. "
@@ -498,6 +507,11 @@ def _extract_recommendation_profile(state: PensionAgentState) -> dict:
     account = _extract_account_type(text)
     if account:
         profile["account_type"] = account
+    elif _has_no_income_status(text):
+        # 소득이 없는 신분이면 가입 가능한 계좌가 연금저축 하나로 좁혀진다 — 되물을
+        # 필요 없이 근거로 확정할 수 있다(IRP/DC/DB는 가입대상이 정해져 있다).
+        profile["account_type"] = "연금저축"
+        profile["no_income_status"] = True
 
     monthly = _extract_amount(current, allow_standalone=True) or _extract_amount(text)
     if monthly:
@@ -538,6 +552,36 @@ def _extract_account_type(text: str) -> str | None:
     if "연금저축" in text:
         return "연금저축"
     return None
+
+
+# 근로·사업소득이 없음을 드러내는 표현. 연금계좌는 **가입 자격이 소득 유무로 갈리므로**
+# (연금저축은 누구나, IRP는 직장인·자영업자·직역연금가입자, DB/DC는 재직 근로자),
+# 이 신호가 있으면 계좌유형을 되물을 게 아니라 가능한 것을 짚어줘야 한다.
+_NO_INCOME_STATUS_MARKERS = (
+    "대학생", "대학교", "대학 입학", "대학입학", "신입생", "학생", "고등학생", "중학생",
+    "취업 준비", "취업준비", "취준", "무직", "소득이 없", "소득 없", "수입이 없", "수입 없",
+    "직장이 없", "일을 안", "백수", "전업주부", "주부", "미성년",
+)
+# 위 표현이 있어도 소득이 있음을 함께 밝히면 제외한다 — "학생인데 아르바이트로 소득이
+# 있어요"처럼 예외가 실재한다.
+_HAS_INCOME_MARKERS = (
+    "직장인", "회사원", "재직", "근로소득", "사업소득", "자영업", "프리랜서",
+    "소득이 있", "소득 있", "월급", "연봉", "아르바이트", "알바",
+)
+
+
+def _has_no_income_status(text: str) -> bool:
+    """질문에 "소득이 없는 신분"(학생·무직 등)이 드러나는지 판정한다.
+
+    ⚠️ 계좌유형을 단순히 "사용자에게 물어볼 빈칸"으로만 다루면, 대학생에게 "IRP, DC,
+    DB, 연금저축 중 선택해 주세요"처럼 **답할 수 없는 질문**을 던지게 된다(실측:
+    "이제 막 대학 입학한 학생인데 노후 대비 상품 추천해줘"). 근거 문서에 답이 이미
+    있다 — "연금저축은 누구나 가입할 수 있다. 소득이 없어도 가입이 가능하지만
+    ... IRP는 직장인, 자영업자, 직역연금가입자 등 가입대상이 정해져 있다."
+    """
+    if any(marker in text for marker in _HAS_INCOME_MARKERS):
+        return False
+    return any(marker in text for marker in _NO_INCOME_STATUS_MARKERS)
 
 
 def _extract_amount(text: str, allow_standalone: bool = False) -> str | None:
@@ -668,6 +712,26 @@ def _clarification_questions(missing: list[str]) -> list[str]:
 def _grounded_account_constraint(profile: dict) -> tuple[str, list[RetrievedItem]]:
     """clarification mode에서도 DB/Rule 근거가 있는 계좌 제약만 짧게 안내한다."""
     account = profile.get("account_type")
+
+    if profile.get("no_income_status"):
+        # account_type이 이미 "연금저축"으로 확정돼 있으므로(profile 조립 단계에서)
+        # 아래 IRP/DC 위험자산 분기와는 겹치지 않는다 — 여기서 먼저 반환한다.
+        section = (
+            "확인된 계좌 제약은 다음과 같습니다.\n"
+            "- 소득이 없는 신분이면 연금저축만 가입할 수 있습니다. IRP는 직장인·자영업자·"
+            "직역연금가입자 등 가입대상이 정해져 있어 해당하지 않습니다. DC·DB는 재직 "
+            "근로자의 퇴직연금이라 역시 대상이 아닙니다.\n"
+            "- 다만 연금저축은 소득이 없으면 납입해도 세액공제 혜택은 받을 수 없습니다 — "
+            "종합소득(근로소득·사업소득 등)이 있어야 세액공제가 적용됩니다."
+        )
+        return section, [
+            {
+                "source": _ACCOUNT_ELIGIBILITY_SOURCE,
+                "content": _ACCOUNT_ELIGIBILITY_CONTENT,
+                "node": "product_agent",
+            }
+        ]
+
     preferred = profile.get("preferred_product_type") or ""
     if account not in {"IRP", "DC"}:
         return "", []
