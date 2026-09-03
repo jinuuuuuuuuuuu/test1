@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from src.agents.context import format_conversation_history
 from src.agents.deterministic_info import (
     CODE_OVERRIDABLE_CATEGORIES,
+    TAX_FALLBACK_CATEGORIES,
     candidate_categories,
     deterministic_miss_signal,
     deterministic_response_for,
@@ -505,6 +506,19 @@ def _restore_rejected_category(category: str, candidates: list[str], question: s
             continue
         if deterministic_response_for(candidate, question) is not None:
             return candidate
+
+    # ⚠️ 후보가 0건이면 위 루프는 아무것도 하지 못한다 — 되살릴 대상 자체가 없다.
+    # 세제 영역에서는 바로 이 "후보 0건"이 반복된 실패 원인이었다(퇴직금/1,600만원/
+    # 절세방법/납입한도…). 사용자가 제도 용어를 모른 채 일상어로 묻기 때문인데,
+    # 표현은 무한하고 키워드 목록은 유한해서 커버리지를 넓히는 방식으로는 못 이긴다.
+    #
+    # 그래서 세제에 한해 판정 순서를 뒤집는다: 키워드로 차단하는 대신, 세제 핸들러에게
+    # 직접 물어보고 답을 내는 것이 있으면 그걸 쓴다. 핸들러는 자기 소관이 아니면 스스로
+    # None을 내므로(세제 무관·인접 주제 8종 검증) 엉뚱한 정형 답변이 나가지 않는다.
+    # 다른 영역(중도인출·실물이전·디폴트옵션 등)은 잘 작동하므로 건드리지 않는다.
+    for fallback in TAX_FALLBACK_CATEGORIES:
+        if deterministic_response_for(fallback, question) is not None:
+            return fallback
     return category
 
 
