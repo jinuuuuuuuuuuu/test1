@@ -1048,3 +1048,34 @@ def test_normal_tax_questions_are_not_flagged_as_exaggeration():
         "세금 없는 상품이 있나요?",
     ):
         assert detect_exaggerated_tax_premise(question) == [], question
+
+
+# ── 범위 표기 '~' 처리 (실측 S02) ────────────────────────────────────────────
+# '~'를 취소선 서식으로 보고 무조건 지우면 "5~6등급"이 "56등급"으로 뭉개져,
+# 근거에 있을 수 없는 유령 수치를 L0가 "지어낸 값"으로 확정한다.
+
+
+def test_number_range_does_not_create_phantom_token():
+    """범위 표기의 양끝이 붙어 없는 수치가 만들어지면 안 된다."""
+    from src.agents.verification import extract_number_tokens
+
+    tokens = extract_number_tokens("- 투자성향: 안정형(위험등급 5~6등급으로 해석)")
+
+    assert "56등급" not in tokens
+    assert tokens == ["5등급", "6등급"]
+
+
+def test_number_range_captures_both_ends():
+    """범위의 앞 숫자는 단위가 없어 놓치기 쉽다 — 양끝 모두 검사 대상이어야 한다."""
+    from src.agents.verification import extract_number_tokens
+
+    assert extract_number_tokens("만 55~70세는 5.5%") == ["55세", "70세", "5.5%"]
+    assert extract_number_tokens("연금소득세 3.3~5.5%") == ["3.3%", "5.5%"]
+
+
+def test_strikethrough_markup_is_still_stripped():
+    """취소선(~~)은 서식이므로 계속 제거한다."""
+    from src.agents.verification import extract_number_tokens, strip_inline_markup
+
+    assert extract_number_tokens("~~취소선~~ 900만원") == ["900만원"]
+    assert "~~" not in strip_inline_markup("~~900만원~~")

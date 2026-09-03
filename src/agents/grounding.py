@@ -42,6 +42,12 @@ from src.agents.verification import (
 
 GROUNDING_MODEL = "HCX-007"
 
+# ③ product_agent가 코드로 생성하는 고지 문구에 등장하는 수치들. LLM 창작이 아니라
+# 실제 검색 조건(_search_args_from_profile)이라 근거 대조 대상이 아니다.
+_CODE_GENERATED_NUMERIC_TEXTS = (
+    "위험등급 5~6등급 위험등급 4등급 이상 위험등급 1~3등급",
+)
+
 GROUNDING_SYSTEM_PROMPT = """당신은 연금 상담 AI의 답변 검증기입니다. [질문], [초안 답변],
 [근거](번호 매김), [코드 검사: 근거에 없는 것으로 보이는 수치]를 보고 세 가지를 확인하세요.
 당신 스스로 새로운 사실을 추가하거나 재계산하지 마세요 — 아래 판정만 내리면 됩니다.
@@ -193,6 +199,12 @@ def build_grounding_node():
         # 지원 근거로 넣지 않는다.
         history = state.get("conversation_history") or []
         user_texts = [state["question"], *(turn.get("question", "") for turn in history)]
+        # ③이 **코드로** 붙이는 해석 고지("투자성향: 안정형(위험등급 5~6등급으로 해석)")의
+        # 수치는 LLM이 지어낸 값이 아니라 _search_args_from_profile이 실제로 건 검색
+        # 조건이다. 근거 문서에 있을 이유가 없으므로 L0가 "지어낸 수치"로 확정하면
+        # 오탐이다(실측 S02: 5등급·6등급이 unsupported로 확정됐다).
+        # 사용자 발화 수치를 면제하는 것과 같은 이유 — 출처가 LLM이 아닌 값이다.
+        user_texts.extend(_CODE_GENERATED_NUMERIC_TEXTS)
         suspects = find_unsupported_numbers(
             draft, [c["content"] for c in context], user_texts=user_texts
         )

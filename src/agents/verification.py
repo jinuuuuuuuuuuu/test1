@@ -51,7 +51,15 @@ _NUMERIC_CORE_RE = re.compile(r"[\d,\.]+(?:\s?/\s?[\d,\.]+)?")
 #
 # 정규식에 서식 문자를 하나씩 끼워 넣는 대신(새 서식마다 땜질이 필요하다) 검사 전에
 # 서식을 제거한다 — L0가 봐야 하는 것은 표기가 아니라 수치 그 자체다.
-_INLINE_MARKUP_RE = re.compile(r"[*_`~]+")
+#
+# ⚠️ '~'는 취소선(~~) 서식이기도 하지만 한국어에서 **범위 표기**로 훨씬 자주 쓰인다
+# ("5~6등급", "55~70세", "3.3~5.5%"). 무조건 지우면 범위의 양끝이 붙어 존재하지 않는
+# 수치가 만들어진다 — 실측(S02): 답변 초안의 "위험등급 5~6등급"이 "56등급"으로 뭉개져
+# L0가 "근거에 없는 수치 56등급"이라고 확정했다(근거에 있을 수가 없는 유령 값이다).
+# 그래서 숫자 사이에 낀 단일 '~'는 범위 구분자로 보고 보존하며, 취소선으로 쓰인
+# '~~'만 제거한다.
+_STRIKETHROUGH_RE = re.compile(r"~~+")
+_INLINE_MARKUP_RE = re.compile(r"[*_`]+")
 
 
 def strip_inline_markup(text: str) -> str:
@@ -59,8 +67,32 @@ def strip_inline_markup(text: str) -> str:
 
     서식은 의미가 아니라 표현이므로, 근거 대조 전에 걷어내야 "**16.5**%"와 "16.5%"가
     같은 사실로 취급된다. 원문을 바꾸지 않고 검사용 사본에만 적용한다.
+
+    단, 범위 표기의 '~'("5~6등급")는 서식이 아니라 의미라서 보존한다 — 지우면
+    양끝이 붙어 "56등급" 같은 유령 수치가 생긴다.
     """
-    return _INLINE_MARKUP_RE.sub("", text or "")
+    return _INLINE_MARKUP_RE.sub("", _STRIKETHROUGH_RE.sub("", text or ""))
+
+
+# 범위 표기에서 **앞쪽 수치는 단위가 없어** 토큰 정규식에 잡히지 않는다
+# ("5~6등급"의 5, "3.3~5.5%"의 3.3, "55~70세"의 55). 뒤쪽 단위를 앞쪽에도 나눠 붙여
+# 양끝을 모두 검사 대상으로 만든다 — 안 그러면 범위의 앞 숫자를 지어내도 L0가 놓친다.
+_NUMBER_RANGE_RE = re.compile(
+    r"(\d[\d,]*(?:\.\d+)?)\s*[~∼－-]\s*(\d[\d,]*(?:\.\d+)?\s?"
+    r"(?:억\s?원|만\s?원|천\s?원|억(?![가-힣])|만(?![가-힣])|원|%|퍼센트|프로"
+    r"|세(?![금율액대])|년|개월|등급))"
+)
+
+
+def _expand_number_ranges(text: str) -> str:
+    """'5~6등급'을 '5등급~6등급'처럼 펼쳐 양끝 모두 토큰으로 잡히게 한다."""
+
+    def _sub(match: re.Match) -> str:
+        head, tail = match.group(1), match.group(2)
+        unit = re.sub(r"^\d[\d,]*(?:\.\d+)?\s?", "", tail)
+        return f"{head}{unit}~{tail}"
+
+    return _NUMBER_RANGE_RE.sub(_sub, text)
 
 
 def extract_number_tokens(text: str) -> list[str]:
@@ -70,7 +102,7 @@ def extract_number_tokens(text: str) -> list[str]:
     수치가 통째로 검사에서 빠져나간다.
     """
     seen: list[str] = []
-    for m in _NUMBER_TOKEN_RE.finditer(strip_inline_markup(text)):
+    for m in _NUMBER_TOKEN_RE.finditer(_expand_number_ranges(strip_inline_markup(text))):
         token = m.group(0).strip()
         if token not in seen:
             seen.append(token)
