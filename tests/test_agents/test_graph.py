@@ -152,8 +152,20 @@ def test_route_after_grounding_clarification_is_not_repaired():
     assert _route_after_grounding(state) == "generator"
 
 
-def test_route_after_product_clarification_goes_to_generator():
-    assert _route_after_product({"needs_clarification": True}) == "generator"
+def test_route_after_product_always_verifies():
+    """역질문·유형추천도 ④를 거친다 — 수치 검증은 면제 대상이 아니다.
+
+    역질문 초안에도 사실 서술이 함께 들어간다(② 프롬프트가 "조건이 부족해도 현재
+    답변 가능한 일반 기준을 함께 쓰라"고 지시). 실측 S03: info_draft의 "DB 퇴직급여는
+    평균 임금의 60% x 근속연수"(근거의 정답은 "평균임금 30일분 x 계속근로기간")가
+    ④를 건너뛰어 verification이 통째로 null인 채 사용자에게 나갔다.
+
+    요구사항 검증 면제는 ④ 안의 apply_clarification_override가 담당하므로,
+    라우팅에서 ④ 자체를 우회할 이유가 없다.
+    """
+    assert _route_after_product({"needs_clarification": True}) == "grounding"
+    assert _route_after_product({"recommendation_stage": "type_recommendation"}) == "grounding"
+    assert _route_after_product({}) == "grounding"
 
 
 def test_graph_accepts_minimal_evaluation_input(monkeypatch):

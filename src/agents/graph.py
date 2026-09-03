@@ -63,10 +63,23 @@ def _route_after_info(state: PensionAgentState) -> str:
 
 
 def _route_after_product(state: PensionAgentState) -> str:
-    if state.get("needs_clarification"):
-        return "generator"
-    if state.get("recommendation_stage") == "type_recommendation":
-        return "generator"
+    """③ 이후 경로. 역질문·유형추천도 ④를 거친다 — 수치 검증은 면제 대상이 아니다.
+
+    ⚠️ 예전에는 needs_clarification/type_recommendation이면 ④를 통째로 건너뛰고
+    ⑤로 직행했다. 그런데 역질문 초안에도 **사실 서술이 함께 들어간다** — ② 프롬프트가
+    "조건이 부족해도 현재 답변 가능한 일반 기준을 함께 쓰라"고 지시하기 때문이다.
+    그 일반 기준에 지어낸 수치가 섞이면 아무도 검사하지 않은 채 사용자에게 나갔다.
+
+    실측(2026-09-03, S03 "전업주부인데 노후 대비..."): info_draft에
+    "DB 퇴직급여는 평균 임금의 60% x 근속연수"가 있었는데(근거의 정답은
+    "평균임금 30일분 x 계속근로기간"), verification이 통째로 null이라 L0 수치 대조도,
+    ⑤의 디스클레이머도 발동하지 못했다. 같은 60% 창작이 no.1/no.27에서도 나왔던
+    반복 결함인데 이 경로에서만 검증을 빠져나갔다.
+
+    ④는 이미 역질문을 안전하게 다룬다 — apply_clarification_override가 요구사항
+    검증만 면제하고(의도된 유보를 "누락"으로 보지 않도록) grounded 판정은 유지한다.
+    즉 우회할 이유가 없었고, 우회가 만든 것은 검증 공백뿐이다.
+    """
     return "grounding"
 
 
