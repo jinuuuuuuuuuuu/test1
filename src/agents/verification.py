@@ -18,6 +18,8 @@
 
 import re
 
+from src.agents.context import CLARIFICATION_MARKER
+
 # "숫자+단위" 토큰만 추출한다. 단위 후보는 연금 도메인에서 사실 주장에 쓰이는 것들로 한정:
 # 금액(억원/만원/천원/원, 맨 억/만), 비율(%/퍼센트/프로), 나이(세), 기간(년/개월), 위험등급(등급).
 # '세'는 세금/세율/세액/세대 같은 복합어 오탐을 막기 위해 뒤 글자를 제한한다.
@@ -319,6 +321,41 @@ _PREMISE_CORRECTION_MARKERS = (
 def has_limit_disclosure(answer: str) -> bool:
     """답변이 '이건 확인이 어렵다'는 한계 고지를 실제로 담고 있는지 판정한다."""
     return any(marker in (answer or "") for marker in _LIMIT_DISCLOSURE_MARKERS)
+
+
+# "[추가 확인 필요]" 마커 앞에 실질적인 본문이 있는지 볼 때 쓰는 최소 길이. 짧은
+# 서두 문장("현재 정보로는 답변이 어렵습니다")만 있고 바로 역질문으로 넘어가는
+# 답변과, 실제 일반 기준을 담은 답변을 구분하는 데 쓴다. 임의의 기준이지만
+# 근사치면 충분하다 — 이 함수는 강제(자동 생성)가 아니라 관측용이다.
+_MIN_GUIDANCE_BODY_LENGTH = 80
+
+
+def has_general_guidance(answer: str) -> bool:
+    """역질문 답변에 '지금 답할 수 있는 일반 기준'이 함께 있는지 판정한다.
+
+    ⚠️ 이 함수는 **관측 전용**이다 — 판정 결과로 답변을 고치거나 새 내용을
+    만들어 붙이지 않는다. info_agent의 프롬프트 지시("일반 기준을 먼저 쓰고
+    역질문은 그다음")가 실제로 지켜졌는지 think_trace에 남겨, 사후에 위반 빈도를
+    셀 수 있게 하는 용도다.
+
+    없는 내용을 코드가 지어내 채우면 이 프로젝트가 하루 종일 고쳐온 바로 그
+    할루시네이션 문제를 이 자리에 새로 만드는 셈이라, 강제하지 않는다
+    (product_agent 경로는 반대로 근거 상수만 재사용하는 _general_guidance_block으로
+    코드가 직접 조립한다 — 그쪽은 생성이 아니라 결정론적 조립이라 안전하다. LLM이
+    자유 텍스트로 쓰는 info_agent 경로는 사후에 지어낼 수 없으므로 관측만 한다).
+
+    판정 기준: "[추가 확인 필요]" 마커가 있는 답변에서, 마커 앞부분에 한계 고지가
+    아닌 실질적인 문장이 일정 길이 이상 있으면 일반 기준이 포함된 것으로 본다.
+    """
+    text = answer or ""
+    if CLARIFICATION_MARKER not in text:
+        return True  # 애초에 역질문이 아니면 이 판정 대상이 아니다 — 위반 아님
+    body = text.split(CLARIFICATION_MARKER, 1)[0].strip()
+    if has_limit_disclosure(body) and len(body) < _MIN_GUIDANCE_BODY_LENGTH:
+        # "자료에 없어 확인이 어렵습니다" 한 줄만 있고 본문이 짧으면, 이는 정당한
+        # 근거 부재 고지이지 일반 기준 누락이 아니다(프롬프트도 이 경우는 허용한다).
+        return True
+    return len(body) >= _MIN_GUIDANCE_BODY_LENGTH
 
 
 def has_premise_correction(answer: str) -> bool:

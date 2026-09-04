@@ -789,10 +789,19 @@ def _clarification_response(profile: dict, missing: list[str]) -> tuple[str, lis
     known = _format_profile_summary(profile)
     missing_labels = ", ".join(_PROFILE_FIELD_LABELS.get(field, field) for field in missing)
     known_block = f"\n\n현재 확인된 조건은 다음과 같습니다.\n{known}" if known else ""
-    account_constraint, context = _grounded_account_constraint(profile)
+    account_constraint, account_context = _grounded_account_constraint(profile)
+    # account_constraint(무소득 신분 등 제약 고지)가 이미 계좌 가입대상을 설명했다면
+    # _general_guidance_block의 account_type 일반론과 내용이 겹친다 — 중복을 피하려고
+    # account_constraint가 비어 있을 때만 일반 기준을 추가한다.
+    general_guidance, guidance_context = (
+        _general_guidance_block(profile, missing) if not account_constraint else ("", [])
+    )
+    context = [*account_context, *guidance_context]
+    guidance_block = f"{general_guidance}\n\n" if general_guidance else ""
     answer = (
         "현재 질문만으로는 특정 상품을 바로 추천하기 어렵습니다."
         f"{known_block}\n\n"
+        f"{guidance_block}"
         "조건에 맞는 상품 후보를 비교하려면 추천 결과를 실제로 바꾸는 정보가 더 필요합니다.\n\n"
         f"{account_constraint}"
         f"{'\n\n' if account_constraint else ''}"
@@ -856,6 +865,61 @@ def _format_profile_summary(profile: dict) -> str:
             value = f"{value}({_RISK_GRADE_DISCLOSURE[value]}으로 해석)"
         rows.append(f"- {label}: {value}")
     return "\n".join(rows)
+
+
+def _general_guidance_block(profile: dict, missing: list[str]) -> tuple[str, list[RetrievedItem]]:
+    """역질문 답변에도 지금 근거로 말할 수 있는 일반 기준을 담는다.
+
+    ## 왜 필요한가
+
+    조건이 부족해 역질문할 때, 예전에는 질문 목록만 던지고 끝났다("부족한 정보는
+    계좌유형, 투자기간입니다. 알려주세요"). 사용자는 아무 답도 못 받은 채 되묻기만
+    당한 셈이라 "정보한계 대응"·"요구사항 충족" 평가지표에 불리하다.
+
+    이 서비스는 단일턴 평가라 실제 멀티턴처럼 답을 받은 뒤 이어갈 수 없다 —
+    그래서 역질문 자체를 답변에서 빼는 대신, **한 응답 안에 "지금 답할 수 있는
+    일반 기준" + "부족한 조건과 역질문"을 함께 넣는다.**
+
+    ## 왜 여기서 새 근거를 만들지 않는가
+
+    이 함수는 새로운 사실을 조사하지 않는다 — 이미 확보해둔 근거 상수만 재사용한다
+    (_ACCOUNT_ELIGIBILITY_CONTENT, _RISK_GRADE_DISCLOSURE는 _search_args_from_profile의
+    실제 검색 조건과 동일한 값). 없는 내용을 조립해 채우면 이 프로젝트가 하루 종일
+    고쳐온 바로 그 할루시네이션 문제를 역질문 경로에 새로 만드는 셈이다.
+
+    ## 무엇을 넣는가 (알려진 조건에 따라 달라진다)
+
+    - account_type이 없으면: 연금저축·IRP 가입대상 차이(계좌선택_가이드와 같은 사실)
+    - risk_profile이 확정됐으면: 그 성향이 검색에서 어느 위험등급대로 해석되는지
+      (_format_profile_summary가 조건 요약에 붙이는 것과 같은 고지)
+    - 그 외에는 아무것도 추가하지 않는다 — 근거 없는 일반론보다 침묵이 낫다.
+    """
+    lines: list[str] = []
+    context: list[RetrievedItem] = []
+
+    if "account_type" in missing:
+        lines.append(
+            "- 계좌 종류: 연금저축은 소득이 없어도 누구나 가입할 수 있지만(세액공제를 "
+            "받으려면 종합소득 필요), IRP는 직장인·자영업자·직역연금가입자 등 가입대상이 "
+            "정해져 있습니다. DC·DB는 재직 중인 회사를 통해 가입하는 퇴직연금제도입니다."
+        )
+        context.append(
+            {
+                "source": _ACCOUNT_ELIGIBILITY_SOURCE,
+                "content": _ACCOUNT_ELIGIBILITY_CONTENT,
+                "node": "product_agent",
+            }
+        )
+
+    risk_profile = profile.get("risk_profile")
+    if risk_profile in _RISK_GRADE_DISCLOSURE:
+        lines.append(f"- 투자성향({risk_profile}): {_RISK_GRADE_DISCLOSURE[risk_profile]} 상품 위주로 검토됩니다.")
+
+    if not lines:
+        return "", []
+
+    section = "현재 조건으로 일반적으로 말씀드릴 수 있는 내용은 다음과 같습니다.\n" + "\n".join(lines)
+    return section, context
 
 
 def _product_type_recommendation_answer(profile: dict) -> str:

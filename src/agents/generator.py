@@ -16,6 +16,7 @@ from src.agents.verification import (
     enforce_unsupported_claims,
     enforce_unsupported_numbers,
     correct_institution_terms,
+    has_general_guidance,
     replace_evidence_placeholders,
     split_premise_issues,
     strip_tool_call_artifacts,
@@ -356,7 +357,9 @@ def _verification_lines(state: PensionAgentState) -> list[str]:
     return lines
 
 
-def _assembly_lines(state: PensionAgentState, core_context: list, guardian_context: list) -> list[str]:
+def _assembly_lines(
+    state: PensionAgentState, core_context: list, guardian_context: list, answer: str = ""
+) -> list[str]:
     lines = ["[⑤ 최종 답변 조립]"]
     if core_context:
         sources = "; ".join(dict.fromkeys(c["source"] for c in core_context))
@@ -374,6 +377,14 @@ def _assembly_lines(state: PensionAgentState, core_context: list, guardian_conte
         lines.append("  - ③ LLM 초안을 폐기하고 폴백이 만든 상품 후보 답변으로 대체")
     if state.get("needs_clarification"):
         lines.append("  - 조건 불충분 → 첫 답변에 정보한계와 필요한 역질문 전체를 포함")
+        # 관측 전용 — 판정에는 영향이 없다. 프롬프트 지시("일반 기준을 먼저 쓰고
+        # 역질문은 그다음")가 실제로 지켜졌는지 사후 집계용으로 남긴다. 위반이어도
+        # 코드가 내용을 지어내 채우지 않는다(has_general_guidance 참고).
+        if answer and not has_general_guidance(answer):
+            lines.append(
+                "  - ⚠️ 역질문에 일반 기준 누락 의심: [추가 확인 필요] 앞부분이 짧음 — "
+                "프롬프트 지시(일반 기준을 먼저 제시) 미준수 가능성"
+            )
     if state.get("response_mode"):
         lines.append(f"  - 응답 모드: {state['response_mode']}")
     guardian_result = state.get("guardian_result") or {}
@@ -391,10 +402,14 @@ def _assembly_lines(state: PensionAgentState, core_context: list, guardian_conte
     return lines
 
 
-def _format_think_trace(state: PensionAgentState) -> str:
+def _format_think_trace(state: PensionAgentState, answer: str = "") -> str:
     """대회 평가 스키마의 think_trace — "사고·추론·도구 사용 과정"을 시간순 서사로 조립한다.
 
     추가 LLM 호출 없이 State에 이미 있는 값(①분류, tool_trace, ④검증 결과)만으로 만든다.
+
+    answer(최종 답변 텍스트, 선택)를 넘기면 역질문 답변에 일반 기준이 실제로
+    포함됐는지 관측 신호를 덧붙인다 — state["answer"]는 이 함수 호출 시점에
+    아직 채워지지 않았을 수 있어(반환 dict를 만드는 도중이라) 별도로 받는다.
     """
     core_context = dedupe_context(state.get("retrieved_context") or [])
     guardian_context = _guardian_context(state)
@@ -403,7 +418,7 @@ def _format_think_trace(state: PensionAgentState) -> str:
     lines.append(f"- 실행 계획: {_plan_sentence(state)}")
     lines.extend(_tool_trace_lines(state))
     lines.extend(_verification_lines(state))
-    lines.extend(_assembly_lines(state, core_context, guardian_context))
+    lines.extend(_assembly_lines(state, core_context, guardian_context, answer))
     lines.append("[참고: 근거 원문]")
     if context:
         lines.extend(f"  - [{c['source']}] {c['content']}" for c in context)
@@ -505,9 +520,10 @@ def build_generator_node():
                 context,
                 append_reference=False,
             )
+            final_answer = _finalize_answer(verified_answer, state, context)
             return {
-                "answer": _finalize_answer(verified_answer, state, context),
-                "think_trace": _format_think_trace(state),
+                "answer": final_answer,
+                "think_trace": _format_think_trace(state, final_answer),
             }
         if state.get("recommendation_stage") == "type_recommendation":
             verified_answer = _enforce_verification(
@@ -516,9 +532,10 @@ def build_generator_node():
                 context,
                 append_reference=False,
             )
+            final_answer = _finalize_answer(verified_answer, state, context)
             return {
-                "answer": _finalize_answer(verified_answer, state, context),
-                "think_trace": _format_think_trace(state),
+                "answer": final_answer,
+                "think_trace": _format_think_trace(state, final_answer),
             }
         if state.get("deterministic_info"):
             verified_answer = _enforce_verification(
@@ -527,9 +544,10 @@ def build_generator_node():
                 context,
                 append_reference=False,
             )
+            final_answer = _finalize_answer(verified_answer, state, context)
             return {
-                "answer": _finalize_answer(verified_answer, state, context),
-                "think_trace": _format_think_trace(state),
+                "answer": final_answer,
+                "think_trace": _format_think_trace(state, final_answer),
             }
 
         response = invoke_with_retry(llm, [
@@ -537,13 +555,14 @@ def build_generator_node():
             {"role": "user", "content": prompt},
         ])
 
+        final_answer = _finalize_answer(
+            _enforce_verification(response.content, verification, context, append_reference=False),
+            state,
+            context,
+        )
         return {
-            "answer": _finalize_answer(
-                _enforce_verification(response.content, verification, context, append_reference=False),
-                state,
-                context,
-            ),
-            "think_trace": _format_think_trace(state),
+            "answer": final_answer,
+            "think_trace": _format_think_trace(state, final_answer),
         }
 
     return generator_node

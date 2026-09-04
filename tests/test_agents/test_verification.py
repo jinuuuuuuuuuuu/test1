@@ -1133,3 +1133,44 @@ def test_enforce_unsupported_claims_no_issues_is_noop():
 
     answer = "연금저축 세액공제 한도는 600만원입니다."
     assert enforce_unsupported_claims(answer, []) == answer
+
+
+# ── 역질문에 일반 기준 포함 여부 관측 (has_general_guidance) ─────────────────
+# 이 함수는 판정만 하고 답변을 고치거나 새 내용을 만들지 않는다 — think_trace에만
+# 남는 관측 신호다. 없는 내용을 코드가 지어내 채우면 이 프로젝트가 하루 종일
+# 고쳐온 할루시네이션 문제를 이 자리에 새로 만드는 셈이라 강제하지 않는다.
+
+
+def test_has_general_guidance_true_when_no_marker():
+    """애초에 역질문이 아니면 이 판정 대상이 아니다 — 위반으로 보지 않는다."""
+    from src.agents.verification import has_general_guidance
+
+    assert has_general_guidance("연금저축 세액공제 한도는 600만원입니다.") is True
+
+
+def test_has_general_guidance_false_when_questions_only():
+    """일반 기준 없이 역질문만 있으면 위반으로 판정한다."""
+    from src.agents.verification import has_general_guidance
+
+    answer = "부족한 정보는 계좌유형, 투자기간입니다. 알려주세요. [추가 확인 필요]"
+    assert has_general_guidance(answer) is False
+
+
+def test_has_general_guidance_true_when_body_present():
+    """마커 앞에 실질적인 일반 기준 문장이 있으면 정상으로 판정한다."""
+    from src.agents.verification import has_general_guidance
+
+    answer = (
+        "연금저축은 소득이 없어도 누구나 가입할 수 있지만, IRP는 직장인·자영업자 등 "
+        "가입대상이 정해져 있습니다. 세액공제 대상 한도는 연금저축 600만원, IRP 포함 "
+        "900만원입니다.\n\n구체적인 계산을 위해서는 소득 정보가 필요합니다. [추가 확인 필요]"
+    )
+    assert has_general_guidance(answer) is True
+
+
+def test_has_general_guidance_true_for_honest_no_evidence_disclosure():
+    """근거가 정말 없어 한계만 고지하고 역질문하는 것은 정당하다 — 위반이 아니다."""
+    from src.agents.verification import has_general_guidance
+
+    answer = "자료에 없어 확인이 어렵습니다. [추가 확인 필요]"
+    assert has_general_guidance(answer) is True

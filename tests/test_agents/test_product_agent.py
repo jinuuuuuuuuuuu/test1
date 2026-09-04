@@ -22,7 +22,11 @@ def test_recommendation_flow_starts_with_one_question():
     for word in ("투자금액", "투자목적", "시장 상황이 바뀐다면", "TDF", "채권형"):
         assert word not in draft
     assert "상품별 근거를 바탕으로 비교하겠습니다" in draft
-    assert context == []
+    # 역질문뿐 아니라 지금 근거로 답할 수 있는 일반 기준(연금저축·IRP 가입대상 차이)이
+    # 함께 담긴다 — _general_guidance_block. 근거 없는 내용이 아니라 실제 문서에서
+    # 온 것이라 반드시 출처가 붙는다.
+    assert "일반적으로 말씀드릴 수 있는 내용" in draft
+    assert context and context[0]["source"] == "연금저축계좌·IRP 세액공제 안내 — 연금계좌 종류와 가입대상"
     assert profile == {}
     assert needs_clarification is True
 
@@ -42,7 +46,8 @@ def test_recommendation_flow_keeps_context_and_asks_next_missing_field():
     assert "계좌에서 투자할 예정" in draft
     assert "안정형, 중립형, 공격형" in draft
     assert "예상 투자기간" in draft
-    assert context == []
+    # account_type이 아직 없으므로 일반 기준(계좌 가입대상 차이)이 근거와 함께 붙는다.
+    assert context and context[0]["source"] == "연금저축계좌·IRP 세액공제 안내 — 연금계좌 종류와 가입대상"
     assert needs_clarification is True
 
 
@@ -60,7 +65,7 @@ def test_recommendation_flow_accepts_plain_amount_follow_up():
     assert "투자 가능 금액 또는 월 납입금액" not in draft
     assert "계좌에서 투자할 예정" in draft
     assert "안정형, 중립형, 공격형" in draft
-    assert context == []
+    assert context and context[0]["source"] == "연금저축계좌·IRP 세액공제 안내 — 연금계좌 종류와 가입대상"
     assert needs_clarification is True
 
 
@@ -304,7 +309,8 @@ def test_recommendation_flow_with_missing_account_asks_for_all_missing_info():
 
     assert "계좌유형" in draft
     assert "IRP, DC, DB, 연금저축" in draft
-    assert context == []
+    # account_type이 없으므로 계좌 가입대상 일반 기준이 근거와 함께 붙는다.
+    assert context and context[0]["source"] == "연금저축계좌·IRP 세액공제 안내 — 연금계좌 종류와 가입대상"
     assert needs_clarification is True
 
 
@@ -325,7 +331,9 @@ def test_product_node_marks_clarification_stage_for_incomplete_recommendation():
     assert result["recommendation_stage"] == "clarification"
     assert result["response_mode"] == "clarification_included"
     assert "계좌유형" in result["product_draft"]
-    assert result["retrieved_context"] == []
+    # account_type이 없어 일반 기준 근거가 함께 붙는다(_general_guidance_block).
+    assert result["retrieved_context"]
+    assert result["retrieved_context"][0]["source"] == "연금저축계좌·IRP 세액공제 안내 — 연금계좌 종류와 가입대상"
 
 
 def test_recommendation_flow_sufficient_profile_uses_fund_db():
@@ -479,7 +487,8 @@ def test_specific_recommendation_with_missing_info_asks_only_needed_question():
         assert word in draft
     for word in ("투자금액", "투자목적", "시장 상황이 바뀐다면"):
         assert word not in draft
-    assert context == []
+    # account_type이 없으므로 일반 기준 근거가 붙는다.
+    assert context and context[0]["source"] == "연금저축계좌·IRP 세액공제 안내 — 연금계좌 종류와 가입대상"
     assert profile["risk_profile"] == "안정형"
     assert needs_clarification is True
 
@@ -907,3 +916,49 @@ def test_income_mention_overrides_no_income_status():
 
     assert profile.get("no_income_status") is not True
     assert profile.get("account_type") is None
+
+
+# ── 역질문에 일반 기준 포함 (_general_guidance_block) ────────────────────────
+# 조건이 부족해 역질문할 때, 예전에는 질문 목록만 던지고 끝났다. 이 서비스는
+# 단일턴 평가라 실제 멀티턴처럼 답을 받은 뒤 이어갈 수 없으므로, 역질문 자체를
+# 답변에서 빼는 대신 한 응답 안에 "지금 답할 수 있는 일반 기준"을 함께 넣는다.
+
+
+def test_general_guidance_covers_account_type_when_missing():
+    from src.agents.product_agent import _general_guidance_block
+
+    section, context = _general_guidance_block({}, ["account_type", "investment_horizon"])
+
+    assert "연금저축" in section and "IRP" in section
+    assert "누구나 가입" in section
+    assert context and context[0]["source"] == "연금저축계좌·IRP 세액공제 안내 — 연금계좌 종류와 가입대상"
+
+
+def test_general_guidance_discloses_known_risk_profile():
+    from src.agents.product_agent import _general_guidance_block
+
+    section, _ = _general_guidance_block({"risk_profile": "공격형"}, ["account_type"])
+
+    assert "공격형" in section
+    assert "위험등급 1~3등급" in section   # _RISK_GRADE_DISCLOSURE와 같은 값이어야 한다
+
+
+def test_general_guidance_empty_when_nothing_to_say():
+    """계좌유형이 이미 있고 위험성향도 없으면 근거 없는 일반론을 만들지 않는다."""
+    from src.agents.product_agent import _general_guidance_block
+
+    section, context = _general_guidance_block({"account_type": "IRP"}, ["investment_horizon"])
+
+    assert section == ""
+    assert context == []
+
+
+def test_general_guidance_does_not_duplicate_no_income_constraint():
+    """무소득 신분 고지가 이미 가입대상을 설명했다면 일반 기준에서 중복하지 않는다."""
+    draft, context, _, _ = _recommendation_flow_response({
+        "question": "이제 막 대학 입학한 학생인데 안정적인 노후 대비 상품 추천해줘"
+    })
+
+    # "소득이 없는 신분이면" 문구는 1번만 등장해야 한다(계좌 제약 고지 쪽에서만).
+    assert draft.count("연금저축은 소득이 없어도 누구나 가입할 수 있") <= 1
+    assert draft.count("소득이 없는 신분이면 연금저축만 가입할 수 있습니다") == 1

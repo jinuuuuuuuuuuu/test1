@@ -174,6 +174,51 @@ def test_narrative_reports_clarification_mode():
     assert "첫 답변에 정보한계와 필요한 역질문 전체를 포함" in trace
 
 
+# ── 역질문에 일반 기준 누락 관측 (has_general_guidance 연동) ─────────────────
+# _format_think_trace(state, answer)에 answer를 넘기면 역질문 답변에 일반 기준이
+# 실제로 있었는지 관측 신호를 남긴다. 판정만 하고 답변을 고치지는 않는다.
+
+
+def _clarification_state() -> dict:
+    return {
+        "intent": ["상품형"],
+        "scope": "범위내",
+        "is_safe": True,
+        "tool_trace": [],
+        "product_draft": "",
+        "retrieved_context": [],
+        "needs_clarification": True,
+        "verification": {
+            "grounded": True,
+            "requirements_met": True,
+            "clarification_mode": True,
+            "l0_suspect_numbers": [],
+        },
+    }
+
+
+def test_narrative_flags_missing_general_guidance():
+    answer = "부족한 정보는 계좌유형, 투자기간입니다. 알려주세요. [추가 확인 필요]"
+    trace = _format_think_trace(_clarification_state(), answer)
+    assert "일반 기준 누락 의심" in trace
+
+
+def test_narrative_does_not_flag_when_guidance_present():
+    answer = (
+        "연금저축은 소득이 없어도 누구나 가입할 수 있지만, IRP는 직장인·자영업자 등 "
+        "가입대상이 정해져 있습니다. 세액공제 대상 한도는 연금저축 600만원, IRP 포함 "
+        "900만원입니다.\n\n구체적인 계산을 위해서는 소득 정보가 필요합니다. [추가 확인 필요]"
+    )
+    trace = _format_think_trace(_clarification_state(), answer)
+    assert "일반 기준 누락 의심" not in trace
+
+
+def test_narrative_skips_guidance_check_without_answer():
+    """answer를 넘기지 않으면(기존 호출부 호환) 관측 자체를 생략한다 — 오탐 방지."""
+    trace = _format_think_trace(_clarification_state())
+    assert "일반 기준 누락 의심" not in trace
+
+
 # ── 폴백 경로의 근거 출처 표기 (F-7) ──────────────────────────────────
 #
 # ③이 폴백을 쓰면 근거는 실재하지만 tool_trace에는 안 잡힌다(코드가 DB를 직접 조회하므로).
