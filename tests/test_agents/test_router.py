@@ -362,6 +362,10 @@ def test_tax_fallback_does_not_hijack_non_tax_questions():
     이 폴백의 안전은 "핸들러가 자기 소관이 아니면 스스로 None을 낸다"에 달려 있다.
     잘 작동하는 다른 영역(중도인출·실물이전·디폴트옵션·상품추천)을 세제 카테고리가
     가로채면 안 된다.
+
+    ⚠️ "DB형과 DC형 운용주체가 어떻게 다른가요?"는 예전엔 여기 있었으나, 이후
+    제도비교_DB_DC 핸들러가 생겨 **그 카테고리로 복원되는 것이 정답**이 됐다
+    (실측 no.1). 세제 카테고리로 잘못 복원되지 않는지만 확인한다.
     """
     from src.agents.deterministic_info import candidate_categories
     from src.agents.router import _restore_rejected_category
@@ -370,13 +374,17 @@ def test_tax_fallback_does_not_hijack_non_tax_questions():
         "안정적인 연금 상품 추천해줘",
         "IRP 중도인출 신청은 어디서 하나요?",
         "디폴트옵션 상품이 뭔가요?",
-        "DB형과 DC형 운용주체가 어떻게 다른가요?",
         "솔로몬 국공채 단기랑 장기 뭐가 달라요?",
     ):
         restored = _restore_rejected_category(
             "해당없음", candidate_categories(question), question
         )
         assert restored == "해당없음", question
+
+    # DB/DC 질문은 세제 카테고리로 새지 않고, 제도비교_DB_DC로만 복원돼야 한다.
+    question = "DB형과 DC형 운용주체가 어떻게 다른가요?"
+    restored = _restore_rejected_category("해당없음", candidate_categories(question), question)
+    assert restored == "제도비교_DB_DC", question
 
 
 def test_calculation_shortage_stays_out_of_overridable_set():

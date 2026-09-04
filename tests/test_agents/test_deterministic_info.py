@@ -920,8 +920,13 @@ def test_personal_tax_candidates_positive_negative_collision():
 
 
 def test_broadened_candidates_do_not_overtrigger():
-    """넓혔다고 무관한 질문까지 후보가 생기면 안 된다."""
-    for question in ("IRP가 뭔가요?", "솔로몬 국공채 위험등급 알려줘", "DC와 DB 차이가 뭔가요?"):
+    """넓혔다고 무관한 질문까지 후보가 생기면 안 된다.
+
+    ⚠️ "DC와 DB 차이가 뭔가요?"는 예전엔 여기 있었으나, 이후 제도비교_DB_DC
+    핸들러가 생겨 후보가 나오는 것이 정답이 됐다(실측 no.1: 근거 없이 창작한
+    "평균 임금의 60%" 계산식을 정형 답변으로 대체). test_db_dc_comparison_* 참고.
+    """
+    for question in ("IRP가 뭔가요?", "솔로몬 국공채 위험등급 알려줘"):
         assert candidate_categories(question) == [], question
 
 
@@ -1640,3 +1645,52 @@ def test_actual_receipt_year_question_reaches_reduction_category():
         "퇴직금 감면 얼마나 받나요",
     ):
         assert "퇴직소득세감면" in candidate_categories(question), question
+
+
+# ── 제도비교_DB_DC (실측 no.1/no.27: 근거 없이 "평균 임금의 60%" 창작) ──────────
+
+
+def test_db_dc_comparison_reaches_category_from_common_phrasings():
+    """DB/DC 제도 비교를 묻는 여러 표현이 후보에 올라야 한다."""
+    for question in (
+        "DC와 DB, 퇴직금이 정해지는 방식이랑 운용 주체가 어떻게 다른가요?",
+        "DB형은 제가 받을 퇴직금이 미리 확정돼 있는 게 맞나요?",
+        "DB와 DC 차이가 뭔가요?",
+    ):
+        assert "제도비교_DB_DC" in candidate_categories(question), question
+
+
+def test_db_dc_comparison_answer_uses_correct_formula():
+    """근거에 있는 정확한 계산식을 쓴다 — 실측은 근거 없이 '60%'를 지어냈었다."""
+    draft, context = deterministic_response_for(
+        "제도비교_DB_DC", "DC와 DB, 퇴직금이 정해지는 방식이랑 운용 주체가 어떻게 다른가요?"
+    )
+
+    assert "30일분" in draft and "계속근로기간" in draft
+    assert "60%" not in draft   # 근거에 없는 창작 계산식
+    assert context  # 출처가 붙어야 한다
+
+
+def test_db_dc_comparison_declines_personal_calculation():
+    """구체적인 개인 계산 요구는 이 카테고리가 아니라 개인 판정 경로로 넘긴다."""
+    from src.agents.deterministic_info import _db_dc_comparison_response
+
+    for question in (
+        "근속 10년인데 DB 퇴직금 얼마 받나요",
+        "DB 3000만원 받았는데 세금은",
+    ):
+        assert _db_dc_comparison_response(question) is None, question
+
+
+def test_db_dc_comparison_declines_unrelated_questions():
+    """자기 소관이 아닌 질문에는 반드시 None을 낸다(CODE_OVERRIDABLE 안전 조건)."""
+    from src.agents.deterministic_info import _db_dc_comparison_response
+
+    for question in (
+        "오늘 점심 뭐 먹지",
+        "안정적인 연금 상품 추천해줘",
+        "세액공제 한도가 얼마인가요",
+        "디폴트옵션이 뭔가요",
+        "IRP 계좌 이전 절차 알려줘",
+    ):
+        assert _db_dc_comparison_response(question) is None, question

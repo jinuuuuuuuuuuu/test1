@@ -170,6 +170,8 @@ DETERMINISTIC_CATEGORIES: tuple[str, ...] = (
 CODE_OVERRIDABLE_CATEGORIES: frozenset[str] = frozenset({
     "복합정보_태스크플랜",
     "개인세금_입력충분성",
+    # 개인 상황 신호가 있으면 스스로 None을 낸다(_DB_DC_PERSONAL_SIGNAL_MARKERS).
+    "제도비교_DB_DC",
     "중도인출_기한판정",
     "중도인출_요건판정",
     "실물이전_개별판정",
@@ -308,6 +310,17 @@ def candidate_categories(question: str) -> list[str]:
         candidates.append("복합정보_태스크플랜")
     if personal_tax_response(question) is not None:
         candidates.append("개인세금_입력충분성")
+    # DB/DC 제도 비교 — 실측(no.1/no.27): 근거를 7건씩 갖고도 DB 급여 계산식을
+    # "평균 임금의 60% x 근속연수"로 창작했다. 여기서는 후보만 넓게 낸다 — 정밀
+    # 판정(개인 상황 배제 등)은 핸들러(_db_dc_comparison_response)가 담당한다.
+    # DB 단독 질문("DB형은 확정돼 있는 게 맞나요?")도 후보로 낸다 — DC 언급이
+    # 없어도 핸들러가 답할 수 있는 실측 사례(no.27)다.
+    mentions_db = "DB" in question or "확정급여" in text
+    mentions_dc = "DC" in question or "확정기여" in text
+    if mentions_db and mentions_dc:
+        candidates.append("제도비교_DB_DC")
+    elif mentions_db and any(word in text for word in ("확정돼있는", "확정되어있는", "확정된게")):
+        candidates.append("제도비교_DB_DC")
     # ⚠️ "세액공제"라는 단어가 없어도 **납입 한도**를 묻는 질문은 같은 정형 답변이
     # 정답이다(_tax_credit_limit_response가 연금저축+IRP 합산 납입한도와 세액공제
     # 대상 한도를 함께 제시한다). 이 어휘를 빠뜨려서 생긴 구멍이 실측으로 확인됐다 —
@@ -878,6 +891,76 @@ def _tax_credit_calculation_missing_response(question: str) -> tuple[str, list[R
         "4. 이미 회사 DC/IRP 추가납입 등 다른 연금계좌 납입액이 있다면 함께 알려주세요."
     )
     return draft, _context(source, content)
+
+
+# DB(확정급여형) 급여 계산식. 실측(no.1/no.27): LLM이 "평균 임금의 60% x 근속연수"라는
+# 근거에 없는 계산식을 지어냈다. 정답은 "퇴직 전 평균임금 30일분 x 계속근로기간"이다.
+_DB_DC_COMPARISON_SOURCE = "DB DC 퇴직연금 산정 / 퇴직연금 가입대상 / 퇴직연금제도 기본"
+_DB_DC_COMPARISON_CONTENT = (
+    "퇴직연금제도는 확정급여형(DB, Defined Benefit)과 확정기여형(DC, Defined Contribution) "
+    "두 가지로 나뉜다.\n\n"
+    "확정급여형(DB): 근로자가 퇴직 시 받을 금액이 사전에 확정되어 있으며, 회사가 적립금을 "
+    "운용한다. DB형 급여 계산식은 '퇴직 전 평균임금 30일분 x 계속근로기간'이다. "
+    "평균임금 1일분은 퇴직 전 3개월간 지급된 임금 총액을 해당 기간의 총 일수로 나누어 "
+    "산정한다.\n\n"
+    "확정기여형(DC): 회사가 매년 일정 금액을 근로자의 계좌에 입금하고, 근로자가 직접 운용하여 "
+    "수익률에 따라 최종 퇴직금이 달라진다. DC는 가입자 명부를 근거로 가입자 본인 명의의 "
+    "실계좌가 개설되어 온라인 상품매매 등이 가능하다.\n\n"
+    "제도 변경: 퇴직연금(DB)에서 퇴직연금(DC)으로는 변경할 수 있으나, 퇴직연금(DC)에서 "
+    "퇴직연금(DB)으로는 변경할 수 없다."
+)
+
+# 구체적인 개인 계산을 요구하는 신호. "제가/저는"만으로는 판단하지 않는다 —
+# "DB형은 제가 받을 퇴직금이 미리 확정돼 있는 게 맞나요?"(no.27)처럼 1인칭이지만
+# 제도 사실을 묻는 질문이 흔해서, 그것까지 걸러내면 실측 사례를 놓친다. 실제 계산을
+# 요구하는 신호(숫자 제시, "계산해줘")만 개인 판정으로 넘긴다.
+_DB_DC_CALCULATION_SIGNAL_MARKERS = ("계산해", "계산해줘", "얼마나되나요", "얼마받나요", "얼마입니까")
+_NUMBER_PRESENT_RE = re.compile(r"\d")
+
+
+def _db_dc_comparison_response(question: str) -> tuple[str, list[RetrievedItem]] | None:
+    """DB형·DC형의 제도 차이(운용주체·계산방식)를 일반론으로 설명한다.
+
+    실측(no.1 "DC와 DB, 퇴직금이 정해지는 방식이랑 운용 주체가 어떻게 다른가요?",
+    no.27 "DB형은 제가 받을 퇴직금이 미리 확정돼 있는 게 맞나요?"): 근거를 7건씩
+    갖고도 LLM이 DB 급여 계산식을 "평균 임금의 60% x 근속연수"로 창작했다. 정답은
+    이미 문서에 있었다 — 정형 경로로 확정해 창작 여지를 아예 없앤다.
+
+    ⚠️ 구체적인 개인 계산 질문은 여기서 답하지 않는다("근속 10년인데 퇴직금 얼마
+    받나요" 등 숫자를 대입한 계산 요구). 이 카테고리는 "일반형만 확정한다" 원칙에
+    따라 제도 설명만 다룬다 — 판정은 1인칭 여부가 아니라 숫자·계산 요구 여부다.
+    """
+    text = _compact(question)
+    if _NUMBER_PRESENT_RE.search(text) or any(
+        marker in text for marker in _DB_DC_CALCULATION_SIGNAL_MARKERS
+    ):
+        return None
+    asks_db = "DB" in question or "확정급여" in text
+    asks_dc = "DC" in question or "확정기여" in text
+    asks_comparison = any(word in text for word in ("차이", "다른가", "다른가요", "다릅니", "비교"))
+    asks_db_calc = asks_db and any(word in text for word in ("계산", "산정", "얼마로", "어떻게정해"))
+    asks_operator = any(word in text for word in ("운용주체", "누가운용", "누가굴리", "직접운용"))
+    asks_db_confirmation = asks_db and any(
+        word in text for word in ("확정돼있는", "확정되어있는", "확정된게", "맞나요", "맞는")
+    )
+    if not (
+        (asks_db and asks_dc and (asks_comparison or asks_operator))
+        or asks_db_calc
+        or asks_db_confirmation
+    ):
+        return None
+    draft = (
+        "퇴직연금제도는 확정급여형(DB)과 확정기여형(DC)으로 나뉩니다.\n\n"
+        "**DB형(확정급여형)**\n"
+        "- 회사가 적립금을 운용하고, 근로자가 퇴직 시 받을 금액은 사전에 확정되어 있습니다.\n"
+        "- 급여 계산식: 퇴직 전 평균임금 30일분 x 계속근로기간\n\n"
+        "**DC형(확정기여형)**\n"
+        "- 회사가 매년 일정 금액을 근로자 명의 계좌에 입금하고, 근로자 본인이 직접 운용합니다.\n"
+        "- 최종 퇴직금은 운용 수익률에 따라 달라집니다.\n\n"
+        "즉 운용 주체가 DB는 회사, DC는 근로자 본인이라는 점이 핵심 차이입니다. "
+        "제도 변경은 DB에서 DC로는 가능하지만 DC에서 DB로는 불가능합니다."
+    )
+    return draft, _context(_DB_DC_COMPARISON_SOURCE, _DB_DC_COMPARISON_CONTENT)
 
 
 def _tax_benefit_overview_response(question: str) -> tuple[str, list[RetrievedItem]]:
@@ -2649,6 +2732,7 @@ def _pension_income_tax_rate_response(question: str) -> tuple[str, list[Retrieve
 
 _CATEGORY_HANDLERS = {
     "복합정보_태스크플랜": _composite_info_task_plan_response,
+    "제도비교_DB_DC": _db_dc_comparison_response,
     "세액공제_계산_입력부족": _tax_credit_calculation_missing_response,
     "세액공제_한도": _tax_credit_limit_response,
     "세금혜택_개요": _tax_benefit_overview_response,
