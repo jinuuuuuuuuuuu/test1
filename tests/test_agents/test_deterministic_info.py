@@ -1753,3 +1753,47 @@ def test_account_transfer_declines_unrelated_questions():
         "중도인출 사유가 뭐가 있나요",
     ):
         assert _account_transfer_procedure_response(question) is None, question
+
+
+# ── 계좌선택_가이드 (실측 no.368: 근거 없이 "1,500만 원" 창작) ────────────────
+
+
+def test_account_choice_reaches_category_from_common_phrasings():
+    for question in (
+        "직장인이면 IRP만 만들어도 되나요, 연금저축도 같이 만들어야 하나요?",
+        "연금저축과 IRP 뭐가 다른가요",
+        "연금저축이랑 IRP 둘 다 필요한가요",
+    ):
+        assert "계좌선택_가이드" in candidate_categories(question), question
+
+
+def test_account_choice_answer_explains_withdrawal_flexibility():
+    """세액공제는 IRP 단독으로도 동일하고, 나눠 갖는 이유는 중도인출 유연성이다."""
+    draft, context = deterministic_response_for(
+        "계좌선택_가이드", "직장인이면 IRP만 만들어도 되나요, 연금저축도 같이 만들어야 하나요?"
+    )
+
+    assert "1,500만" not in draft   # 근거에 없는 창작 수치
+    assert "중도인출" in draft
+    assert context
+
+
+def test_account_choice_declines_personal_calculation():
+    """구체적인 개인 세액공제액 계산 요구는 다루지 않는다."""
+    from src.agents.deterministic_info import _account_choice_guide_response
+
+    assert _account_choice_guide_response("연금저축 600만원 납입했는데 얼마 공제되나요") is None
+
+
+def test_account_choice_declines_unrelated_questions():
+    from src.agents.deterministic_info import _account_choice_guide_response
+
+    for question in (
+        "오늘 점심 뭐 먹지",
+        "안정적인 연금 상품 추천해줘",
+        "세액공제 한도가 얼마인가요",
+        "디폴트옵션이 뭔가요",
+        "DC와 DB 차이가 뭔가요",
+        "IRP 계좌 다른 증권사로 옮기려면",
+    ):
+        assert _account_choice_guide_response(question) is None, question

@@ -174,6 +174,8 @@ CODE_OVERRIDABLE_CATEGORIES: frozenset[str] = frozenset({
     "제도비교_DB_DC",
     # 이전/이체 요구가 없거나 개인 판정 신호가 있으면 스스로 None을 낸다.
     "계좌이전_절차",
+    # 계좌 선택 신호가 없거나 개인 계산 요구가 있으면 스스로 None을 낸다.
+    "계좌선택_가이드",
     "중도인출_기한판정",
     "중도인출_요건판정",
     "실물이전_개별판정",
@@ -329,6 +331,17 @@ def candidate_categories(question: str) -> list[str]:
         word in text for word in ("이전", "옮기", "옮겨", "이체")
     ):
         candidates.append("계좌이전_절차")
+    # 계좌 선택 — 실측(no.368 "IRP만 만들어도 되나요, 연금저축도 같이 만들어야
+    # 하나요?"): 근거 없이 "1,500만 원"을 창작했다. 정답(세액공제 효과는 동일,
+    # 중도인출 유연성 때문에 나눠 갖는다)은 이미 문서에 있었다.
+    if any(word in text for word in ("연금저축", "IRP", "irp", "연금계좌")) and any(
+        word in text for word in (
+            "만들어야", "가입해야", "같이만들어야", "둘다", "나눠서", "나눠",
+            "어느게", "어떤게", "뭐가좋", "어느쪽이", "만해도", "만가입해도",
+            "뭐가달라", "뭐가다른", "차이가뭐", "차이가뭔",
+        )
+    ):
+        candidates.append("계좌선택_가이드")
     # ⚠️ "세액공제"라는 단어가 없어도 **납입 한도**를 묻는 질문은 같은 정형 답변이
     # 정답이다(_tax_credit_limit_response가 연금저축+IRP 합산 납입한도와 세액공제
     # 대상 한도를 함께 제시한다). 이 어휘를 빠뜨려서 생긴 구멍이 실측으로 확인됐다 —
@@ -1032,6 +1045,69 @@ def _account_transfer_procedure_response(question: str) -> tuple[str, list[Retri
         "있으니, 정확한 절차는 이전받을 금융기관에 문의하시기 바랍니다."
     )
     return draft, _context(_ACCOUNT_TRANSFER_SOURCE, _ACCOUNT_TRANSFER_CONTENT)
+
+
+# 근거: [연금저축계좌·IRP 세액공제 안내 — 연금계좌 종류와 가입대상 / 납입한도와
+# 세액공제한도 / 분산 납입과 중도인출 유연성].
+_ACCOUNT_CHOICE_SOURCE = "연금저축계좌·IRP 세액공제 안내"
+_ACCOUNT_CHOICE_CONTENT = (
+    "연금계좌는 연금저축과 IRP 두 종류다. 연금저축은 누구나 가입할 수 있다 — 소득이 "
+    "없어도 가입은 가능하지만, 직장인·자영업자 등 종합소득이 있어야 세액공제 혜택을 "
+    "본다. IRP는 직장인, 자영업자, 직역연금가입자 등 가입대상이 정해져 있다.\n\n"
+    "연금저축과 IRP는 합산해서 연 1,800만원까지 납입 가능하다. 세액공제 대상 납입한도는 "
+    "연금저축 단독 연 600만원, IRP는 연금저축 납입액을 포함해서 연 900만원이다. "
+    "연금저축만 있다면 IRP를 추가로 가입해야 연 900만원 한도를 채울 수 있다. "
+    "IRP에만 900만원을 납입해도 세액공제 효과는 연금저축+IRP 조합과 같다.\n\n"
+    "그런데도 두 계좌에 나눠 납입하는 이유는 중도인출 유연성 때문이다. 연금저축펀드는 "
+    "부분 인출이 자유롭다 — 필요할 때 원하는 금액을 인출할 수 있다(과세재원이면 16.5% "
+    "기타소득세 적용, 남은 금액은 계속 운용). 반면 IRP는 무주택자의 주택 구입 등 법정 "
+    "사유를 충족해야만 부분 인출이 가능해 훨씬 까다롭다."
+)
+
+
+def _account_choice_guide_response(question: str) -> tuple[str, list[RetrievedItem]] | None:
+    """연금저축과 IRP 중 어떤 계좌를 선택할지, 왜 나눠 갖는지를 일반론으로 설명한다.
+
+    실측(no.368 "직장인이면 IRP만 만들어도 되나요, 연금저축도 같이 만들어야 하나요?"):
+    grounded=False로 "1,500만 원"을 근거 없이 확정 지었다. 정답은 이미 문서에 있었다
+    — 세액공제 효과는 IRP 단독으로도 동일하지만, 중도인출 유연성 때문에 나눠 갖는
+    것이 실무적으로 권장된다는 내용이다.
+
+    ⚠️ 구체적인 개인 세액공제액 계산("제 소득에서 얼마 공제되나요")은 다루지 않는다.
+    """
+    text = _compact(question)
+    mentions_pension_account = any(
+        word in text for word in ("연금저축", "IRP", "irp", "연금계좌")
+    )
+    asks_choice = any(
+        word in text for word in (
+            "만들어야", "가입해야", "같이만들어야", "둘다", "나눠서", "나눠",
+            "어느게", "어떤게", "뭐가좋", "어느쪽이", "만해도", "만가입해도",
+            "뭐가달라", "뭐가다른", "차이가뭐", "차이가뭔",
+        )
+    )
+    if not (mentions_pension_account and asks_choice):
+        return None
+    # 개인 세액공제액 계산 요구는 여기서 답하지 않는다.
+    if any(word in text for word in ("계산해", "얼마공제", "몇만원공제")):
+        return None
+    draft = (
+        "연금저축과 IRP는 세액공제 효과만 놓고 보면 IRP 하나만 있어도 됩니다 — "
+        "IRP에 900만원을 납입해도 세액공제 대상 한도(연 900만원)를 그대로 채울 수 "
+        "있기 때문입니다.\n\n"
+        "그런데도 실무적으로는 두 계좌를 나눠 갖는 것을 권장하는데, **중도인출 "
+        "유연성** 때문입니다.\n\n"
+        "- **연금저축펀드**: 부분 인출이 자유롭습니다. 필요할 때 원하는 금액만큼 "
+        "인출할 수 있고(과세재원이면 16.5% 기타소득세), 남은 금액은 계속 운용됩니다.\n"
+        "- **IRP**: 무주택자의 주택 구입 등 법정 사유를 충족해야만 부분 인출이 "
+        "가능해 훨씬 까다롭습니다.\n\n"
+        "즉 세액공제만 목적이면 IRP 단독으로 충분하지만, 향후 예기치 않게 자금이 "
+        "필요할 가능성을 고려한다면 연금저축과 IRP를 나눠 갖는 것이 유연합니다. "
+        "참고로 가입 대상 자체도 다릅니다 — 연금저축은 소득이 없어도 가입할 수 "
+        "있지만(단, 세액공제를 받으려면 종합소득이 있어야 함), IRP는 직장인·자영업자 "
+        "등 가입대상이 정해져 있습니다."
+    )
+    return draft, _context(_ACCOUNT_CHOICE_SOURCE, _ACCOUNT_CHOICE_CONTENT)
 
 
 def _tax_benefit_overview_response(question: str) -> tuple[str, list[RetrievedItem]]:
@@ -2805,6 +2881,7 @@ _CATEGORY_HANDLERS = {
     "복합정보_태스크플랜": _composite_info_task_plan_response,
     "제도비교_DB_DC": _db_dc_comparison_response,
     "계좌이전_절차": _account_transfer_procedure_response,
+    "계좌선택_가이드": _account_choice_guide_response,
     "세액공제_계산_입력부족": _tax_credit_calculation_missing_response,
     "세액공제_한도": _tax_credit_limit_response,
     "세금혜택_개요": _tax_benefit_overview_response,
