@@ -1059,6 +1059,75 @@ def detect_exaggerated_tax_premise(question: str) -> list[str]:
     return []
 
 
+# ④의 issues 항목이 "근거 없이 단정했다"는 지적인지 판정하는 표현.
+_UNSUPPORTED_CLAIM_MARKERS = (
+    "근거 없", "근거가 없", "근거 부족", "근거가 부족", "뒷받침되지",
+    "근거 없이", "확인되지 않", "제공된 근거 없",
+)
+# 위 표현이 있어도 이 표현이 함께 있으면 "문제 없다"는 서술이다 — ④가 issues 칸에
+# 검토 결과를 그대로 적는 경우가 있다(실측 no.446 "구체적인 수치나 단정적인 주장을
+# 포함하지 않으므로, 이 부분은 문제가 없습니다").
+_ISSUE_BENIGN_MARKERS = (
+    "문제가 없", "문제없", "일치하므로", "위반이 아니", "해당하지 않습니다",
+    "포함하지 않으므로", "적절합니다", "타당합니다",
+)
+# ④가 issues에 "답변이 빠뜨렸다"를 적는 경우 — 성격상 요구사항 미충족이라
+# enforce_missing_requirements가 담당한다. 여기서 중복 고지하면 안 된다.
+_ISSUE_OMISSION_MARKERS = (
+    "답변하지 않", "다루지 않", "제공하지 않", "언급하지 않", "직접적으로 답",
+)
+
+
+def _is_unsupported_claim_issue(issue: str) -> bool:
+    """issues 항목이 '근거 없는 단정'을 지적한 것인지 판정한다."""
+    if any(marker in issue for marker in _ISSUE_BENIGN_MARKERS):
+        return False
+    if any(marker in issue for marker in _ISSUE_OMISSION_MARKERS):
+        return False
+    return any(marker in issue for marker in _UNSUPPORTED_CLAIM_MARKERS)
+
+
+def enforce_unsupported_claims(answer: str, issues: list[str]) -> str:
+    """④가 '근거 없이 단정했다'고 지적한 서술에 대해 한계를 고지한다.
+
+    ## 왜 필요한가
+
+    ④의 출력 중 issues만 **코드 강제가 전혀 없었다**. unsupported_numbers_confirmed·
+    missing_requirements·premise_issues에는 각각 enforce_* 가 있는데, issues는 ⑤
+    프롬프트에 넘기고 "반영해달라"고 부탁만 했다 — 이 프로젝트가 반복 확인한
+    "프롬프트 순종은 확률적으로 실패한다"가 그대로 적용되는 자리다.
+
+    실측(501문항): grounded=False 46건 중 32건이 "확정 수치는 없고 issues만 있는"
+    경우였고, 그중 근거 없는 단정을 지적했는데 답변에 한계 고지가 없는 사례가 6건이었다.
+      no.9   "퇴직연금 규약 변경 시 고용노동부 승인 필요성에 대한 근거 부족"
+      no.48  "포트폴리오형으로 간주된다는 내용은 근거 없이 단정적으로 서술됨"
+      no.324 "배우자 명의 납입 시 세액공제가 안 된다는 정보는 제공된 근거 없이 작성됨"
+    수치가 아니라 **서술**이라 L0 수치 대조로는 잡히지 않는 유형이다.
+
+    ## 왜 문장을 지우지 않고 고지만 하는가
+
+    수치는 토큰 대조로 위치를 특정할 수 있지만, "근거 없는 단정"은 ④가 자연어로
+    서술할 뿐 답변의 **어느 문장인지 알 수 없다**. 위치를 모른 채 지우면 맞는 내용을
+    지울 위험이 크므로, 삭제 대신 한계를 고지해 사용자가 판단할 수 있게 한다.
+
+    ⚠️ issues는 ④가 자유 서술로 적는 칸이라 성격이 섞여 있다(실측 32건 중 2건은
+    "문제가 없다"는 서술, 10건은 답변 누락 지적). 그래서 세 겹으로 거른다:
+    무해 서술 제외, 누락 지적 제외(enforce_missing_requirements 담당), 그리고
+    이미 한계를 고지한 답변에는 덧붙이지 않는다.
+    """
+    if not issues or has_limit_disclosure(answer):
+        return answer
+    flagged = [issue for issue in issues if _is_unsupported_claim_issue(issue)]
+    if not flagged:
+        return answer
+    items = "".join(f"\n- {issue}" for issue in flagged)
+    return (
+        f"{answer}\n\n"
+        f"※ 위 답변 중 다음 내용은 제공된 자료에서 확인되지 않아 참고용으로만 봐주세요:{items}\n"
+        "정확한 내용은 가입하신 금융기관에 확인해 주시기 바랍니다."
+    )
+
+
 def enforce_premise_issues(answer: str, premise_issues: list[str]) -> str:
     """④가 짚은 '질문의 잘못된 전제'를 답변이 바로잡지 않았으면 앞머리에 교정문을 붙인다.
 

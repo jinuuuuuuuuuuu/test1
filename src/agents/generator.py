@@ -13,6 +13,7 @@ from src.agents.state import PensionAgentState
 from src.agents.verification import (
     enforce_missing_requirements,
     enforce_premise_issues,
+    enforce_unsupported_claims,
     enforce_unsupported_numbers,
     correct_institution_terms,
     replace_evidence_placeholders,
@@ -152,6 +153,12 @@ def _enforce_verification(
     # 4/4 위반이 이 프로젝트의 "프롬프트 순종은 확률적으로 실패한다" 원칙의 근거였다.
     confirmed_numbers = list(verification.get("unsupported_numbers_confirmed") or [])
     answer = enforce_unsupported_numbers(answer, confirmed_numbers)
+
+    # ③-2 수치가 아니라 **서술**로 근거 없이 단정한 부분에 한계를 고지한다.
+    # issues는 ④ 출력 중 유일하게 코드 강제가 없던 칸이었다(실측: grounded=False
+    # 46건 중 32건이 "확정 수치 없이 issues만" 있는 경우). 어느 문장인지 특정할 수
+    # 없어 삭제하지 않고 고지만 한다.
+    answer = enforce_unsupported_claims(answer, list(verification.get("issues") or []))
 
     # ④ 잘못된 전제를 바로잡지 않았으면 앞머리에 교정문을 붙인다 (요강: 정확성)
     answer = enforce_premise_issues(answer, premise_issues)

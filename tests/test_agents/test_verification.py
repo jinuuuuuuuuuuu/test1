@@ -1079,3 +1079,57 @@ def test_strikethrough_markup_is_still_stripped():
 
     assert extract_number_tokens("~~취소선~~ 900만원") == ["900만원"]
     assert "~~" not in strip_inline_markup("~~900만원~~")
+
+
+# ── issues(근거 없는 단정) 코드 강제 ─────────────────────────────────────────
+# ④ 출력 중 issues만 코드 강제가 없었다. 실측(501문항): grounded=False 46건 중
+# 32건이 "확정 수치 없이 issues만" 있는 경우였고, 그중 6건은 한계 고지조차 없었다.
+
+
+def test_enforce_unsupported_claims_adds_disclosure():
+    """근거 없는 단정을 지적한 issue에는 한계를 고지한다."""
+    from src.agents.verification import enforce_unsupported_claims
+
+    answer = "배우자 명의 연금저축에 납입하면 세액공제를 받을 수 없습니다."
+    issue = "배우자의 명의로 납입한 경우에 세액공제가 안된다는 정보는 제공된 근거 없이 작성됨"
+    out = enforce_unsupported_claims(answer, [issue])
+
+    assert answer in out                      # 본문은 지우지 않는다(위치를 특정할 수 없다)
+    assert "확인되지 않아 참고용" in out
+    assert issue in out
+
+
+def test_enforce_unsupported_claims_skips_benign_issue():
+    """④가 issues 칸에 '문제 없다'고 적는 경우가 있다 — 고지를 붙이면 안 된다."""
+    from src.agents.verification import enforce_unsupported_claims
+
+    answer = "연금저축은 누구나 가입할 수 있습니다."
+    benign = "초안은 구체적인 수치나 단정적인 주장을 포함하지 않으므로, 이 부분은 문제가 없습니다."
+
+    assert enforce_unsupported_claims(answer, [benign]) == answer
+
+
+def test_enforce_unsupported_claims_skips_omission_issue():
+    """'답변이 빠뜨렸다'는 지적은 enforce_missing_requirements 담당이라 중복 고지하지 않는다."""
+    from src.agents.verification import enforce_unsupported_claims
+
+    answer = "연금저축은 누구나 가입할 수 있습니다."
+    omission = "초안은 질문에 직접적으로 답변하지 않으며 관련 정보를 제공하지 않습니다."
+
+    assert enforce_unsupported_claims(answer, [omission]) == answer
+
+
+def test_enforce_unsupported_claims_respects_existing_disclosure():
+    """이미 한계를 고지한 답변에는 덧붙이지 않는다(중복 방지)."""
+    from src.agents.verification import enforce_unsupported_claims
+
+    answer = "해당 내용은 제공된 자료로는 확인이 어렵습니다."
+
+    assert enforce_unsupported_claims(answer, ["근거 없이 단정적으로 서술됨"]) == answer
+
+
+def test_enforce_unsupported_claims_no_issues_is_noop():
+    from src.agents.verification import enforce_unsupported_claims
+
+    answer = "연금저축 세액공제 한도는 600만원입니다."
+    assert enforce_unsupported_claims(answer, []) == answer
