@@ -323,7 +323,7 @@ def candidate_categories(question: str) -> list[str]:
     mentions_dc = "DC" in question or "확정기여" in text
     if mentions_db and mentions_dc:
         candidates.append("제도비교_DB_DC")
-    elif mentions_db and any(word in text for word in ("확정돼있는", "확정되어있는", "확정된게")):
+    elif mentions_db and _DB_CONFIRMATION_RE.search(text):
         candidates.append("제도비교_DB_DC")
     # 계좌 이전/이체 — 실측(no.56 "IRP 계좌를 다른 증권사로 옮기려면"): 근거 10건을
     # 갖고도 무관한 규정("2013년 이전 가입분은 이전 불가")을 창작했다.
@@ -938,6 +938,12 @@ _DB_DC_COMPARISON_CONTENT = (
 _DB_DC_CALCULATION_SIGNAL_MARKERS = ("계산해", "계산해줘", "얼마나되나요", "얼마받나요", "얼마입니까")
 _NUMBER_PRESENT_RE = re.compile(r"\d")
 
+# DB형이 "확정된 금액을 준다"는 사실을 확인하는 질문. 어미 활용형을 일일이 나열하면
+# 실측 no.10처럼 놓친 표현이 반드시 나온다("확정돼있는" 목록엔 "확정된 금액을 받는
+# 거"가 없었다) — "확정"이라는 어간과 질문형 종결(맞나요/인가요/나요/까요)이
+# 둘 다 있는지를 정규식으로 본다. 사이에 어떤 말이 와도(받는, 인, 되는 등) 잡힌다.
+_DB_CONFIRMATION_RE = re.compile(r"확정.{0,12}(맞나요|맞는지|맞습니까|인가요|나요|까요\?)")
+
 
 def _db_dc_comparison_response(question: str) -> tuple[str, list[RetrievedItem]] | None:
     """DB형·DC형의 제도 차이(운용주체·계산방식)를 일반론으로 설명한다.
@@ -961,9 +967,7 @@ def _db_dc_comparison_response(question: str) -> tuple[str, list[RetrievedItem]]
     asks_comparison = any(word in text for word in ("차이", "다른가", "다른가요", "다릅니", "비교"))
     asks_db_calc = asks_db and any(word in text for word in ("계산", "산정", "얼마로", "어떻게정해"))
     asks_operator = any(word in text for word in ("운용주체", "누가운용", "누가굴리", "직접운용"))
-    asks_db_confirmation = asks_db and any(
-        word in text for word in ("확정돼있는", "확정되어있는", "확정된게", "맞나요", "맞는")
-    )
+    asks_db_confirmation = asks_db and _DB_CONFIRMATION_RE.search(text) is not None
     if not (
         (asks_db and asks_dc and (asks_comparison or asks_operator))
         or asks_db_calc
@@ -1229,7 +1233,55 @@ def _tax_credit_rate_for_income(values: dict[str, int | None]) -> str | None:
     )
 
 
+# ISA 만기 자금을 연금계좌로 전환할 때는 일반 세액공제 한도(900만원)와 답이 다르다 —
+# 전환입금액의 10%(최대 300만원)가 추가로 공제 대상에 더해진다. 실측(20문항 스팟체크
+# T20 "ISA 만기됐는데 연금계좌로 전환하면 세액공제 어떻게 되나요?"): "세액공제"라는
+# 단어만 보고 candidate_categories가 세액공제_한도로 후보를 냈는데, 그 핸들러는 ISA를
+# 전혀 다루지 않아 일반 900만원 답변(할루시네이션은 아니지만 사실상 오답)이 나갔다.
+# 근거: [ISA 만기 자금 연금계좌 전환납입 절세 혜택 안내 — 연금계좌 세액공제 최대 절세액].
+_ISA_CONVERSION_SOURCE = "ISA 만기 자금 연금계좌 전환납입 절세 혜택 안내 — 연금계좌 세액공제 최대 절세액"
+_ISA_CONVERSION_CONTENT = (
+    "ISA 만기 자금을 연금계좌로 전환납입하면 일반 세액공제 한도(연금저축 600만원, "
+    "IRP 포함 900만원)에 더해 ISA 전환입금액의 10%(최대 300만원)가 추가로 공제 "
+    "대상에 더해진다. 인당 최대 추가 공제 한도는 300만원이다(직전·이번 과세연도에 "
+    "걸쳐 나눠 납입해도 동일).\n\n"
+    "따라서 ISA→연금저축계좌 전환 연도의 세액공제 대상 한도는 600만원+300만원 = "
+    "900만원이고, IRP 계좌로 전환하면 900만원+300만원 = 1,200만원이다(2023년 1월 1일 "
+    "이후 납입분부터 적용).\n\n"
+    "세액공제율은 총급여 5,500만원 이하 또는 종합소득금액 4,500만원 이하이면 16.5%, "
+    "초과이면 13.2%다. 예: IRP 전환 시 최대 세액공제액은 1,200만원 x 16.5% = 198만원, "
+    "1,200만원 x 13.2% = 158만 4천원이다."
+)
+
+
+def _isa_conversion_response(question: str) -> tuple[str, list[RetrievedItem]] | None:
+    """ISA 만기 자금을 연금계좌로 전환할 때의 세액공제 특례를 답한다.
+
+    일반 세액공제 한도 핸들러(_tax_credit_limit_response)와 정답이 다르므로 별도로
+    분기한다 — ISA 언급이 없으면 이 함수는 관여하지 않고(None) 일반 핸들러가 처리한다.
+    """
+    text = _compact(question)
+    if "ISA" not in question and "isa" not in text:
+        return None
+    if not any(word in text for word in ("전환", "만기")):
+        return None
+    return (
+        "ISA 만기 자금을 연금계좌로 전환납입하면 일반 세액공제 한도에 더해 **전환입금액의 "
+        "10%(최대 300만원)**가 추가로 공제 대상에 더해집니다.\n\n"
+        "- **연금저축으로 전환**: 세액공제 대상 한도 600만원 + 300만원 = **900만원**\n"
+        "- **IRP로 전환**: 세액공제 대상 한도 900만원 + 300만원 = **1,200만원**\n\n"
+        "추가 공제 한도(300만원)는 인당 기준이며, 직전 과세연도와 이번 연도에 걸쳐 나눠 "
+        "납입해도 합산 최대 300만원까지만 적용됩니다.\n\n"
+        "세액공제율은 총급여 5,500만원 이하 또는 종합소득금액 4,500만원 이하이면 16.5%, "
+        "초과이면 13.2%입니다. 예를 들어 IRP로 전환한 경우 최대 세액공제액은 "
+        "1,200만원 x 16.5% = 198만원, 1,200만원 x 13.2% = 158만 4천원입니다."
+    ), _context(_ISA_CONVERSION_SOURCE, _ISA_CONVERSION_CONTENT)
+
+
 def _tax_credit_limit_response(question: str) -> tuple[str, list[RetrievedItem]]:
+    isa_response = _isa_conversion_response(question)
+    if isa_response is not None:
+        return isa_response
     source = "doc41 세액공제 규칙"
     content = (
         f"연금저축+IRP 합산 납입한도는 연 {_won(TOTAL_CONTRIBUTION_LIMIT)}입니다. "

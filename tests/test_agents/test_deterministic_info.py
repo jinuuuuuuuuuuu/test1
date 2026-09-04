@@ -20,6 +20,33 @@ def test_tax_credit_limit_response_content():
     assert "연금저축+IRP 합산 900만원" in context[0]["content"]
 
 
+# ── ISA 만기 전환 세액공제 특례 (실측 20문항 스팟체크 T20) ────────────────────
+# "세액공제"라는 단어만 보고 세액공제_한도 후보가 걸려 라우터가 확정했는데, 그
+# 핸들러는 ISA를 다루지 않아 일반 900만원 답변(사실상 오답)이 나갔다. ISA 전환
+# 시 정답은 전환입금액의 10%(최대 300만원)가 추가로 붙어 900/1,200만원이다.
+
+
+def test_isa_conversion_question_gets_isa_specific_answer():
+    draft, context = deterministic_response_for(
+        "세액공제_한도", "ISA 만기됐는데 연금계좌로 전환하면 세액공제 어떻게 되나요?"
+    )
+
+    assert "300만원" in draft
+    assert "900만원" in draft and "1,200만원" in draft   # 연금저축/IRP 전환 각각의 정답
+    assert context and "ISA" in context[0]["source"]
+
+
+def test_non_isa_question_is_unaffected_by_isa_branch():
+    """ISA 언급이 없는 일반 세액공제 질문은 기존 답변 그대로 유지된다(회귀 방지)."""
+    draft, _ = deterministic_response_for(
+        "세액공제_한도", "세액공제 최대로 받으려면 얼마 넣어야 하나요?"
+    )
+
+    assert "합산 900만원" in draft
+    assert "1,200만원" not in draft
+    assert "300만원" not in draft
+
+
 def test_tax_benefit_overview_candidate_and_response():
     question = "연금계좌의 세금혜택에 대해 알려주세요"
     assert "세금혜택_개요" in candidate_categories(question)
@@ -1666,6 +1693,12 @@ def test_db_dc_comparison_reaches_category_from_common_phrasings():
         "DC와 DB, 퇴직금이 정해지는 방식이랑 운용 주체가 어떻게 다른가요?",
         "DB형은 제가 받을 퇴직금이 미리 확정돼 있는 게 맞나요?",
         "DB와 DC 차이가 뭔가요?",
+        # 실측(20문항 스팟체크 T10): "확정돼있는/확정되어있는/확정된게" 목록에는
+        # 없던 자연스러운 변형 — 어간 활용형을 나열하면 반드시 다른 변형에서
+        # 뚫린다. 근거를 7건씩 갖고도 "평균 임금의 60배"를 창작한 no.1/no.27과
+        # 같은 실패가 정확히 이 표현에서 재현됐다.
+        "DB형은 회사가 운용하고 확정된 금액을 받는 거 맞나요?",
+        "DB형이면 금액이 확정인가요?",
     ):
         assert "제도비교_DB_DC" in candidate_categories(question), question
 
