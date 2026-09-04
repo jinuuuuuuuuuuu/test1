@@ -839,7 +839,36 @@ def test_enforce_unsupported_numbers_keeps_numbered_list_intact():
     out = enforce_unsupported_numbers(answer, ["16.5%"])
 
     assert "1." in out and "2." in out and "3." in out   # 번호 유지
+    assert "**세금**" in out                              # 항목 제목도 유지
     assert "참고용입니다" in out                          # 대신 경고로 처리
+
+
+def test_enforce_unsupported_numbers_removes_fabricated_content_inside_numbered_item():
+    """번호 목록 항목이라도 제목 뒤 본문이 창작이면 그 부분만 지운다.
+
+    실측 회귀(20문항 스팟체크 T04 재검증): "번호 목록은 통째로 보존"으로만 두면
+    반대 사고가 난다 — 항목 본문 전체가 지어낸 수치("연간 최대 400만원까지...")일
+    때 그 문장이 그대로 노출됐다. "1."을 문장 부호로 오인해 분리하면서 "번호
+    다음 첫 조각만 보존" 규칙이 번호만 지키고 진짜 제목+본문을 통째로 삭제
+    대상으로 넘기는 2차 버그도 함께 있었다("1.\\n2. ...\\n3. ..."로 항목 1이
+    통째로 사라짐) — 숫자 뒤 마침표에서는 문장을 안 자르도록 고쳤다.
+    """
+    from src.agents.verification import enforce_unsupported_numbers
+
+    answer = (
+        "1. **연금 저축**: 연금저축계좌에 가입할 수 있습니다. "
+        "연간 납입액 중 최대 400만원까지 세액 공제를 받을 수 있으며, "
+        "낮은 세율(3.3%~5.5%)의 연금 소득세를 부담하게 됩니다.\n\n"
+        "2. **퇴직연금(IRP)**: 추가 세액공제 혜택을 받을 수 있습니다. "
+        "연금저축 합산하여 최대 700만원까지 세액공제가 가능합니다."
+    )
+    out = enforce_unsupported_numbers(answer, ["400만원", "3.3%", "5.5%", "700만원"])
+    body = out.split("※")[0]
+
+    assert "400만원" not in body and "700만원" not in body
+    assert "3.3%" not in body and "5.5%" not in body
+    # 항목 제목·번호는 그대로 남는다.
+    assert "1. **연금 저축**" in out and "2. **퇴직연금(IRP)**" in out
 
 
 def test_enforce_unsupported_numbers_falls_back_when_too_short():
@@ -931,6 +960,20 @@ def test_want_statements_are_not_treated_as_premises():
         "노후 준비를 하고 싶다",
         "수익률 높은 상품을 원해",
         "상품 추천 요청",
+        # 실측(20문항 스팟체크 T08/T09, 3차 재발): "원해/싶어" 같은 욕구 서술어만
+        # 있고 "-해줘/-주세요" 명령형·"-까요" 청유형 의문문이 endings 목록에 빠져
+        # 있었다. 최종 답변이 "안정적인 상품 추천해줘"라는 사용자 요청 문장 자체를
+        # "사실과 다르거나 과장된 전제"라며 반박하는 문장으로 시작했다.
+        "안정적인 상품 추천해줘",
+        "공격적으로 투자하고 싶은데 뭐가 좋을까요?",
+        "안전한 상품 알려주세요",
+        # 같은 스팟체크에서 T04가 이어서 뚫렸다: "노후 대비 뭐부터 시작해야
+        # 하나요?"는 무엇을 해야 할지 묻는 순수 정보 요청인데 "-해야 하나요?"
+        # 종결이 빠져 있었다. "명령형/청유형"만 넓히고 "의문형 방법 질의"를
+        # 놓치는 같은 실수가 한 세션 안에서 반복됐다 — endings 나열 방식 자체의
+        # 구조적 한계다(이 함수의 다른 결함들과 같은 클래스).
+        "노후 대비 뭐부터 시작해야 하나요?",
+        "연금 처음 시작하는데 뭐 사야 하나요?",
     ):
         real, _misfiled = split_premise_issues([item], [])
         assert real == [], f"요청/목표가 전제로 남았다: {item}"
