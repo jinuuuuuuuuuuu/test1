@@ -106,10 +106,15 @@ def test_override_preserves_partial_scope():
 
 
 def test_in_kind_transfer_intent_routes_asset_preserving_procedure_to_info_only():
-    """'상품 그대로 이전할 수 있는 방법'은 상품 추천이 아니라 이전 제도 질문이다."""
+    """'상품 그대로 이전할 수 있는 방법'은 상품 추천이 아니라 이전 제도 질문이다.
+
+    ⚠️ candidate_categories가 계좌이전_절차 핸들러 도입 후 이 질문에 후보를 내도록
+    바뀌었다(정확한 근거 기반 답변이 가능해졌다). 이 테스트의 본래 목적인 "상품형
+    intent를 정보형으로 되돌리는지"는 계속 확인한다.
+    """
     question = "IRP 상품 그대로 이전할 수 있는 방법 알려줘"
 
-    assert candidate_categories(question) == []
+    assert "계좌이전_절차" in candidate_categories(question)
     assert _apply_in_kind_transfer_intent_override(["상품형"], question) == ["정보형"]
 
 

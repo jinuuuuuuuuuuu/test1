@@ -172,6 +172,8 @@ CODE_OVERRIDABLE_CATEGORIES: frozenset[str] = frozenset({
     "개인세금_입력충분성",
     # 개인 상황 신호가 있으면 스스로 None을 낸다(_DB_DC_PERSONAL_SIGNAL_MARKERS).
     "제도비교_DB_DC",
+    # 이전/이체 요구가 없거나 개인 판정 신호가 있으면 스스로 None을 낸다.
+    "계좌이전_절차",
     "중도인출_기한판정",
     "중도인출_요건판정",
     "실물이전_개별판정",
@@ -321,6 +323,12 @@ def candidate_categories(question: str) -> list[str]:
         candidates.append("제도비교_DB_DC")
     elif mentions_db and any(word in text for word in ("확정돼있는", "확정되어있는", "확정된게")):
         candidates.append("제도비교_DB_DC")
+    # 계좌 이전/이체 — 실측(no.56 "IRP 계좌를 다른 증권사로 옮기려면"): 근거 10건을
+    # 갖고도 무관한 규정("2013년 이전 가입분은 이전 불가")을 창작했다.
+    if any(word in text for word in ("IRP", "irp", "연금저축", "퇴직연금", "연금계좌")) and any(
+        word in text for word in ("이전", "옮기", "옮겨", "이체")
+    ):
+        candidates.append("계좌이전_절차")
     # ⚠️ "세액공제"라는 단어가 없어도 **납입 한도**를 묻는 질문은 같은 정형 답변이
     # 정답이다(_tax_credit_limit_response가 연금저축+IRP 합산 납입한도와 세액공제
     # 대상 한도를 함께 제시한다). 이 어휘를 빠뜨려서 생긴 구멍이 실측으로 확인됐다 —
@@ -961,6 +969,69 @@ def _db_dc_comparison_response(question: str) -> tuple[str, list[RetrievedItem]]
         "제도 변경은 DB에서 DC로는 가능하지만 DC에서 DB로는 불가능합니다."
     )
     return draft, _context(_DB_DC_COMPARISON_SOURCE, _DB_DC_COMPARISON_CONTENT)
+
+
+# 실물이전(상품 매도 없이 금융기관만 변경)과 이체(현금으로 다른 종류 계좌로 옮김)는
+# 서로 다른 제도다. 근거: [퇴직연금 실물이전제도 안내], [IRP 중도인출·계약해지·이체
+# 및 연금인출 안내].
+_ACCOUNT_TRANSFER_SOURCE = "퇴직연금 실물이전제도 안내 / IRP 중도인출·계약해지·이체 및 연금인출 안내"
+_ACCOUNT_TRANSFER_CONTENT = (
+    "실물이전제도(2024년 10월 31일 시행): 보유 중인 상품을 매도하지 않고 퇴직연금 "
+    "금융기관을 변경하는 제도. 동일 제도 간에만 가능하다 — DB제도→DB제도, "
+    "DC제도→DC제도, IRP계좌→IRP계좌. DB/DC제도는 재직 중인 회사를 통해서만 이전 "
+    "신청이 가능하고, IRP계좌는 영업점 또는 모바일(M-STOCK: 연금>타사연금가져오기/"
+    "실물이전 경로)로 직접 신청할 수 있다.\n\n"
+    "개인형 IRP 이체(소득세법 시행령 40조): 세액공제·과세이연 등 세제혜택을 유지하며 "
+    "다른 연금계좌로 이체하는 것으로, 전액 이체만 가능하다.\n"
+    "- IRP 상호간 이체: 가입자 부담금·이연퇴직소득이 있는 모든 IRP계좌 대상. "
+    "연령 제한 없이 가능하며 실물이전도 가능하다.\n"
+    "- IRP ↔ 연금저축계좌 간 이체: 가입자 연령 55세 이상 and 연금계좌 가입일로부터 "
+    "5년 경과 시 가능(이연퇴직소득이 있으면 연령·경과기간 요건 완화). 실물이전은 "
+    "불가하고 현금이전만 가능하다."
+)
+
+
+def _account_transfer_procedure_response(question: str) -> tuple[str, list[RetrievedItem]] | None:
+    """IRP·연금저축 계좌를 다른 금융기관·다른 종류로 옮기는 절차를 일반론으로 설명한다.
+
+    실측(no.56 "IRP 계좌를 다른 증권사로 옮기려면 어떻게 해야 하나요?"): 근거를
+    10건 확보하고도 LLM이 "2013년 3월 1일 이후 가입한 연금계좌는 그 이전 가입
+    계좌로 옮길 수 없다"는 규정을 창작했다. 근거를 다시 확인한 결과 2013.03.01은
+    실재하는 날짜이지만 **완전히 다른 제도**(연금수령연차 계산 시작점 — 그 이전
+    가입한 구 연금저축계좌는 6년차부터 시작)에 관한 것이었다. 계좌 이전 가능 여부와는
+    무관한데, LLM이 절반쯤 기억한 날짜를 엉뚱한 맥락에 갖다 붙인 전형적인 창작이다.
+
+    ⚠️ 개인 상황(본인이 보유한 상품 유형·연령 등을 대입한 개별 판정)은 다루지
+    않는다. "일반형만 확정한다" 원칙에 따라 이전 절차·조건의 일반론만 설명한다.
+    """
+    text = _compact(question)
+    mentions_irp_or_pension_account = any(
+        word in text for word in ("IRP", "irp", "연금저축", "퇴직연금", "연금계좌")
+    )
+    asks_transfer = any(
+        word in text for word in ("이전", "옮기", "옮겨", "이체", "증권사를바꾸", "금융기관을바꾸")
+    )
+    if not (mentions_irp_or_pension_account and asks_transfer):
+        return None
+    # 개인 판정 신호(구체적 상품 상태·연령 등을 대입한 질문)는 여기서 답하지 않는다.
+    if any(word in text for word in ("제가보유", "제보유", "실물이전가능한가요", "MMF", "RP상품")):
+        return None
+    draft = (
+        "IRP·연금저축 계좌를 다른 금융기관으로 옮기는 방법은 두 가지입니다.\n\n"
+        "**1. 실물이전** (2024년 10월 31일 시행)\n"
+        "- 보유 중인 상품을 매도하지 않고 금융기관만 변경합니다.\n"
+        "- 동일 제도 간에만 가능합니다: IRP계좌→IRP계좌, DC제도→DC제도, DB제도→DB제도.\n"
+        "- IRP계좌는 영업점 방문 또는 모바일 앱으로 직접 신청할 수 있습니다.\n"
+        "- DB/DC제도는 재직 중인 회사를 통해서만 이전 신청이 가능합니다.\n\n"
+        "**2. 이체** (다른 종류의 연금계좌로 옮길 때)\n"
+        "- 세액공제·과세이연 혜택을 유지하며 다른 연금계좌로 전액 이체합니다.\n"
+        "- IRP 상호간 이체는 연령 제한 없이 가능하고 실물이전도 가능합니다.\n"
+        "- IRP와 연금저축계좌 간 이체는 만 55세 이상이고 가입일로부터 5년이 지나야 "
+        "가능하며, 이 경우 실물이전은 안 되고 현금이전만 가능합니다.\n\n"
+        "본인이 보유한 상품 유형이나 구체적인 조건에 따라 적용되는 방식이 달라질 수 "
+        "있으니, 정확한 절차는 이전받을 금융기관에 문의하시기 바랍니다."
+    )
+    return draft, _context(_ACCOUNT_TRANSFER_SOURCE, _ACCOUNT_TRANSFER_CONTENT)
 
 
 def _tax_benefit_overview_response(question: str) -> tuple[str, list[RetrievedItem]]:
@@ -2733,6 +2804,7 @@ def _pension_income_tax_rate_response(question: str) -> tuple[str, list[Retrieve
 _CATEGORY_HANDLERS = {
     "복합정보_태스크플랜": _composite_info_task_plan_response,
     "제도비교_DB_DC": _db_dc_comparison_response,
+    "계좌이전_절차": _account_transfer_procedure_response,
     "세액공제_계산_입력부족": _tax_credit_calculation_missing_response,
     "세액공제_한도": _tax_credit_limit_response,
     "세금혜택_개요": _tax_benefit_overview_response,

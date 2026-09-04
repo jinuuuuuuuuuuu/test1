@@ -428,9 +428,19 @@ def test_account_level_transfer_is_not_in_kind_transfer():
     회귀 방지: 실측 no.367("연금저축 계좌를 해지하지 않고 다른 금융사로 옮기는 방법이
     있나요?")은 "옮기" 하나로 실물이전 카테고리가 붙어, 계좌이전 방법 대신 상품
     실물이전 **불가사유 목록**을 나열하는 동문서답이 나갔다.
+
+    ⚠️ 원래는 "candidate_categories(...) == []"였으나(당시 "보유 DB에 관련 문서가
+    없다"고 판단해 LLM 경로로 열어뒀다), 이후 계좌이전_절차 핸들러가 실물이전제도·
+    IRP 이체 규정을 근거로 정확히 이 질문에 답할 수 있음이 확인됐다(no.56도 같은
+    유형). 지금은 **실물이전_불가사유가 아니라 계좌이전_절차로** 가는 것이 정답이다.
     """
-    assert candidate_categories("연금저축 계좌를 해지하지 않고 다른 금융사로 옮기는 방법이 있나요?") == []
-    assert candidate_categories("IRP 계좌를 다른 증권사로 옮기고 싶어요") == []
+    for question in (
+        "연금저축 계좌를 해지하지 않고 다른 금융사로 옮기는 방법이 있나요?",
+        "IRP 계좌를 다른 증권사로 옮기고 싶어요",
+    ):
+        candidates = candidate_categories(question)
+        assert "실물이전_불가사유" not in candidates, question
+        assert "계좌이전_절차" in candidates, question
 
     # 상품 단위 실물이전 질문과 "실물이전" 용어를 쓴 질문은 그대로 유지된다.
     for question in (
@@ -1694,3 +1704,52 @@ def test_db_dc_comparison_declines_unrelated_questions():
         "IRP 계좌 이전 절차 알려줘",
     ):
         assert _db_dc_comparison_response(question) is None, question
+
+
+# ── 계좌이전_절차 (실측 no.56/no.367: 근거 없이 "2013년 이전 가입분 이전 불가" 창작) ──
+
+
+def test_account_transfer_reaches_category_from_common_phrasings():
+    for question in (
+        "IRP 계좌를 다른 증권사로 옮기려면 어떻게 해야 하나요?",
+        "연금저축을 IRP로 이체할 수 있나요",
+        "퇴직연금 다른 회사로 옮기는 방법",
+        "연금저축 계좌를 해지하지 않고 다른 금융사로 옮기는 방법이 있나요?",
+    ):
+        assert "계좌이전_절차" in candidate_categories(question), question
+
+
+def test_account_transfer_answer_does_not_fabricate_2013_rule():
+    """근거에 없는 '2013년 이전 가입분은 이전 불가' 규정을 답변에 넣지 않는다.
+
+    실측 no.56: 2013.03.01은 실재하는 날짜이지만 완전히 다른 제도(연금수령연차
+    계산 시작점)에 관한 것이고 계좌 이전 가능 여부와는 무관하다.
+    """
+    draft, context = deterministic_response_for(
+        "계좌이전_절차", "IRP 계좌를 다른 증권사로 옮기려면 어떻게 해야 하나요?"
+    )
+
+    assert "2013" not in draft
+    assert "실물이전" in draft and "이체" in draft
+    assert context
+
+
+def test_account_transfer_declines_personal_judgment():
+    """본인 보유 상품 조건을 대입한 개별 판정은 다루지 않는다."""
+    from src.agents.deterministic_info import _account_transfer_procedure_response
+
+    assert _account_transfer_procedure_response("제가 보유한 MMF도 실물이전 되나요?") is None
+
+
+def test_account_transfer_declines_unrelated_questions():
+    from src.agents.deterministic_info import _account_transfer_procedure_response
+
+    for question in (
+        "오늘 점심 뭐 먹지",
+        "안정적인 연금 상품 추천해줘",
+        "세액공제 한도가 얼마인가요",
+        "디폴트옵션이 뭔가요",
+        "DC와 DB 차이가 뭔가요",
+        "중도인출 사유가 뭐가 있나요",
+    ):
+        assert _account_transfer_procedure_response(question) is None, question
