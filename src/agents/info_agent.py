@@ -149,6 +149,22 @@ def _search_with_rewrites(question: str) -> tuple[list[dict], list[str]]:
     return merged[:5], used_queries
 
 
+def _searched_with_raw_question(tool_trace: list[ToolCallRecord], question: str) -> bool:
+    """LLM이 문서 검색에 질문 원문을 그대로 넘겼는지 판정한다.
+
+    실측(501문항): search_pension_docs 호출 210건 중 83건(39%)이 원문 그대로였다.
+    이 경우 일상어와 제도 용어의 간극 때문에 근거 품질이 떨어지기 쉬우므로,
+    제도 용어로 재작성한 검색을 한 번 더 돌려 근거를 보강한다.
+    """
+    head = (question or "").strip("?. ")[:24]
+    if len(head) < 8:
+        return False
+    return any(
+        record.get("tool") == "search_pension_docs" and head in (record.get("args") or "")
+        for record in tool_trace
+    )
+
+
 def _doc_search_context(question: str) -> tuple[list[RetrievedItem], list[ToolCallRecord]]:
     """LLM이 RAG 호출을 건너뛴 경우에도 정보형 질문은 한 번 직접 검색해 근거를 확보한다."""
     results, rewritten_queries = _search_with_rewrites(question)
@@ -321,6 +337,19 @@ def build_info_agent_node():
             forced_context, forced_trace = _doc_search_context(state["question"])
             retrieved_context = forced_context
             tool_trace = [*tool_trace, *forced_trace]
+        elif _searched_with_raw_question(tool_trace, state["question"]):
+            # 근거는 있지만 LLM이 **질문 원문을 그대로** 검색어로 쓴 경우다.
+            # 사용자는 일상어로 묻고 문서는 제도 용어로 쓰여 있어, 이 조합은 엉뚱한
+            # 문서를 끌어오기 쉽다(실측 S03: "전업주부인데 노후 대비..." -> MP 알림톡
+            # FAQ). 제도 용어로 재작성한 질의 결과를 **더해서** 근거를 보강한다.
+            #
+            # 실측(501문항): 근거는 있는데 grounded=False인 32건 중 9건이 이 경로였고,
+            # 표본 5건에서 3건이 뚜렷이 개선됐다(25.9 -> 10.8 등), 나빠진 건 없었다.
+            # 원문 결과를 버리지 않고 합치므로 이미 좋은 검색은 그대로 유지된다.
+            extra_context, extra_trace = _doc_search_context(state["question"])
+            if extra_context:
+                retrieved_context = [*retrieved_context, *extra_context]
+                tool_trace = [*tool_trace, *extra_trace]
 
         # ⚠️ response_mode를 안 채우면 Guardian(파수꾼)이 절대 작동하지 않는다 —
         # _guardian_route_possible이 response_mode=="complete"를 요구하는데, 이 LLM
