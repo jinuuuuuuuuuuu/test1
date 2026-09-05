@@ -101,6 +101,8 @@ from src.agents.withdrawal_context import extract_withdrawal_context
 
 DeterministicCategory = Literal[
     "복합정보_태스크플랜",
+    "퇴직연금_유형비교",
+    "퇴직급여_연금계좌_세금전제검증",
     "세액공제_계산_입력부족",
     "세액공제_한도",
     "세금혜택_개요",
@@ -125,6 +127,8 @@ DeterministicCategory = Literal[
 # router.py가 프롬프트/RouterDecision의 Literal 정의에 그대로 재사용한다.
 DETERMINISTIC_CATEGORIES: tuple[str, ...] = (
     "복합정보_태스크플랜",
+    "퇴직연금_유형비교",
+    "퇴직급여_연금계좌_세금전제검증",
     "세액공제_계산_입력부족",
     "세액공제_한도",
     "세금혜택_개요",
@@ -169,6 +173,8 @@ DETERMINISTIC_CATEGORIES: tuple[str, ...] = (
 # deterministic_response_for가 후보 목록을 재확인하도록 고쳐 13개 전부 해결됐다.
 CODE_OVERRIDABLE_CATEGORIES: frozenset[str] = frozenset({
     "복합정보_태스크플랜",
+    "퇴직연금_유형비교",
+    "퇴직급여_연금계좌_세금전제검증",
     "개인세금_입력충분성",
     # 개인 상황 신호가 있으면 스스로 None을 낸다(_DB_DC_PERSONAL_SIGNAL_MARKERS).
     "제도비교_DB_DC",
@@ -312,6 +318,10 @@ def candidate_categories(question: str) -> list[str]:
 
     if _build_composite_info_tasks(question):
         candidates.append("복합정보_태스크플랜")
+    if _asks_retirement_plan_comparison(question):
+        candidates.append("퇴직연금_유형비교")
+    if _asks_retirement_benefit_tax_premise_gate(question):
+        candidates.append("퇴직급여_연금계좌_세금전제검증")
     if personal_tax_response(question) is not None:
         candidates.append("개인세금_입력충분성")
     # DB/DC 제도 비교 — 실측(no.1/no.27): 근거를 7건씩 갖고도 DB 급여 계산식을
@@ -609,6 +619,7 @@ def candidate_categories(question: str) -> list[str]:
 # 이 함수는 판정을 바꾸지 않는다(후보를 추가하지도, 빼지도 않는다). 오직 관측용이다 —
 # think_trace와 평가 로그에 남겨, 다음 누락을 "터진 뒤"가 아니라 집계로 발견한다.
 _DETERMINISTIC_TOPIC_MARKERS = (
+    "DB", "DC", "확정급여", "확정기여",
     "세액공제", "절세", "세금혜택", "세제혜택", "연금소득세", "퇴직소득세", "기타소득세",
     "중도인출", "실물이전", "디폴트옵션", "연금수령한도", "위험자산", "종합과세",
     "납입한도", "세율", "과세",
@@ -731,6 +742,144 @@ def _context(source: str, content: str) -> list[RetrievedItem]:
     return [{"source": source, "content": content, "node": "info_agent"}]
 
 
+_RETIREMENT_PLAN_COMPARISON_SOURCES = (
+    "퇴직연금 가입대상 doc10_chunk02/03",
+    "퇴직연금제도 기본 doc11_chunk01_part1/2",
+    "DB DC 퇴직연금 산정 doc15_chunk01_part1/doc15_chunk02",
+)
+_RETIREMENT_PLAN_FACT_VERSION = "2026-08-13-chroma-docs"
+
+
+def _asks_retirement_plan_comparison(question: str) -> bool:
+    """DB/DC/퇴직금 핵심 비교 질문만 Fact Contract 후보로 올린다."""
+    text = _compact(question)
+    upper = text.upper()
+    has_db = "DB" in upper or "확정급여" in text or "DEFINEDBENEFIT" in upper
+    has_dc = "DC" in upper or "확정기여" in text or "DEFINEDCONTRIBUTION" in upper
+    if has_db and has_dc:
+        return any(
+            word in text
+            for word in (
+                "차이", "비교", "다른", "달라", "누가", "운용", "굴려", "계산", "산식",
+                "정해", "확정", "책임", "부담", "손실", "수익", "퇴직금", "퇴직급여",
+            )
+        ) or "DEFINED" in upper
+
+    plan_context = "퇴직금" in text or "퇴직급여" in text or "퇴직연금" in text
+    if not ((has_db or has_dc) and plan_context):
+        return False
+    return any(
+        word in text
+        for word in (
+            "미리정", "사전에정", "확정", "운용", "손실", "책임", "부담", "계산", "산식", "달라",
+        )
+    )
+
+
+def _retirement_plan_comparison_response(_question: str) -> tuple[str, list[RetrievedItem]]:
+    """DB/DC/퇴직금 비교의 불변 사실만 근거 포함 Fact Contract로 고정한다."""
+    source = "; ".join(_RETIREMENT_PLAN_COMPARISON_SOURCES)
+    content = (
+        f"version={_RETIREMENT_PLAN_FACT_VERSION}; "
+        "plan_type=DB; english_name=Defined Benefit; operator=회사; "
+        "benefit_formula=평균임금 x 계속근로기간 또는 퇴직 전 평균임금 30일분 x 계속근로기간; "
+        "contribution_rule=급여 지급능력 확보를 위한 적립; investment_result_bearer=회사; "
+        "benefit_variability=근로자 급여는 사전에 정해진 수준을 기준으로 함; "
+        "source_id=doc10_chunk02,doc11_chunk01_part1,doc15_chunk01_part1. "
+        "plan_type=DC; english_name=Defined Contribution; operator=근로자; "
+        "benefit_formula=기여금 또는 부담금 누계액 + 운용손익; "
+        "contribution_rule=회사가 연간 임금총액의 1/12 이상을 근로자 계정에 납입; "
+        "investment_result_bearer=근로자; benefit_variability=운용 성과에 따라 최종 퇴직급여가 달라짐; "
+        "source_id=doc10_chunk03,doc11_chunk01_part2,doc15_chunk02. "
+        "퇴직금제도는 퇴직 시 회사가 퇴직급여를 지급하고, 퇴직연금은 퇴직 전 금융기관에 적립해 "
+        "퇴직 시 금융기관에서 지급합니다; source_id=doc11_chunk01_part1."
+    )
+    draft = (
+        "DB와 DC는 이름부터 확정되는 대상이 다릅니다.\n\n"
+        "| 구분 | DB형 | DC형 |\n"
+        "|---|---|---|\n"
+        "| 영문명 | DB(Defined Benefit, 확정급여형) | DC(Defined Contribution, 확정기여형) |\n"
+        "| 운용 주체 | 회사가 적립금을 운용 | 근로자가 직접 운용 |\n"
+        "| 정해지는 것 | 퇴직 시 받을 급여 수준 | 회사가 납입할 부담금 수준 |\n"
+        "| 산식 | 평균임금 x 계속근로기간 또는 퇴직 전 평균임금 30일분 x 계속근로기간 | 기여금/부담금 누계액 + 운용손익 |\n"
+        "| 회사 부담금 기준 | 정해진 급여 지급능력을 확보하도록 적립 | 연간 임금총액의 1/12 이상 |\n"
+        "| 운용손익 영향 | 회사가 운용성과 부담 | 근로자의 최종 수령액에 반영 |\n\n"
+        "따라서 DC형은 회사가 최종 퇴직금을 미리 정해주는 제도가 아니라, 회사가 정해진 부담금을 넣고 "
+        "그 이후 운용 결과가 근로자 수령액에 반영되는 구조입니다. 반대로 DB형은 근로자가 직접 상품을 "
+        "골라 운용성과를 부담하는 구조가 아니라, 회사가 운용하고 약속된 급여 수준을 맞추는 구조입니다.\n\n"
+        "일반 퇴직금제도와 퇴직연금제도도 구분해야 합니다. 퇴직금제도는 근로자 퇴직 시 회사가 퇴직급여를 "
+        "지급하는 방식이고, 퇴직연금제도는 퇴직 전에 금융기관에 재원을 적립해 두었다가 퇴직 시 금융기관을 "
+        "통해 지급하는 방식입니다."
+    )
+    return draft, _context(source, content)
+
+
+def _asks_retirement_benefit_tax_premise_gate(question: str) -> bool:
+    """퇴직급여/명퇴수당을 연금계좌에 넣을 때의 성급한 세금 단정을 잡는다."""
+    text = _compact(question)
+    benefit_terms = (
+        "명퇴수당", "명퇴금", "명예퇴직금", "명퇴", "퇴직금", "퇴직급여", "퇴직소득세", "이연퇴직소득세"
+    )
+    has_benefit = any(term in text for term in benefit_terms)
+    has_account_or_receipt = any(
+        term in text
+        for term in ("IRP", "irp", "연금계좌", "연금으로", "연금수령", "일시금", "연금외", "인출")
+    )
+    has_tax_question = any(
+        term in text
+        for term in (
+            "세금", "과세", "면세", "절세", "감면", "세율", "없어", "사라지", "줄어",
+            "적게", "이득", "유리", "얼마", "무조건", "어마어마",
+        )
+    )
+    if has_benefit and has_tax_question and (has_account_or_receipt or "퇴직소득세" in text or "명퇴" in text):
+        return True
+    return "퇴직소득세" in text and has_account_or_receipt and has_tax_question
+
+
+def _retirement_benefit_tax_premise_gate_response(question: str) -> tuple[str, list[RetrievedItem]]:
+    r1 = get_deferred_retirement_tax_rate(1)
+    r11 = get_deferred_retirement_tax_rate(11)
+    r21 = get_deferred_retirement_tax_rate(21)
+    source = "doc39~doc40 이연퇴직소득세 감면 규칙; 퇴직연금제도 기본 — 개인형 퇴직연금제도(IRP)"
+    content = (
+        "premise_status=requires_correction; fund_source_status=unconfirmed; "
+        "calculation_allowed=false; "
+        "required_explanations=명퇴수당 명칭만으로 세법상 재원 확정 금지, IRP/연금계좌 입금과 즉시 면세 구분, "
+        "퇴직소득 재원으로 확인되는 경우 과세이연 및 연금실제수령연차별 이연퇴직소득세 감면 설명; "
+        f"reduction_rule=1~10년차 {_pct(r1.reduction_ratio)} 감면, 11~20년차 {_pct(r11.reduction_ratio)} 감면, "
+        f"21년차 이상 {_pct(r21.reduction_ratio)} 감면; "
+        "missing_fields=실제 지급 항목, 원천징수 내역, 세법상 재원, 수령방식, 연금실제수령연차, 원래 부과될 이연퇴직소득세; "
+        "source_ids=doc39,doc40,퇴직연금제도 기본 IRP"
+    )
+    exaggerated = any(word in _compact(question) for word in ("어마어마", "무조건", "면세", "없어", "사라지"))
+    premise_line = (
+        "먼저, 세금이 크게 줄거나 사라진다는 전제는 그대로 인정하면 안 됩니다. "
+        if exaggerated
+        else ""
+    )
+    draft = (
+        f"{premise_line}명퇴수당이라는 명칭만으로 그 돈이 세법상 어떤 재원인지, 또는 IRP 이전 가능한 "
+        "퇴직소득 재원인지 자동 확정할 수 없습니다. 실제 지급 항목의 성격과 원천징수 내역을 먼저 "
+        "확인해야 합니다.\n\n"
+        "확정적으로 안내할 수 있는 원칙은 다음과 같습니다.\n"
+        "- 연금계좌나 IRP에 넣는 것 자체가 즉시 면세를 뜻하지는 않습니다.\n"
+        "- 퇴직소득 재원으로 확인되는 금액을 연금계좌에서 연금으로 수령하면, 과세이연과 "
+        "연금실제수령연차별 이연퇴직소득세 감면을 검토할 수 있습니다.\n"
+        f"- 감면 구조는 연금실제수령연차 1~10년차 {_pct(r1.reduction_ratio)}, "
+        f"11~20년차 {_pct(r11.reduction_ratio)}, 21년차 이상 {_pct(r21.reduction_ratio)} 감면입니다.\n"
+        "- 연금외수령이나 바로 인출하는 경우에는 연금수령 감면이 적용되지 않을 수 있으므로, "
+        "일시금과 연금수령을 무조건적인 유불리로 단정하면 안 됩니다.\n\n"
+        "현재 질문만으로는 구체적인 절세액을 계산하지 않겠습니다. 다음 정보를 한 번에 알려주세요.\n"
+        "1. 지급명세서상 실제 지급 항목명과 원천징수 내역은 어떻게 표시되어 있나요?\n"
+        "2. 해당 금액이 퇴직소득, 근로소득, 기타소득 등 어떤 재원으로 처리됐나요?\n"
+        "3. IRP 또는 연금계좌로 이전한 뒤 연금으로 받을 예정인가요, 일시금/중도인출로 받을 예정인가요?\n"
+        "4. 퇴직소득 재원이라면 연금실제수령연차가 몇 년차인가요?\n"
+        "5. 원래 부과될 이연퇴직소득세 금액 또는 원천징수된 세액은 얼마인가요?"
+    )
+    return draft, _context(source, content)
+
+
 # 한글 숫자 단위. "6천만원"처럼 아라비아 숫자와 만원 사이에 "천"이 끼는 표기를
 # 처리하기 위해 "천/백/십" 보조단위까지 인식한다. "만"·"억"은 필수 뒤 단위이고
 # "천/백/십"은 그 앞에 선택적으로 붙는 보조단위다 (예: 6천만 = 6*1000*10000).
@@ -801,12 +950,38 @@ def _extract_labeled_amount(question: str, labels: tuple[str, ...]) -> int | Non
         if before and not _AMOUNT_BOUNDARY_BREAK_RE.search(before.group(2)):
             amount = _amount_from_match(before.group(1))
             return amount * 12 if _is_monthly_amount(compact, before.start(1)) else amount
+
+        bare_after = re.search(rf"{escaped}([^\d-]{{0,8}})({_BARE_AMOUNT_RE})(?!\s*(?:만|억|원))", compact, re.IGNORECASE)
+        if bare_after and not _AMOUNT_BOUNDARY_BREAK_RE.search(bare_after.group(1)):
+            amount = _parse_bare_manwon_amount(bare_after.group(2))
+            if amount is not None:
+                return amount * 12 if _is_monthly_amount(compact, bare_after.start(2)) else amount
     return None
 
 
 def _amount_from_match(amount_text: str) -> int:
     m = re.match(rf"({_AMOUNT_NUMBER_RE})\s*({_AMOUNT_UNIT_RE})", amount_text)
     return _parse_korean_amount(m.group(1), m.group(2))
+
+
+_BARE_AMOUNT_RE = r"-?\d[\d,]*(?:\.\d+)?"
+
+
+def _has_negative_labeled_amount(question: str) -> bool:
+    compact = _compact(question)
+    labels = ("연금저축", "연저", "IRP", "irp", "개인형IRP", "개인형퇴직연금", "총급여", "급여", "연봉", "종합소득")
+    for label in labels:
+        if re.search(rf"{re.escape(label)}[^\d-]{{0,12}}-\d", compact, re.IGNORECASE):
+            return True
+    return False
+
+
+def _parse_bare_manwon_amount(number_text: str) -> int | None:
+    value = float(number_text.replace(",", ""))
+    if value < 0:
+        return None
+    # 라벨 바로 뒤 단위 없는 숫자는 평가셋 표현상 만원 단위로 쓰인다.
+    return int(value * 10_000)
 
 
 def extract_tax_credit_inputs(question: str) -> dict[str, int | None]:
@@ -826,6 +1001,23 @@ def _has_sufficient_tax_credit_inputs(values: dict[str, int | None]) -> bool:
 
 def _tax_credit_calculation_missing_response(question: str) -> tuple[str, list[RetrievedItem]]:
     source = "doc41 세액공제 계산 입력값 규칙"
+    if _has_negative_labeled_amount(question):
+        content = (
+            "calculation_allowed=false; negative_amount_detected=true; "
+            "세액공제 계산 입력값은 실제 연간 납입액과 소득금액이어야 하며, 음수 납입액 또는 음수 소득금액은 "
+            "계산 입력으로 사용할 수 없습니다. 세액공제액 계산에는 연금저축 납입액, IRP 납입액, "
+            "총급여 또는 종합소득금액이 필요합니다."
+        )
+        draft = (
+            "입력값 중 음수 금액이 있어 세액공제액을 계산하지 않겠습니다.\n\n"
+            "세액공제 계산에는 실제 연간 납입액과 소득금액을 0원 이상 금액으로 입력해야 합니다. "
+            "정확한 계산을 위해 다음 정보를 한 번에 알려주세요.\n"
+            "1. 올해 연금저축에 실제 납입한 금액은 얼마인가요?\n"
+            "2. 올해 IRP에 실제 납입한 금액은 얼마인가요?\n"
+            "3. 직장인이라면 총급여, 개인사업자라면 종합소득금액은 얼마인가요?"
+        )
+        return draft, _context(source, content)
+
     values = extract_tax_credit_inputs(question)
     if _has_sufficient_tax_credit_inputs(values):
         pension_savings_paid = values["pension_savings_paid"] or 0
@@ -2934,6 +3126,8 @@ _CATEGORY_HANDLERS = {
     "제도비교_DB_DC": _db_dc_comparison_response,
     "계좌이전_절차": _account_transfer_procedure_response,
     "계좌선택_가이드": _account_choice_guide_response,
+    "퇴직연금_유형비교": _retirement_plan_comparison_response,
+    "퇴직급여_연금계좌_세금전제검증": _retirement_benefit_tax_premise_gate_response,
     "세액공제_계산_입력부족": _tax_credit_calculation_missing_response,
     "세액공제_한도": _tax_credit_limit_response,
     "세금혜택_개요": _tax_benefit_overview_response,

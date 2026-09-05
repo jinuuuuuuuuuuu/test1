@@ -386,10 +386,17 @@ def test_tax_fallback_does_not_hijack_non_tax_questions():
         )
         assert restored == "해당없음", question
 
-    # DB/DC 질문은 세제 카테고리로 새지 않고, 제도비교_DB_DC로만 복원돼야 한다.
+    # DB/DC 질문은 세제 카테고리로 새지 않고, DB/DC 전용 카테고리로 복원돼야 한다.
+    #
+    # ⚠️ 이 질문은 두 개의 독립적인 카테고리가 동시에 답할 수 있다 — 제도비교_DB_DC
+    # (같은 세션에서 no.1/no.27 재발 방지로 신설)와 퇴직연금_유형비교(팀원이 별도로
+    # 신설, 표 형식 + 회사 부담금 산식까지 포함해 정보량이 더 많다). candidate_categories
+    # 등록 순서상 퇴직연금_유형비교가 먼저 와 최종 확정된다 — 더 상세한 답변이 우선
+    # 채택되는 것이 맞다. 둘 다 살려두는 이유는 표현이 조금 달라지면 한쪽만 걸리는
+    # 경우가 실측으로 반복됐기 때문이다(어간 활용형 나열 방식의 구조적 한계).
     question = "DB형과 DC형 운용주체가 어떻게 다른가요?"
     restored = _restore_rejected_category("해당없음", candidate_categories(question), question)
-    assert restored == "제도비교_DB_DC", question
+    assert restored == "퇴직연금_유형비교", question
 
 
 def test_calculation_shortage_stays_out_of_overridable_set():

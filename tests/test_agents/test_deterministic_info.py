@@ -1,6 +1,39 @@
 from src.agents.deterministic_info import candidate_categories, deterministic_response_for
 
 
+def test_retirement_plan_comparison_reaches_fact_contract():
+    """Q1 변형 질문은 DB/DC 핵심 사실 계약으로 닿아야 한다."""
+    for question in (
+        "DB하고 DC는 누가 운용해요?",
+        "DC형은 회사가 받을 퇴직금을 미리 정해주는 거 아니야?",
+        "DB와 DC는 퇴직금 계산 방식이 어떻게 달라?",
+        "운용하다 손실이 나면 DB와 DC 중 누가 부담해?",
+        "DB·DC·일반 퇴직금 제도를 한 번에 비교해줘.",
+        "Defined Benefit과 Defined Contribution의 차이는?",
+    ):
+        assert "퇴직연금_유형비교" in candidate_categories(question), question
+
+
+def test_retirement_plan_comparison_fact_contract_content():
+    """문장 전체가 아니라 DB/DC 불변 사실과 근거 연결을 고정한다."""
+    draft, context = deterministic_response_for(
+        "퇴직연금_유형비교", "DB와 DC의 운용 주체, 산식, 위험 부담을 비교해줘."
+    )
+
+    assert "DB(Defined Benefit" in draft
+    assert "DC(Defined Contribution" in draft
+    assert "회사가 적립금을 운용" in draft
+    assert "근로자가 직접 운용" in draft
+    assert "평균임금" in draft and "계속근로기간" in draft
+    assert "연간 임금총액의 1/12" in draft
+    assert "운용손익" in draft
+    assert "퇴직금제도" in draft
+    assert context
+    assert "doc10_chunk02" in context[0]["source"]
+    assert "source_id=doc10_chunk02" in context[0]["content"]
+    assert "version=" in context[0]["content"]
+
+
 def test_tax_credit_question_candidates_both_calc_and_limit():
     # 후보 단계는 주제어("세액공제")만 보고 둘 다 낸다 — 확정은 router의 LLM 몫이다.
     candidates = candidate_categories("연금저축이랑 IRP 다 합쳐서 세액공제 얼마까지 되나요?")
@@ -144,6 +177,30 @@ def test_tax_credit_calculation_does_not_bleed_across_labels():
 
     assert "총급여 4,000만원" in draft
     assert "총급여 700만원" not in draft
+
+
+def test_tax_credit_parses_won_and_bare_manwon_amounts():
+    from src.agents.deterministic_info import extract_tax_credit_inputs
+
+    won_values = extract_tax_credit_inputs("연금저축에 6,000,000원 넣고 총급여 5000만원")
+    assert won_values["pension_savings_paid"] == 6_000_000
+    assert won_values["total_salary"] == 50_000_000
+
+    compact_values = extract_tax_credit_inputs("연금저축 500, IRP 400, 총급여 5000만원")
+    assert compact_values["pension_savings_paid"] == 5_000_000
+    assert compact_values["irp_paid"] == 4_000_000
+    assert compact_values["total_salary"] == 50_000_000
+
+
+def test_tax_credit_negative_amount_is_not_silently_absorbed():
+    draft, _ = deterministic_response_for(
+        "세액공제_계산_입력부족", "연금저축 -100만원, IRP 300만원, 총급여 5000만원이면 세액공제 얼마야?"
+    )
+
+    assert "음수" in draft
+    assert "세액공제액을 계산하지 않겠습니다" in draft
+    assert "-100만원" not in draft
+    assert "49만 5천원" not in draft
 
 
 def test_tax_credit_limit_answers_pension_savings_only_excess_directly():
@@ -1830,3 +1887,37 @@ def test_account_choice_declines_unrelated_questions():
         "IRP 계좌 다른 증권사로 옮기려면",
     ):
         assert _account_choice_guide_response(question) is None, question
+
+
+def test_retirement_benefit_tax_premise_gate_reaches_variants():
+    """Q3 변형은 세액공제/연금소득세 자유응답보다 전제검증 Gate가 우선 후보여야 한다."""
+    for question in (
+        "명퇴수당을 IRP에 넣으면 세금이 없어지나요?",
+        "퇴직금 3억을 IRP에 넣으면 세금이 얼마나 줄어요?",
+        "명퇴 교사인데 세금을 가장 적게 내는 방법만 알려줘.",
+        "명퇴수당은 연금계좌에 넣기만 하면 면세인가요?",
+        "퇴직금을 일시금으로 안 받으면 무조건 이득인가요?",
+        "IRP로 받으면 퇴직소득세가 사라지나요?",
+        "명예퇴직금을 연금으로 받으면 감면액이 얼마야?",
+    ):
+        assert "퇴직급여_연금계좌_세금전제검증" in candidate_categories(question), question
+
+
+def test_retirement_benefit_tax_premise_gate_blocks_unsafe_assumptions():
+    draft, context = deterministic_response_for(
+        "퇴직급여_연금계좌_세금전제검증",
+        "명퇴수당은 연금계좌에 넣기만 하면 면세인가요?",
+    )
+
+    assert "명퇴수당이라는 명칭만으로" in draft
+    assert "실제 지급 항목" in draft
+    assert "원천징수" in draft
+    assert "즉시 면세" in draft
+    assert "과세이연" in draft
+    assert "연금실제수령연차" in draft
+    assert "계산하지 않겠습니다" in draft
+    assert "다음 정보를 한 번에" in draft
+    assert "명퇴수당은 퇴직소득" not in draft
+    assert context
+    assert "calculation_allowed=false" in context[0]["content"]
+    assert "fund_source_status=unconfirmed" in context[0]["content"]
