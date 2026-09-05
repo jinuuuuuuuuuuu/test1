@@ -164,6 +164,13 @@ ROUTER_SYSTEM_PROMPT = """당신은 연금 상담 AI의 질문 분류 게이트�
      ⚠️ 납입액과 소득금액이 질문에 둘 다 숫자로 나와 있으면 이 카테고리가 아니라
      "해당없음"입니다 — 계산 가능한 질문은 정형 답변으로 가로채지 말고 계산 툴로
      넘겨야 합니다.
+   - 퇴직연금_유형비교: DB/DC/퇴직금제도의 운용 주체, 확정되는 대상, 급여·부담금 산식,
+     운용성과 부담을 비교하는 질문. 공식 문장과 일치하지 않아도 DB/DC의 불변 사실을
+     묻는 변형 질문이면 이 카테고리입니다.
+   - 퇴직급여_연금계좌_세금전제검증: 명퇴수당·퇴직금·퇴직급여를 IRP/연금계좌에 넣으면
+     세금이 없어지는지, 얼마나 줄어드는지, 무조건 유리한지 묻는 질문. 이 카테고리는
+     절세액을 계산하는 경로가 아니라, 명칭만으로 재원을 확정하지 않고 과세이연/면세
+     혼동과 부족정보를 먼저 잡는 Gate입니다.
    - 세액공제_한도: 세액공제 대상 납입한도(600만원/900만원)나 공제율이 몇 %인지 등
      제도 자체의 한도·기준을 묻는 질문 (본인 수치를 대입한 계산 요청이 아님).
    - 세금혜택_개요: 연금계좌의 세금 혜택 전반을 개괄적으로 설명해달라는 질문.
@@ -273,6 +280,8 @@ class RouterDecision(BaseModel):
     safety_reason: Optional[str] = Field(default=None, description="is_safe=False일 때만 사유를 적는다")
     deterministic_category: Literal[
         "복합정보_태스크플랜",
+        "퇴직연금_유형비교",
+        "퇴직급여_연금계좌_세금전제검증",
         "세액공제_계산_입력부족",
         "세액공제_한도",
         "세금혜택_개요",
@@ -539,6 +548,11 @@ def _prioritize_collision_category(category: str, candidates: list[str], questio
         and deterministic_response_for("복합정보_태스크플랜", question) is not None
     ):
         return "복합정보_태스크플랜"
+    if (
+        "퇴직급여_연금계좌_세금전제검증" in candidates
+        and deterministic_response_for("퇴직급여_연금계좌_세금전제검증", question) is not None
+    ):
+        return "퇴직급여_연금계좌_세금전제검증"
     if (
         category in {"중도인출_일반", "중도인출_기한판정"}
         and "중도인출_요건판정" in candidates

@@ -370,13 +370,18 @@ def test_tax_fallback_does_not_hijack_non_tax_questions():
         "안정적인 연금 상품 추천해줘",
         "IRP 중도인출 신청은 어디서 하나요?",
         "디폴트옵션 상품이 뭔가요?",
-        "DB형과 DC형 운용주체가 어떻게 다른가요?",
         "솔로몬 국공채 단기랑 장기 뭐가 달라요?",
     ):
         restored = _restore_rejected_category(
             "해당없음", candidate_categories(question), question
         )
         assert restored == "해당없음", question
+
+    assert _restore_rejected_category(
+        "해당없음",
+        candidate_categories("DB형과 DC형 운용주체가 어떻게 다른가요?"),
+        "DB형과 DC형 운용주체가 어떻게 다른가요?",
+    ) == "퇴직연금_유형비교"
 
 
 def test_calculation_shortage_stays_out_of_overridable_set():
