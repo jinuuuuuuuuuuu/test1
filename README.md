@@ -393,10 +393,9 @@ src/rules/
 │   ├── 📂 test_scripts/
 │   └── 📂 test_storage/
 │
-├── 📂 scripts/                             # 파싱·검수·색인·로컬 대화 실행
+├── 📂 scripts/                             # 데이터 재구축·색인·로컬 대화 실행
 ├── 📄 Dockerfile
 ├── 📄 DEPLOY.md
-├── 📄 HANDOFF.md
 ├── 📄 requirements.txt
 └── 📄 README.md
 ```
