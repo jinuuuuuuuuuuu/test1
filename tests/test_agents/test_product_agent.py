@@ -400,6 +400,7 @@ def test_explicit_product_class_context_locks_core_to_current_holding(monkeypatc
     assert context[0]["node"] == "product_agent"
     assert "상품코드=KR514X450008" in context[0]["content"]
     assert "클래스=C-P2" in context[0]["content"]
+    assert "투자목적=국내 주식에 주로 투자합니다." in context[0]["content"]
     assert profile["account_type"] == "IRP"
     assert needs_clarification is False
 

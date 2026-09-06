@@ -4,6 +4,7 @@ think_trace를 포맷팅한다. HCX-005 사용.
 is_safe=False(①가드레일에서 차단된 경우)는 모델을 호출하지 않고 바로 정형 거절 응답을 만든다.
 """
 
+import re
 from datetime import date
 
 from src.agents.context import dedupe_context, format_conversation_history, merge_drafts
@@ -100,7 +101,20 @@ def _append_reference_line(answer: str, context: list) -> str:
     if not missing:
         return answer
     separator = "; " if existing else ""
-    return f"{head}{sep}{existing}{separator}{'; '.join(missing)}"
+    return f"{head}{sep} {existing}{separator}{'; '.join(missing)}"
+
+
+def _normalize_reference_heading(answer: str) -> str:
+    return re.sub(r"\*\*\s*참고 근거\s*:\s*\*\*\s*", "참고 근거: ", answer or "")
+
+
+def _strip_reference_lines(answer: str) -> str:
+    lines = []
+    for line in (answer or "").splitlines():
+        if line.strip().startswith("참고 근거:"):
+            continue
+        lines.append(line)
+    return "\n".join(lines).rstrip()
 
 
 def _enforce_verification(
@@ -121,6 +135,7 @@ def _enforce_verification(
     """
     if not answer:
         return answer
+    answer = _normalize_reference_heading(answer)
 
     # ① 내부 인덱스 "[근거 1]"을 실제 출처명으로 치환 (요강: 모든 답변에 근거 문서 표시)
     answer = replace_evidence_placeholders(answer, context)
@@ -190,7 +205,7 @@ def _append_guardian_if_enabled(answer: str, guardian_result: dict | None) -> st
         return f"{answer}\n\n{block}"
 
     head, sep, tail = answer.rpartition("참고 근거:")
-    return f"{head.rstrip()}\n\n{block}\n\n{sep}{tail.strip()}"
+    return f"{head.rstrip()}\n\n{block}\n\n{sep} {tail.strip()}"
 
 
 def _finalize_answer(verified_core_answer: str, state: PensionAgentState, core_context: list) -> str:
@@ -203,6 +218,8 @@ def _finalize_answer(verified_core_answer: str, state: PensionAgentState, core_c
     # LLM이 도구 사용을 텍스트로 흉내내면(실측 V06) 그건 평범한 답변 문자열이라
     # grounded 검증(수치만 검사)도 enforce_*(덧붙이기만 함)도 걸러내지 못한다.
     answer = strip_tool_call_artifacts(verified_core_answer)
+    answer = _normalize_reference_heading(answer)
+    answer = _strip_reference_lines(answer)
     # 제도명 영문 표기 오류 교정 (DC=Defined Contribution 등). 법령상 표기가 하나로
     # 고정된 용어라 근거 확인 없이 치환해도 안전하다 — L0는 숫자만 보므로 이런
     # 용어 오류를 구조적으로 잡지 못한다(실측 no.1 "DC(Dividend Contribution)형").
@@ -525,7 +542,7 @@ def build_generator_node():
                 "answer": final_answer,
                 "think_trace": _format_think_trace(state, final_answer),
             }
-        if state.get("recommendation_stage") == "type_recommendation":
+        if state.get("recommendation_stage") in ("type_recommendation", "specific_recommendation"):
             verified_answer = _enforce_verification(
                 draft,
                 verification,

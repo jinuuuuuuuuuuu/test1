@@ -171,3 +171,22 @@ def test_pathological_tool_output_is_still_capped():
     items = build_retrieved_context([_tool_msg("calculate_tax_credit", raw)], node="info_agent")
     assert len(items[0]["content"]) < 20_000
     assert items[0]["content"].endswith("…")
+
+
+def test_empty_search_results_are_not_evidence():
+    for tool_name in ("search_pension_docs", "search_funds", "search_prospectus_text"):
+        items = build_retrieved_context([_tool_msg(tool_name, "[]")], node="product_agent")
+        assert items == []
+
+
+def test_invalid_prospectus_product_code_is_not_evidence():
+    raw = json.dumps(
+        {
+            "status": "INVALID_PRODUCT_CODE",
+            "results": [],
+            "error": "product_code must be canonical",
+        },
+        ensure_ascii=False,
+    )
+    items = build_retrieved_context([_tool_msg("search_prospectus_text", raw)], node="product_agent")
+    assert items == []

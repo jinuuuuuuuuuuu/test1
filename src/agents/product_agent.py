@@ -27,6 +27,7 @@ from src.agents.context import (
     split_clarification_marker,
 )
 from src.agents.llm import get_llm, invoke_with_retry
+from src.agents.product_resolver import resolve_product
 from src.agents.state import PensionAgentState, RetrievedItem
 from src.agents.tools import PRODUCT_AGENT_TOOLS, search_funds
 from src.rules.early_withdrawal import PlanType
@@ -416,14 +417,22 @@ def _explicit_product_context_response(
     if _asks_alternative_recommendation(question):
         return None
 
-    product_code = _extract_product_code(question)
-    class_code = _extract_class_code(question)
-    account_type = _extract_account_type(question)
-    if not (product_code and class_code and account_type):
+    resolved = state.get("resolved_product") or resolve_product(question)
+    product_codes = list(resolved.get("product_codes") or [])
+    class_code = resolved.get("class_code")
+    account_type = resolved.get("cost_account_type")
+    if not (resolved.get("resolved") and product_codes and class_code and account_type):
         return None
 
     normalized_account = normalize_pension_account_type(account_type)
-    detail = get_pension_class_detail(product_code, class_code, normalized_account)
+    detail = None
+    product_code = product_codes[0]
+    for candidate_code in product_codes:
+        candidate_detail = get_pension_class_detail(candidate_code, class_code, normalized_account)
+        if candidate_detail:
+            detail = candidate_detail
+            product_code = candidate_code
+            break
     if not detail:
         return None
 
@@ -448,9 +457,12 @@ def _explicit_product_context_response(
         "",
         "**확인된 상품 정보**",
         f"- 상품코드: {product_code}",
-        f"- 계좌 유형: {normalized_account}",
+        f"- 계좌 유형: {normalized_account}"
+        + (" 범위" if resolved.get("account_type_source") == "product_scope" else ""),
         f"- 판매채널: {detail.get('channel') or '확인 필요'}",
     ]
+    if resolved.get("account_type_source") == "product_scope":
+        lines.append("- 계좌 세부유형: 질문에 IRP/DC/DB가 명시되지는 않아 실제 가입 가능 여부는 금융기관에서 확인이 필요합니다.")
     if detail.get("risk_grade"):
         lines.append(f"- 위험등급: {detail['risk_grade']}")
     if detail.get("fund_category"):
@@ -491,11 +503,14 @@ def _explicit_product_context_response(
         f"합성총보수·비용={detail.get('synthetic_total_expense_ratio')}%, "
         f"투자설명서효력발생일={detail.get('prospectus_effective_date')}, "
         f"시장잔고={detail.get('aum_krw_million')}백만원, 잔고기준일={detail.get('aum_base_date')}, "
+        f"투자목적={detail.get('investment_objective')}, "
+        f"투자전략={detail.get('investment_strategy')}, "
         f"dataset_version={detail.get('dataset_version')}, dataset_status={detail.get('dataset_status')}"
     )
     context = [{"source": f"{fund_name} ({canonical_class})", "content": content, "node": "product_agent"}]
     profile = dict(state.get("recommendation_profile") or {})
-    profile["account_type"] = account_type
+    if resolved.get("account_type"):
+        profile["account_type"] = resolved["account_type"]
     return "\n".join(lines), context, profile, False
 
 
@@ -1355,7 +1370,10 @@ def build_product_agent_node():
     react_agent = create_agent(model=llm, tools=PRODUCT_AGENT_TOOLS, system_prompt=PRODUCT_AGENT_SYSTEM_PROMPT)
 
     def product_agent_node(state: PensionAgentState) -> dict:
-        recommendation_flow = _recommendation_flow_response(state)
+        working_state = dict(state)
+        working_state["resolved_product"] = state.get("resolved_product") or resolve_product(state.get("question") or "")
+
+        recommendation_flow = _recommendation_flow_response(working_state)
         if recommendation_flow is not None:
             draft, context, profile, needs_clarification = recommendation_flow
             missing = _missing_profile_fields(profile)
@@ -1384,19 +1402,20 @@ def build_product_agent_node():
                 else "complete"
                 if context
                 else "conditional",
-                "repair_attempted": state.get("verification") is not None,
+                "repair_attempted": working_state.get("verification") is not None,
+                "resolved_product": working_state.get("resolved_product"),
             }
 
-        prior_context = dedupe_context(state.get("retrieved_context") or [])
-        question = state["question"]
-        if state.get("scope") == "부분관련" and state.get("scope_note"):
+        prior_context = dedupe_context(working_state.get("retrieved_context") or [])
+        question = working_state["question"]
+        if working_state.get("scope") == "부분관련" and working_state.get("scope_note"):
             question += (
                 f"\n\n[범위 안내] 이 질문의 핵심은 연금 상담 범위 밖입니다. 범위 밖 부분은 "
-                f"한계를 밝히고, 다음 연금 관점으로만 답하세요: {state['scope_note']}"
+                f"한계를 밝히고, 다음 연금 관점으로만 답하세요: {working_state['scope_note']}"
             )
 
         # verification이 이미 있으면 ④ 탈락으로 되돌아온 repair 재실행이다 (1회 한정).
-        repair_note = build_repair_note(state.get("verification"))
+        repair_note = build_repair_note(working_state.get("verification"))
         if repair_note:
             question += f"\n\n{repair_note}"
 
@@ -1404,13 +1423,13 @@ def build_product_agent_node():
             context_text = "\n".join(f"- [{c['source']}] {c['content']}" for c in prior_context)
             question = f"{question}\n\n[②정보 Agent가 이미 확인한 제도 근거]\n{context_text}"
 
-        history_messages = history_to_messages(state.get("conversation_history"))
+        history_messages = history_to_messages(working_state.get("conversation_history"))
         try:
             result = invoke_with_retry(
                 react_agent, {"messages": [*history_messages, HumanMessage(content=question)]}
             )
         except Exception:
-            fallback_draft, fallback_context = _fallback_product_recommendation(state)
+            fallback_draft, fallback_context = _fallback_product_recommendation(working_state)
             if fallback_context:
                 return {
                     "product_draft": fallback_draft,
@@ -1418,8 +1437,9 @@ def build_product_agent_node():
                     "tool_trace": [],
                     "needs_clarification": False,
                     "recommendation_stage": "specific_recommendation",
-                    "repair_attempted": state.get("verification") is not None,
+                    "repair_attempted": working_state.get("verification") is not None,
                     "product_fallback_used": True,
+                    "resolved_product": working_state.get("resolved_product"),
                 }
             # ⚠️ 여기서 raise하면 그래프 전체가 죽어 API가 500을 반환하고 그 문항은
             # 무응답으로 0점 처리된다 (실측: 501문항 평가에서 5건, 전부 CLOVA 간헐적
@@ -1428,7 +1448,7 @@ def build_product_agent_node():
             # 비싸다"(llm.py)는 이 프로젝트의 원칙에 따라, 여기서는 절대 죽지 않고
             # 최소한 계좌유형을 되묻는 역질문으로 응답한다 — 정보가 부족해 정형 추천을
             # 못 한다는 사실 자체가 사용자에게 유용한 답이다.
-            missing = _missing_profile_fields(_extract_recommendation_profile(state))
+            missing = _missing_profile_fields(_extract_recommendation_profile(working_state))
             fallback_questions = _clarification_questions(missing) or [
                 "어떤 계좌에서 투자할 예정인가요? IRP, DC, DB, 연금저축 중 선택해 주세요."
             ]
@@ -1446,8 +1466,9 @@ def build_product_agent_node():
                 "missing_information": [_PROFILE_FIELD_LABELS.get(f, f) for f in missing],
                 "clarification_questions": fallback_questions,
                 "response_mode": "clarification_included",
-                "repair_attempted": state.get("verification") is not None,
+                "repair_attempted": working_state.get("verification") is not None,
                 "product_fallback_used": True,
+                "resolved_product": working_state.get("resolved_product"),
             }
         messages = result["messages"]
 
@@ -1464,7 +1485,7 @@ def build_product_agent_node():
             draft = _apply_clarification_policy(draft)
         fallback_used = False
         if not retrieved_context:
-            fallback_draft, fallback_context = _fallback_product_recommendation(state)
+            fallback_draft, fallback_context = _fallback_product_recommendation(working_state)
             if fallback_context:
                 draft = fallback_draft
                 retrieved_context = fallback_context
@@ -1481,8 +1502,9 @@ def build_product_agent_node():
             "needs_clarification": needs_clarification,
             "response_mode": "clarification_included" if needs_clarification else "complete",
             "recommendation_stage": "clarification" if needs_clarification else None,
-            "repair_attempted": state.get("verification") is not None,
+            "repair_attempted": working_state.get("verification") is not None,
             "product_fallback_used": fallback_used,
+            "resolved_product": working_state.get("resolved_product"),
         }
 
     return product_agent_node

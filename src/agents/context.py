@@ -171,6 +171,8 @@ def _summarize_tool_result(tool_name: str, raw) -> str:
         return "검색 결과 없음 (보유 문서에 관련 내용 없음)"
 
     if tool_name in _PROSPECTUS_TEXT_TOOLS:
+        if isinstance(parsed, dict) and parsed.get("status") == "INVALID_PRODUCT_CODE":
+            return "잘못된 product_code 인자 (상품명은 product_code로 사용할 수 없음)"
         if isinstance(parsed, list) and parsed:
             labels = "; ".join(f"{r.get('fund_name', '')}({r.get('section', '')})" for r in parsed[:3])
             return _truncate(f"{len(parsed)}건 검색: {labels}", _MAX_TRACE_RESULT_CHARS)
@@ -267,7 +269,7 @@ def build_retrieved_context(messages: list, node: str) -> list[RetrievedItem]:
                         }
                     )
             else:
-                items.append({"source": tool_name, "content": "(검색 결과 없음)", "node": node})
+                pass
             continue
 
         if tool_name in _FUND_LIST_TOOLS:
@@ -283,11 +285,13 @@ def build_retrieved_context(messages: list, node: str) -> list[RetrievedItem]:
                         }
                     )
             else:
-                items.append({"source": tool_name, "content": "(검색 결과 없음)", "node": node})
+                pass
             continue
 
         if tool_name in _PROSPECTUS_TEXT_TOOLS:
             results = _parse_json(raw)
+            if isinstance(results, dict) and results.get("status") == "INVALID_PRODUCT_CODE":
+                continue
             if isinstance(results, list) and results:
                 for r in results:
                     source = f"{r.get('fund_name', '')} 투자설명서 — {r.get('section', '')}"
@@ -295,7 +299,7 @@ def build_retrieved_context(messages: list, node: str) -> list[RetrievedItem]:
                         {"source": source, "content": _truncate(r.get("content", ""), _MAX_DOC_EVIDENCE_CHARS), "node": node}
                     )
             else:
-                items.append({"source": tool_name, "content": "(검색 결과 없음)", "node": node})
+                pass
             continue
 
         if tool_name in _FUND_DETAIL_TOOLS:
@@ -310,7 +314,7 @@ def build_retrieved_context(messages: list, node: str) -> list[RetrievedItem]:
                     }
                 )
             else:
-                items.append({"source": tool_name, "content": "(해당 상품코드 없음)", "node": node})
+                pass
             continue
 
         # 계산/판정 툴: 결과 dict를 그대로 근거로 남긴다 (한도는 비정상 폭주 방어용).

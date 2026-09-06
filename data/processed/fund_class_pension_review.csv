@@ -31,6 +31,7 @@ KR5153420339,C-P,total_expense_ratio,0.01,0.32,REFERENCE_CORRECT,,,FIELD_MISMATC
 KR5153420339,C-P,channel,오프라인,온라인,PARSER_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
 KR5153420339,C-P2,total_expense_ratio,0.01,0.26,REFERENCE_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
 KR5153420339,C-P2,channel,오프라인,온라인슈퍼,PARSER_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR5153450009,C,total_expense_ratio,0.02,,BOTH_WRONG,0.95,fund_class 검수완료,EXTRA_IN_PARSER / reference_not_cost_guard_usable / fund_class 검수값으로 총보수·비용 정정
 KR5153450009,C-P2E,total_expense_ratio,0.02,0.73,BOTH_WRONG,0.7,3,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인 / source_page auto-filled from pdf_review_pack
 KR5153450209,C-P2E,total_expense_ratio,0.02,0.795,REFERENCE_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
 KR5153450250,C-P2E,total_expense_ratio,0.02,0.805,REFERENCE_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
@@ -54,4 +55,5 @@ KR5157450090,C-PE1,total_expense_ratio,1.012,0.002,PARSER_CORRECT,,,FIELD_MISMAT
 KR5157450090,C-PE1,channel,온라인,오프라인,PARSER_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
 KR5157450090,C-PE2,total_expense_ratio,0.842,0.002,PARSER_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
 KR518101002M,C-P2E,total_expense_ratio,0.01,0.28,REFERENCE_CORRECT,,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
+KR518102001M,C,total_expense_ratio,0.02,,BOTH_WRONG,0.95,fund_class 검수완료,EXTRA_IN_PARSER / reference_not_cost_guard_usable / fund_class 검수값으로 총보수·비용 정정
 KR518102001M,C-P2E,total_expense_ratio,0.02,0.73,BOTH_WRONG,0.7,3,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인 / source_page auto-filled from pdf_review_pack

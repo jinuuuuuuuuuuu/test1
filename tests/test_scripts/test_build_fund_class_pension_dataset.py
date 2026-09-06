@@ -8,6 +8,7 @@ from scripts.build_fund_class_pension_dataset import (
     apply_review_overrides,
     build_manifest,
     build_audit_rows,
+    canonical_rows,
     choose_cost_metric,
     compare_parser_to_reference,
     coverage_summary,
@@ -359,6 +360,36 @@ def test_review_override_can_restore_field_mismatch_row():
     assert canonical[0]["total_expense_ratio"] == 0.34
     assert canonical[0]["validation_status"] == "REVIEWED_REFERENCE_CORRECT"
     assert canonical[0]["validation_status_before_review"] == "FIELD_MISMATCH"
+
+
+def test_canonical_rows_excludes_reference_blocked_extra_parser_rows():
+    parser_rows = [
+        {
+            "product_code": "KR000",
+            "class_code": "C",
+            "account_type": "퇴직연금/IRP",
+            "channel": "오프라인",
+            "total_expense_ratio": 0.02,
+            "source_file": "KR000.txt",
+        }
+    ]
+    validation_rows = [
+        {
+            "product_code": "KR000",
+            "class_code": "C",
+            "validation_status": "EXTRA_IN_PARSER",
+        }
+    ]
+    all_reference_rows = [
+        {
+            "product_code": "KR000",
+            "class_code": "C",
+            "account_type": "퇴직연금/IRP",
+            "cost_guard_usable": "N",
+        }
+    ]
+
+    assert canonical_rows(parser_rows, validation_rows, all_reference_rows) == []
 
 
 def test_review_provenance_reports_restored_rows():

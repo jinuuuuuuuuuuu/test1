@@ -146,7 +146,7 @@ KR5153420318,C-P,연금저축,오프라인,0.76,,,,,,오프라인-개인연금,K
 KR5153420318,C-P2,퇴직연금/IRP,오프라인,0.71,,,,,,오프라인-퇴직연금,KR5153420318.txt,clean,REVIEWED_REFERENCE_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
 KR5153420339,C-P,연금저축,오프라인,0.32,,,,,,오프라인-개인연금,KR5153420339.txt,clean,REVIEWED_PARSER_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
 KR5153420339,C-P2,퇴직연금/IRP,오프라인,0.26,,,,,,오프라인-퇴직연금,KR5153420339.txt,clean,REVIEWED_PARSER_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
-KR5153450009,C,퇴직연금/IRP,오프라인,0.02,,,,,,오프라인-퇴직연금,KR5153450009.txt,clean,EXTRA_IN_PARSER,,,
+KR5153450009,C,퇴직연금/IRP,오프라인,0.95,,,,,,오프라인-퇴직연금,KR5153450009.txt,clean,REVIEWED_BOTH_WRONG,EXTRA_IN_PARSER,fund_class 검수완료,EXTRA_IN_PARSER / reference_not_cost_guard_usable / fund_class 검수값으로 총보수·비용 정정
 KR5153450009,C-P2E,퇴직연금/IRP,온라인,0.7,,,,,,온라인-퇴직연금,KR5153450009.txt,clean,REVIEWED_BOTH_WRONG,FIELD_MISMATCH,3,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인 / source_page auto-filled from pdf_review_pack
 KR5153450112,C,연금저축,오프라인,0.02,,,,,,오프라인-개인연금,KR5153450112.txt,clean,EXTRA_IN_PARSER,,,
 KR5153450112,C-E,연금저축,온라인,0.02,,,,,,온라인-개인연금,KR5153450112.txt,clean,EXTRA_IN_PARSER,,,
@@ -204,7 +204,7 @@ KR518101002M,C,퇴직연금/IRP,오프라인,0.01,,,,,,오프라인-퇴직연금
 KR518101002M,C-P2E,퇴직연금/IRP,온라인,0.28,,,,,,온라인-퇴직연금,KR518101002M.txt,clean,REVIEWED_REFERENCE_CORRECT,FIELD_MISMATCH,,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인
 KR518101012M,C,퇴직연금/IRP,오프라인,0.5427,0.5517,,,,,오프라인-퇴직연금,KR518101012M.txt,clean,METRIC_SEMANTIC_MISMATCH,,,
 KR518101012M,C-E,퇴직연금/IRP,온라인,0.3457,0.3546,,,,,온라인-퇴직연금,KR518101012M.txt,clean,METRIC_SEMANTIC_MISMATCH,,,
-KR518102001M,C,퇴직연금/IRP,오프라인,0.02,,,,,,오프라인-퇴직연금,KR518102001M.txt,clean,EXTRA_IN_PARSER,,,
+KR518102001M,C,퇴직연금/IRP,오프라인,0.95,,,,,,오프라인-퇴직연금,KR518102001M.txt,clean,REVIEWED_BOTH_WRONG,EXTRA_IN_PARSER,fund_class 검수완료,EXTRA_IN_PARSER / reference_not_cost_guard_usable / fund_class 검수값으로 총보수·비용 정정
 KR518102001M,C-P2E,퇴직연금/IRP,온라인,0.7,,,,,,온라인-퇴직연금,KR518102001M.txt,clean,REVIEWED_BOTH_WRONG,FIELD_MISMATCH,3,FIELD_MISMATCH / same_metric_mismatch / 동일 비용 metric 기준 값인지 원문 재확인 / source_page auto-filled from pdf_review_pack
 KR555202013M,C-P,연금저축,오프라인,1.516,1.516,,,,,오프라인-개인연금형,KR555202013M.txt,clean,REFERENCE_INCOMPLETE,,,
 KR555202013M,P-F,연금저축,오프라인,0.794,0.794,,,,,"오프라인-개인연금,기관형",KR555202013M.txt,clean,REFERENCE_INCOMPLETE,,,

@@ -675,7 +675,7 @@ def get_fund_detail(product_code: str) -> dict:
 
 @tool
 @_safe_tool
-def search_prospectus_text(query: str, product_code: Optional[str] = None, k: int = 4) -> list[dict]:
+def search_prospectus_text(query: str, product_code: Optional[str] = None, k: int = 4) -> list[dict] | dict:
     """투자설명서의 서술형 내용(투자목적/투자전략/투자위험)을 의미 기반으로 검색한다.
 
     "이 펀드의 투자전략이 뭐예요", "어떤 위험이 있나요" 같은 서술 설명 질의에 사용한다 —
@@ -684,6 +684,13 @@ def search_prospectus_text(query: str, product_code: Optional[str] = None, k: in
     특정 펀드에 대한 질문이면 반드시 product_code로 한정하라 (search_funds로 코드를 먼저
     찾은 뒤 호출) — 한정하지 않으면 다른 펀드의 서술이 섞일 수 있다.
     """
+    if product_code and not _PRODUCT_CODE_RE.match(product_code):
+        return {
+            "status": "INVALID_PRODUCT_CODE",
+            "results": [],
+            "error": "product_code must be a canonical 12-character product code such as KR514X450008",
+            "product_code": product_code,
+        }
     results = _search_prospectus_text(query=query, product_code=product_code, k=k)
     return _to_jsonable(results)
 

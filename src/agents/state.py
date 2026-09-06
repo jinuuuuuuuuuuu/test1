@@ -99,6 +99,7 @@ class PensionAgentState(TypedDict, total=False):
 
     # 후단 파수꾼 체크 결과와 그 전용 근거. guardian_evidence는 Core 답변 생성 프롬프트에
     # 넣지 않고, 최종 참고근거 조립 시점에만 retrieved_context와 합친다.
+    resolved_product: dict | None
     guardian_result: dict | None
     guardian_evidence: list[RetrievedItem]
 

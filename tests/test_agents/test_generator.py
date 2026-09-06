@@ -305,6 +305,29 @@ def test_finalize_answer_appends_single_guardian_block_and_reference():
     assert "참고 근거: core-doc; guard-doc" in out
 
 
+def test_finalize_answer_normalizes_bold_reference_heading_before_guardian_insert():
+    from src.agents.generator import _finalize_answer
+
+    out = _finalize_answer(
+        "핵심 답변입니다.\n\n**참고 근거:** core-doc",
+        {
+            "guardian_result": {
+                "enabled": True,
+                "message": "🛡️ 파수꾼 체크\n비용도 함께 확인해야 합니다.",
+            },
+            "guardian_evidence": [
+                {"source": "guard-doc", "content": "비용 주의", "node": "guardian"}
+            ],
+        },
+        [{"source": "core-doc", "content": "상품", "node": "product_agent"}],
+    )
+
+    assert "**참고 근거:**" not in out
+    assert "\n**\n" not in out
+    assert "참고 근거: core-doc; guard-doc" in out
+    assert out.rstrip().endswith("참고 근거: core-doc; guard-doc")
+
+
 def test_generator_prompt_excludes_guardian_evidence_but_final_references_include_it(monkeypatch):
     import src.agents.generator as gen
 
@@ -348,3 +371,35 @@ def test_generator_prompt_excludes_guardian_evidence_but_final_references_includ
     assert "guard-doc" not in captured["prompt"]
     assert "세금 주의" not in captured["prompt"]
     assert "참고 근거: core-doc; guard-doc" in result["answer"]
+
+
+def test_specific_product_answer_uses_verified_draft_without_llm_rewrite(monkeypatch):
+    import src.agents.generator as gen
+
+    called = {"value": False}
+
+    def fake_invoke(_llm, _messages):
+        called["value"] = True
+        raise AssertionError("specific product drafts should not be rewritten")
+
+    monkeypatch.setattr(gen, "invoke_with_retry", fake_invoke)
+
+    node = gen.build_generator_node()
+    result = node({
+        "question": "미래에셋퇴직플랜증권자투자신탁1호(주식) C클래스 특징 알려줘.",
+        "is_safe": True,
+        "scope": "범위내",
+        "response_mode": "complete",
+        "recommendation_stage": "specific_recommendation",
+        "product_draft": "계좌 유형: 퇴직연금/IRP 범위입니다. 계좌 세부유형은 확인이 필요합니다.",
+        "retrieved_context": [{"source": "core-doc", "content": "퇴직연금/IRP 범위", "node": "product_agent"}],
+        "verification": {
+            "grounded": True,
+            "requirements_met": True,
+            "missing_requirements": [],
+            "premise_issues": [],
+        },
+    })
+
+    assert called["value"] is False
+    assert "계좌 유형: 퇴직연금/IRP 범위입니다" in result["answer"]

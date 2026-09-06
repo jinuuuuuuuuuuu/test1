@@ -420,21 +420,41 @@ def test_cost_guard_turns_on_for_identified_product_class(monkeypatch):
     assert "Cost Guard canonical" in evidence[0]["source"]
 
 
-def test_cost_guard_stays_off_when_user_asks_cost_directly(monkeypatch):
-    called = {"value": False}
-
+def test_cost_guard_still_checks_when_user_asks_cost_directly(monkeypatch):
     def fake_find(product_code, class_code, account_type):
-        called["value"] = True
         return _lower_cost_result()
 
     monkeypatch.setattr("src.agents.guardian.find_lower_cost_pension_class", fake_find)
 
     result, evidence = evaluate_guardian(_verified_state("IRP KR000 C-P2 보수 더 낮은 클래스 있어?"))
 
-    assert result["enabled"] is False
-    assert result["disabled_reason"] == "EXPLICIT_USER_TOPIC"
-    assert evidence == []
-    assert called["value"] is False
+    assert result["enabled"] is True
+    assert result["candidate_id"] == "lower_cost_pension_class"
+    assert evidence
+
+
+def test_cost_guard_uses_resolved_product_without_raw_code(monkeypatch):
+    seen = {}
+
+    def fake_find(product_code, class_code, account_type):
+        seen.update({
+            "product_code": product_code,
+            "class_code": class_code,
+            "account_type": account_type,
+        })
+        return _lower_cost_result()
+
+    monkeypatch.setattr("src.agents.guardian.find_lower_cost_pension_class", fake_find)
+    state = _verified_state("미래에셋퇴직플랜증권자투자신탁1호(주식) C클래스 특징 알려줘.")
+
+    result, evidence = evaluate_guardian(state)
+
+    assert result["enabled"] is True
+    assert result["candidate_id"] == "lower_cost_pension_class"
+    assert seen["class_code"] == "C"
+    assert seen["account_type"] == "퇴직연금/IRP"
+    assert "실제 가입 가능 여부" in result["message"]
+    assert evidence
 
 
 def test_cost_guard_uses_first_product_context_candidate(monkeypatch):

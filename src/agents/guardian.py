@@ -18,6 +18,7 @@ from src.agents.in_kind_transfer_intent import (
     normalize_for_guard_match,
 )
 from src.agents.state import PensionAgentState, RetrievedItem
+from src.agents.product_resolver import resolve_product
 from src.agents.tax_context import (
     TAX_TOPIC_WORDS,
     determine_tax_branch,
@@ -389,38 +390,57 @@ def _extract_account_type(question: str, state: PensionAgentState) -> str | None
     return None
 
 
-def _targets_from_question(state: PensionAgentState) -> list[tuple[str, str, str]]:
+def _targets_from_question(state: PensionAgentState) -> list[tuple[str, str, str, bool]]:
     question = state.get("question") or ""
     product_code = _extract_product_code(question)
     class_code = _extract_class_code(question)
     account_type = _extract_account_type(question, state)
     if product_code and class_code and account_type:
-        return [(product_code, class_code, account_type)]
+        return [(product_code, class_code, account_type, False)]
     return []
 
 
-def _targets_from_product_context(state: PensionAgentState) -> list[tuple[str, str, str]]:
+def _targets_from_product_context(state: PensionAgentState) -> list[tuple[str, str, str, bool]]:
     account_type = _extract_account_type(state.get("question") or "", state)
     if not account_type:
         return []
-    targets: list[tuple[str, str, str]] = []
+    targets: list[tuple[str, str, str, bool]] = []
     for item in state.get("retrieved_context") or []:
         if item.get("node") != "product_agent":
             continue
         product_code = _extract_product_code(item.get("content") or "")
         class_code = _extract_class_code(item.get("source") or "")
         if product_code and class_code:
-            targets.append((product_code, class_code, account_type))
+            targets.append((product_code, class_code, account_type, False))
     return targets
+
+
+def _targets_from_resolved_product(state: PensionAgentState) -> list[tuple[str, str, str, bool]]:
+    resolved = state.get("resolved_product") or resolve_product(state.get("question") or "")
+    if not resolved.get("resolved"):
+        return []
+    class_code = resolved.get("class_code")
+    account_type = resolved.get("cost_account_type")
+    product_codes = list(resolved.get("product_codes") or [])
+    if not (class_code and account_type and product_codes):
+        return []
+    inferred_account = resolved.get("account_type_source") != "explicit"
+    return [(code, class_code, account_type, inferred_account) for code in product_codes]
 
 
 def _cost_guard_fact(result: dict) -> str:
     metric_label = _COST_METRIC_LABELS.get(result["comparison_metric"], result["comparison_metric"])
-    return (
+    base = (
         f"같은 펀드의 동일한 연금계좌 유형에서 {metric_label} 기준으로 더 낮은 클래스가 "
         f"확인됩니다. 현재 {result['current_class_code']} 클래스는 {result['current_value']}%, "
         f"{result['target_class_code']} 클래스는 {result['target_value']}%입니다."
     )
+    if result.get("account_type_inferred"):
+        return (
+            f"{base} 다만 질문에 IRP/DC/DB 등 계좌 세부유형이 직접 명시되지는 않았으므로, "
+            "해당 저비용 클래스의 실제 가입 가능 여부는 가입 금융기관에서 확인해야 합니다."
+        )
+    return base
 
 
 def _cost_guard_evidence(result: dict) -> RetrievedItem:
@@ -442,10 +462,8 @@ def _cost_guard_evidence(result: dict) -> RetrievedItem:
 
 
 def _select_lower_cost_class_rule(state: PensionAgentState) -> dict | None:
-    if _asks_cost_topic(state.get("question") or ""):
-        return {"disabled_reason": "EXPLICIT_USER_TOPIC"}
-
-    for product_code, class_code, account_type in [
+    for product_code, class_code, account_type, account_type_inferred in [
+        *_targets_from_resolved_product(state),
         *_targets_from_question(state),
         *_targets_from_product_context(state),
     ]:
@@ -455,6 +473,7 @@ def _select_lower_cost_class_rule(state: PensionAgentState) -> dict | None:
         if not result.found or result.eligibility != "STANDARD":
             continue
         result_dict = asdict(result)
+        result_dict["account_type_inferred"] = account_type_inferred
         return {
             "candidate_id": "lower_cost_pension_class",
             "guard_type": "COST",
