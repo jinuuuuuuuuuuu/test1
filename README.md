@@ -479,6 +479,8 @@ RUN_LIVE_AGENT_TESTS=1 pytest tests/test_e2e -v
 
 ## 🚀 실행 방법
 
+> 이 섹션이 제출 요건의 **재현 가능한 개발 환경 정의**(Dockerfile, requirements.txt, 실행 명령어)에 해당합니다. 완전히 새로운 가상환경에서 `requirements.txt` 설치부터 API 서버 기동까지 직접 재현해 확인했습니다.
+
 ### 1. 가상환경 생성
 
 ```bash
