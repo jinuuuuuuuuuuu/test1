@@ -999,6 +999,79 @@ def _has_sufficient_tax_credit_inputs(values: dict[str, int | None]) -> bool:
     return has_contribution and has_income
 
 
+# "전부/모두 공제되나요", "OOO만원 기준으로 계산되나요" 처럼 **한도 이내인지**만 묻는
+# 질문은 소득 정보 없이도 답이 확정된다("네/아니요 + 한도까지만"). 그런데 이 질문은
+# 납입액이 있으므로 candidate_categories가 세액공제_계산_입력부족도 항상 후보로
+# 올리고, 라우터가 그쪽을 확정하면 소득을 요구하며 역질문한다.
+#
+# 실측(2026-09-06, 501문항): no.75("IRP 1000만원, 900만원 기준으로 계산되나요?")와
+# no.312("연금저축 601만원 넣었는데 전부 세액공제 되나요?")가 이 결함으로 역질문
+# 됐다 — 둘 다 baseline에서는 정답(한도까지만 공제)이 나갔었다. 이 판정을
+# 세액공제_한도 핸들러 안에만 두면 세액공제_계산_입력부족으로 확정되는 경우 여전히
+# 뚫린다 — _has_sufficient_tax_credit_inputs와 같은 이유로, 카테고리 분류 결과와
+# 무관하게 양쪽 핸들러 진입 시점에 먼저 확인해야 한다.
+def _tax_credit_limit_only_question_response(
+    question: str, values: dict[str, int | None], source: str, content: str
+) -> tuple[str, list[RetrievedItem]] | None:
+    """한도 이내 여부만 확인하면 되는 질문이면 답을 확정하고, 아니면 None을 반환한다."""
+    if values["total_salary"] is not None or values["comprehensive_income"] is not None:
+        return None  # 소득까지 주어졌으면 정확한 계산 경로(호출자)에 맡긴다
+
+    pension_savings_paid = values["pension_savings_paid"]
+    irp_paid = values["irp_paid"]
+
+    # 연금저축 단독 납입 — "전부/모두 공제되나요" 류
+    asks_all_credited = any(word in _compact(question) for word in ("전부", "모두", "다세액공제", "전체"))
+    if pension_savings_paid and irp_paid is None and asks_all_credited:
+        credited = min(pension_savings_paid, PENSION_SAVINGS_ONLY_LIMIT)
+        excess = max(0, pension_savings_paid - PENSION_SAVINGS_ONLY_LIMIT)
+        if excess:
+            draft = (
+                f"아니요. 연금저축에 {_won(pension_savings_paid)}을 납입했더라도, **연금저축만으로는 "
+                f"{_won(PENSION_SAVINGS_ONLY_LIMIT)}까지만 세액공제 대상**입니다.\n\n"
+                f"- 세액공제 대상 연금저축 납입액: {_won(credited)}\n"
+                f"- 연금저축 단독 한도를 넘는 금액: {_won(excess)}\n\n"
+                f"연금저축과 IRP를 함께 활용하면 두 계좌 합산으로 {_won(COMBINED_CREDIT_LIMIT)}까지 "
+                "세액공제 대상이 될 수 있지만, 연금저축 단독 한도 자체가 900만원으로 늘어나는 구조는 아닙니다.\n\n"
+                "세액공제율은 소득 기준에 따라 16.5% 또는 13.2%가 적용됩니다."
+            )
+            return draft, _context(source, content)
+
+    # IRP 단독(또는 연금저축+IRP 합산) 납입 — "OOO만원 기준으로 계산되나요" 류.
+    # no.75: "IRP에만 1000만원 넣었는데 900만원 기준으로 계산되나요?" — 합산한도
+    # 이내에 있는지만 물었으므로 소득 없이도 답이 확정된다.
+    combined_paid = (pension_savings_paid or 0) + (irp_paid or 0)
+    asks_basis_confirmation = bool(
+        re.search(r"기준으로\s*계산", _compact(question))
+        or re.search(r"기준(?:이|으로)?\s*(?:되나요|맞나요|인가요)", _compact(question))
+    )
+    if irp_paid and asks_basis_confirmation:
+        credited = min(combined_paid, COMBINED_CREDIT_LIMIT)
+        excess = max(0, combined_paid - COMBINED_CREDIT_LIMIT)
+        if excess:
+            intro = (
+                f"네. 합산 납입액 {_won(combined_paid)}이 연금저축+IRP 합산 세액공제 대상 한도 "
+                f"{_won(COMBINED_CREDIT_LIMIT)}을 넘으므로, {_won(COMBINED_CREDIT_LIMIT)}까지만 "
+                "세액공제 대상 납입액으로 계산됩니다."
+            )
+        else:
+            intro = (
+                f"네. 연금저축+IRP 합산 세액공제 대상 한도는 {_won(COMBINED_CREDIT_LIMIT)}이고 "
+                f"합산 납입액 {_won(combined_paid)}이 그 이내이므로, {_won(credited)} 전액이 "
+                "세액공제 대상 납입액으로 계산됩니다."
+            )
+        draft = (
+            intro + "\n\n"
+            f"- 세액공제 대상 납입액: {_won(credited)}\n"
+            + (f"- 한도를 넘는 금액(공제 대상 제외): {_won(excess)}\n" if excess else "")
+            + "\n세액공제율은 소득 기준(총급여 또는 종합소득금액)에 따라 16.5% 또는 13.2%가 "
+            "적용되며, 정확한 공제액은 소득을 알려주시면 계산해 드립니다."
+        )
+        return draft, _context(source, content)
+
+    return None
+
+
 def _tax_credit_calculation_missing_response(question: str) -> tuple[str, list[RetrievedItem]]:
     source = "doc41 세액공제 계산 입력값 규칙"
     if _has_negative_labeled_amount(question):
@@ -1090,6 +1163,13 @@ def _tax_credit_calculation_missing_response(question: str) -> tuple[str, list[R
         f"{_won(INCOME_THRESHOLD_COMPREHENSIVE)} 이하이면 {_pct(CREDIT_RATE_LOW)}, "
         f"초과이면 {_pct(CREDIT_RATE_HIGH)}입니다."
     )
+
+    # 소득 없이도 한도 이내 여부만으로 답이 확정되는 질문("전부 공제되나요" /
+    # "OOO만원 기준으로 계산되나요")이면, 소득을 요구하는 역질문 대신 바로 답한다.
+    limit_only = _tax_credit_limit_only_question_response(question, values, source, content)
+    if limit_only is not None:
+        return limit_only
+
     draft = (
         "세액공제 금액은 납입액과 소득구간이 함께 있어야 계산할 수 있습니다.\n\n"
         "현재 질문에는 실제 계산에 필요한 입력값이 부족하므로, 세액공제액을 임의로 산출하지 않겠습니다.\n\n"
@@ -1156,7 +1236,15 @@ def _db_dc_comparison_response(question: str) -> tuple[str, list[RetrievedItem]]
         return None
     asks_db = "DB" in question or "확정급여" in text
     asks_dc = "DC" in question or "확정기여" in text
-    asks_comparison = any(word in text for word in ("차이", "다른가", "다른가요", "다릅니", "비교"))
+    # "차이/비교"뿐 아니라 "바꾸면/전환하면 ~ 달라지나요"도 결국 DB·DC 계산식을
+    # 나란히 설명해야 답이 되는 질문이다. 실측(no.123 "DB형에서 DC형으로 바꾸면
+    # 세액공제나 투자 방식이 어떻게 달라지나요?"): 이 표현이 asks_comparison에
+    # 없어서 정형 핸들러가 None을 반환했고, LLM이 no.1/no.27과 같은 "평균임금
+    # 60% x 근속연수" 계산식을 다시 창작했다 — 이 카테고리를 만든 목적 자체가
+    # 무력화됐다.
+    asks_comparison = any(
+        word in text for word in ("차이", "다른가", "다른가요", "다릅니", "비교", "달라지", "바뀌")
+    )
     asks_db_calc = asks_db and any(word in text for word in ("계산", "산정", "얼마로", "어떻게정해"))
     asks_operator = any(word in text for word in ("운용주체", "누가운용", "누가굴리", "직접운용"))
     asks_db_confirmation = asks_db and _DB_CONFIRMATION_RE.search(text) is not None
@@ -1507,22 +1595,12 @@ def _tax_credit_limit_response(question: str) -> tuple[str, list[RetrievedItem]]
     if income_rate_draft is not None:
         return income_rate_draft, _context(source, content)
 
-    pension_savings_paid = values["pension_savings_paid"]
-    asks_all_credited = any(word in _compact(question) for word in ("전부", "모두", "다세액공제", "전체"))
-    if pension_savings_paid and values["irp_paid"] is None and asks_all_credited:
-        credited = min(pension_savings_paid, PENSION_SAVINGS_ONLY_LIMIT)
-        excess = max(0, pension_savings_paid - PENSION_SAVINGS_ONLY_LIMIT)
-        if excess:
-            draft = (
-                f"아니요. 연금저축에 {_won(pension_savings_paid)}을 납입했더라도, **연금저축만으로는 "
-                f"{_won(PENSION_SAVINGS_ONLY_LIMIT)}까지만 세액공제 대상**입니다.\n\n"
-                f"- 세액공제 대상 연금저축 납입액: {_won(credited)}\n"
-                f"- 연금저축 단독 한도를 넘는 금액: {_won(excess)}\n\n"
-                f"연금저축과 IRP를 함께 활용하면 두 계좌 합산으로 {_won(COMBINED_CREDIT_LIMIT)}까지 "
-                "세액공제 대상이 될 수 있지만, 연금저축 단독 한도 자체가 900만원으로 늘어나는 구조는 아닙니다.\n\n"
-                "세액공제율은 소득 기준에 따라 16.5% 또는 13.2%가 적용됩니다."
-            )
-            return draft, _context(source, content)
+    # 소득 없이도 한도 이내 여부만으로 답이 확정되는 질문("전부 공제되나요" /
+    # "OOO만원 기준으로 계산되나요")이면 바로 답한다 — 세액공제_계산_입력부족
+    # 핸들러와 판정 로직을 공유해, 라우터가 어느 카테고리를 확정하든 답이 갈리지 않게 한다.
+    limit_only = _tax_credit_limit_only_question_response(question, values, source, content)
+    if limit_only is not None:
+        return limit_only
 
     draft = (
         "연금저축과 IRP를 합쳐서 볼 때 핵심은 **세액공제 대상 한도는 합산 900만원**이라는 점입니다.\n\n"

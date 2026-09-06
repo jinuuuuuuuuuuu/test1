@@ -211,6 +211,42 @@ def test_tax_credit_limit_answers_pension_savings_only_excess_directly():
     assert "연금저축 단독 한도를 넘는 금액: 300만원" in draft
 
 
+def test_tax_credit_limit_only_question_answers_without_income_regardless_of_category():
+    """"전부/기준으로 계산" 류 질문은 소득 없이도 답이 확정되므로, 라우터가
+    세액공제_한도·세액공제_계산_입력부족 어느 쪽을 확정해도 같은 정답이 나와야 한다.
+
+    회귀 방지(2026-09-06, 501문항 전수평가): no.75/no.312가 이 결함으로 역질문됐다.
+    둘 다 baseline(9/2)에서는 정답이 나갔었는데, candidate_categories가 항상 두
+    카테고리를 함께 후보로 올리는 구조라 라우터가 세액공제_계산_입력부족을
+    확정하면 소득을 요구하며 역질문으로 바뀌었다 — asks_all_credited 판정이
+    세액공제_한도 핸들러 안에만 있어서였다.
+    """
+    q_pension_only = "연금저축 601만원 넣었는데 전부 세액공제 되나요?"  # no.312
+    q_combined = "IRP에만 1000만원 넣었는데(납입한도 1800만원은 안 넘음) 세액공제는 900만원 기준으로 계산되나요?"  # no.75
+
+    for category in ("세액공제_한도", "세액공제_계산_입력부족"):
+        draft, _ = deterministic_response_for(category, q_pension_only)
+        assert "역질문" not in draft
+        assert "소득" not in draft.split("\n\n")[0]  # 첫 문단은 소득을 묻지 않고 바로 답한다
+        assert "아니요" in draft
+        assert "600만원까지만 세액공제 대상" in draft
+        assert "1만원" in draft  # 601 - 600 초과분
+
+        draft2, _ = deterministic_response_for(category, q_combined)
+        assert "네" in draft2.split("\n")[0]
+        assert "900만원까지만" in draft2 or "900만원 전액" in draft2
+        assert "100만원" in draft2  # 1000 - 900 초과분
+
+
+def test_tax_credit_combined_limit_answers_within_limit_case_directly():
+    """합산 납입액이 900만원 이내면(초과분 없이) 전액이 공제 대상이라고 답해야 한다."""
+    draft, _ = deterministic_response_for(
+        "세액공제_한도", "IRP에 700만원 넣었는데 세액공제는 700만원 기준으로 계산되나요?"
+    )
+    assert "700만원 전액" in draft
+    assert "소득" not in draft.split("\n\n")[0]
+
+
 def test_tax_credit_limit_answers_rate_when_only_income_given():
     """납입액 없이 소득만 있어도 세율은 확정할 수 있다 — 경계값 양쪽을 함께 검증한다.
 
@@ -1769,6 +1805,23 @@ def test_db_dc_comparison_answer_uses_correct_formula():
     assert "30일분" in draft and "계속근로기간" in draft
     assert "60%" not in draft   # 근거에 없는 창작 계산식
     assert context  # 출처가 붙어야 한다
+
+
+def test_db_dc_comparison_reaches_from_conversion_phrasing_too():
+    """"바꾸면/전환하면 ~ 달라지나요"도 '차이/비교'와 같은 성격의 질문이다.
+
+    회귀 방지(2026-09-06, 501문항 전수평가 no.123): "DB형에서 DC형으로 바꾸면
+    세액공제나 투자 방식이 어떻게 달라지나요?"가 asks_comparison에 "바꾸면/달라지나요"
+    표현이 없어 정형 핸들러가 None을 반환했다. 그 결과 LLM이 no.1/no.27과 동일한
+    "평균 임금의 60% x 근속 연수"라는 근거 없는 DB 계산식을 다시 창작했다 —
+    이 카테고리를 만든 목적(창작 계산식 방지) 자체가 무력화된 재발 사례다.
+    """
+    question = "회사에서 DC형으로 전환한다는데, DB형에서 DC형으로 바꾸면 세액공제나 투자 방식이 어떻게 달라지나요?"
+    draft, context = deterministic_response_for("제도비교_DB_DC", question)
+
+    assert "30일분" in draft and "계속근로기간" in draft
+    assert "60%" not in draft
+    assert context
 
 
 def test_db_dc_comparison_declines_personal_calculation():

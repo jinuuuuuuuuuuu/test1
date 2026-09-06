@@ -85,13 +85,19 @@ scripts/      배치 실행 스크립트 (파싱, 색인 등)
     대응하도록 ②③ 응답 전략 조정 (2026-08-20)
   - 멀티턴 대화(`conversation_history`)는 코드상 지원되지만 싱글턴 평가 API에서는 사용되지
     않음 — 로컬 데모(`scripts/chat.py`)용 기능으로 남겨둠
-- [~] **Phase 4** — 평가용 API 서버 **완료** / NCP 배포 **미착수**
+- [x] **Phase 4** — 평가용 API 서버 **완료** / NCP 배포 **완료**
   - `src/api/main.py` — 요강 p8 스키마(`GET /answer` → `question_id`/`question`/
     `retrieved_context`/`think_trace`/`answer`) 구현. 로컬 기동·공식 질의 응답 확인 완료.
   - 파이프라인이 예외로 죽어도 500 대신 200 + 한계 고지를 반환한다 (무응답은 그 문항이
     0점이므로). 원인은 `think_trace`에 남는다.
-  - **남은 것**: 주최측에 제출할 것은 코드가 아니라 **접속 가능한 End-point URL**이다.
-    `localhost`는 제출용이 될 수 없으므로 NCP 등에 배포하고 URL을 확보해야 한다.
+  - **제출용 End-point (NCP 배포 완료, 2026-09-06)**:
+    ```
+    GET http://49.50.131.213:8000/answer?question_id={id}&question={평가 질의}
+    ```
+    - 3중 검증 완료: 서버 내부 헬스체크(`graph_ready: true`) / 서버→외부 아웃바운드 /
+      외부→서버 인바운드(공인 IP로 실제 질의 응답 확인)
+    - 응답 필드는 요강 스키마와 동일하며 전부 문자열(string) 타입
+    - 인증 헤더 불필요, 경로는 `/answer`로 고정
 - [ ] **Phase 5** — 자체 평가 반복, 기술제안서 — `eval/eval_questions_100.csv`(100문항 자체
   평가셋) 작성 완료, 실제 회귀 실행/결과 정리는 미착수
 
