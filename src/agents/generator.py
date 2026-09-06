@@ -6,6 +6,7 @@ is_safe=False(①가드레일에서 차단된 경우)는 모델을 호출하지 
 
 import re
 from datetime import date
+from decimal import Decimal, InvalidOperation
 
 from src.agents.context import dedupe_context, format_conversation_history, merge_drafts
 from src.agents.guardian import GUARD_HEADING
@@ -81,6 +82,33 @@ _NODE_LABELS = {
 
 _WEEKDAYS_KR = ("월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일")
 
+_USER_EVIDENCE_HEADING = "📎 참고 근거"
+_INTERNAL_EVIDENCE_TOKENS = (
+    "Cost Guard canonical",
+    "dataset_version",
+    "dataset_status",
+    "extraction_note",
+    "review_status",
+    "FROZEN_V1",
+)
+_PRODUCT_CONTEXT_KEYS = (
+    "상품코드",
+    "클래스",
+    "계좌유형",
+    "판매채널",
+    "위험등급",
+    "유형",
+    "총보수·비용",
+    "합성총보수·비용",
+    "투자설명서효력발생일",
+    "시장잔고",
+    "잔고기준일",
+    "투자목적",
+    "투자전략",
+    "dataset_version",
+    "dataset_status",
+)
+
 
 def _today_context_line(today: date | None = None) -> str:
     """상대 날짜 해석용 작성 기준일을 프롬프트에만 넣는다."""
@@ -88,20 +116,159 @@ def _today_context_line(today: date | None = None) -> str:
     return f"{current.isoformat()} ({_WEEKDAYS_KR[current.weekday()]})"
 
 
+def _has_user_value(value: object) -> bool:
+    text = str(value or "").strip()
+    normalized = text.replace("%", "").strip()
+    return bool(text) and normalized not in {"None", "none", "null", "NULL", "없음", "nan"}
+
+
+def _parse_product_context(content: str) -> dict[str, str]:
+    key_pattern = "|".join(re.escape(key) for key in _PRODUCT_CONTEXT_KEYS)
+    pattern = re.compile(rf"(?:^|, )({key_pattern})=(.*?)(?=, (?:{key_pattern})=|$)")
+    return {match.group(1): match.group(2).strip() for match in pattern.finditer(content or "")}
+
+
+def _format_evidence_date(value: object) -> str:
+    text = str(value or "").strip()
+    match = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", text)
+    if match:
+        return ".".join(match.groups())
+    return text
+
+
+def _clean_evidence_snippet(value: object, limit: int = 180) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not text or any(token in text for token in _INTERNAL_EVIDENCE_TOKENS):
+        return ""
+    return text if len(text) <= limit else text[:limit].rstrip() + "…"
+
+
+def _user_facing_source(source: object) -> str:
+    text = str(source or "").strip()
+    if text.startswith("Cost Guard canonical"):
+        return "파수꾼 검증 근거"
+    for token in _INTERNAL_EVIDENCE_TOKENS:
+        text = text.replace(token, "").strip()
+    return text or "근거 문서"
+
+
+def _product_document_title(source: object) -> str:
+    title = _user_facing_source(source)
+    title = re.sub(r"\s*\([^()]+\)\s*$", "", title).strip()
+    if "투자설명서" not in title:
+        title = f"{title} 투자설명서"
+    return title
+
+
+def _format_decimal_percent(value: str | Decimal) -> str:
+    decimal = value if isinstance(value, Decimal) else Decimal(str(value))
+    return f"{decimal:.2f}%"
+
+
+def _format_product_evidence_item(index: int, item: dict, fields: dict[str, str]) -> list[str]:
+    lines = [f"[{index}] {_product_document_title(item.get('source'))}"]
+
+    effective_date = fields.get("투자설명서효력발생일")
+    if _has_user_value(effective_date):
+        lines.append(f"- 효력발생일: {_format_evidence_date(effective_date)}")
+
+    used_items = [
+        label
+        for key, label in (
+            ("투자목적", "투자목적"),
+            ("투자전략", "투자전략"),
+            ("위험등급", "위험등급"),
+            ("총보수·비용", "총보수·비용"),
+            ("합성총보수·비용", "합성총보수·비용"),
+            ("시장잔고", "시장잔고"),
+        )
+        if _has_user_value(fields.get(key))
+    ]
+    if used_items:
+        lines.append(f"- 확인 항목: {', '.join(used_items)}")
+
+    snippets = []
+    for key in ("투자전략", "투자목적"):
+        snippet = _clean_evidence_snippet(fields.get(key))
+        if snippet:
+            snippets.append((key, snippet))
+    for label, snippet in snippets[:3]:
+        lines.append(f'- 핵심 원문({label}): "{snippet}"')
+    return lines
+
+
+def _format_cost_guard_evidence_item(index: int, item: dict) -> list[str]:
+    content = str(item.get("content") or "")
+    lines = [f"[{index}] 파수꾼 검증 근거", "- 동일 상품의 클래스별 총보수·비용 비교"]
+
+    pairs = re.findall(r"([A-Z](?:-[A-Z0-9]+)?)=([0-9]+(?:\.[0-9]+)?)%", content)
+    values: list[tuple[str, Decimal]] = []
+    for class_code, raw_value in pairs[:2]:
+        try:
+            value = Decimal(raw_value)
+        except InvalidOperation:
+            continue
+        values.append((class_code, value))
+        lines.append(f"- {class_code}: {_format_decimal_percent(value)}")
+
+    if len(values) >= 2:
+        diff = abs(values[0][1] - values[1][1])
+        lines.append(f"- 차이: {_format_decimal_percent(diff)}p")
+    return lines
+
+
+def _format_generic_evidence_item(index: int, item: dict) -> list[str]:
+    source = _user_facing_source(item.get("source"))
+    title, sep, section_from_source = source.partition(" — ")
+    lines = [f"[{index}] {title.strip() or source}"]
+
+    section = str(item.get("section") or section_from_source).strip()
+    if section:
+        lines.append(f"- 확인 항목: {section}")
+
+    content = str(item.get("content") or "").strip()
+    looks_like_json = content.startswith("{") or content.startswith("[{") or content.startswith("[[")
+    if not looks_like_json:
+        snippet = _clean_evidence_snippet(content)
+        if snippet:
+            lines.append(f'- 핵심 원문: "{snippet}"')
+    return lines
+
+
+def _format_user_evidence_block(context: list) -> str:
+    blocks = []
+    for item in dedupe_context(context):
+        source = str(item.get("source") or "")
+        content = str(item.get("content") or "")
+        if source.startswith("Cost Guard canonical") or item.get("node") == "guardian":
+            lines = _format_cost_guard_evidence_item(len(blocks) + 1, item)
+        else:
+            product_fields = _parse_product_context(content)
+            lines = (
+                _format_product_evidence_item(len(blocks) + 1, item, product_fields)
+                if product_fields
+                else _format_generic_evidence_item(len(blocks) + 1, item)
+            )
+        if lines:
+            blocks.append("\n".join(lines))
+
+    if blocks:
+        return f"{_USER_EVIDENCE_HEADING}\n\n" + "\n\n".join(blocks)
+
+    sources = [f"- {_user_facing_source(item.get('source'))}" for item in dedupe_context(context)]
+    return f"{_USER_EVIDENCE_HEADING}\n" + "\n".join(dict.fromkeys(sources))
+
+
 def _append_reference_line(answer: str, context: list) -> str:
     if not context:
         return answer
-    sources = "; ".join(dict.fromkeys(c["source"] for c in context))
-    if "참고 근거:" not in answer:
-        return f"{answer}\n\n참고 근거: {sources}"
-
-    head, sep, tail = answer.rpartition("참고 근거:")
-    existing = tail.strip()
-    missing = [source for source in dict.fromkeys(c["source"] for c in context) if source not in existing]
-    if not missing:
-        return answer
-    separator = "; " if existing else ""
-    return f"{head}{sep} {existing}{separator}{'; '.join(missing)}"
+    clean_answer = _strip_reference_lines(_normalize_reference_heading(answer))
+    try:
+        evidence_block = _format_user_evidence_block(context)
+    except Exception:
+        sources = [f"- {_user_facing_source(c.get('source'))}" for c in context if c.get("source")]
+        evidence_block = f"{_USER_EVIDENCE_HEADING}\n" + "\n".join(dict.fromkeys(sources))
+    return f"{clean_answer}\n\n{evidence_block}"
 
 
 def _normalize_reference_heading(answer: str) -> str:
