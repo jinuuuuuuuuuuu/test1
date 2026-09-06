@@ -29,8 +29,6 @@ except ModuleNotFoundError:  # pragma: no cover - direct script execution path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "data" / "processed"
-DEFAULT_XLSX = Path("/Users/dapanman/Downloads/Cost_Guard_fund_class_v2_검증보정.xlsx")
-DEFAULT_PDF_ROOT = Path("/Users/dapanman/Desktop/2.연금/투자설명서")
 
 ALLOWED_ACCOUNT_TYPES = {"연금저축", "퇴직연금/IRP"}
 ALLOWED_CHANNELS = {"오프라인", "온라인", "온라인슈퍼", "직판"}
@@ -799,6 +797,13 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def repo_relative_path(path: Path) -> str:
+    try:
+        return path.resolve().relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return str(path)
+
+
 def build_manifest(
     coverage: dict,
     *,
@@ -912,8 +917,8 @@ def write_csv(path: Path, rows: list[dict], fieldnames: list[str]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--pdf-root", type=Path, default=DEFAULT_PDF_ROOT)
-    parser.add_argument("--xlsx", type=Path, default=DEFAULT_XLSX)
+    parser.add_argument("--pdf-root", type=Path, required=True)
+    parser.add_argument("--xlsx", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument(
         "--review-csv",
@@ -953,7 +958,7 @@ def main() -> None:
     coverage["p0_review_required_case_count"] = p0_case_count
     coverage["p0_review_required_field_row_count"] = len(p0_template)
     coverage["p0_review_unresolved_field_row_count"] = len(unresolved_p0)
-    coverage["review_override_path"] = str(review_path)
+    coverage["review_override_path"] = repo_relative_path(review_path)
     coverage["review_override_count"] = len(review_rows)
     coverage["canonical_row_count_before_review"] = len(canonical_before_review)
     coverage["canonical_row_count_delta_from_review"] = len(canonical) - len(canonical_before_review)

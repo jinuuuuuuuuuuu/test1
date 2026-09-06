@@ -14,6 +14,7 @@ from scripts.build_fund_class_pension_dataset import (
     coverage_summary,
     normalize_class_code,
     p0_review_template_rows,
+    repo_relative_path,
     review_provenance_rows,
     review_template_rows,
     unresolved_p0_review_rows,
@@ -523,3 +524,8 @@ def test_generated_coverage_artifact_matches_canonical_rows():
     assert coverage["lower_cost_pair_count"] > 0
     assert coverage["audit"]["audit_row_count"] > 0
     assert coverage["audit"]["audit_by_status_cause"]["FIELD_MISMATCH"]
+
+
+def test_review_override_path_is_repository_relative():
+    path = Path("data/processed/fund_class_pension_review.csv")
+    assert repo_relative_path(path) == "data/processed/fund_class_pension_review.csv"
