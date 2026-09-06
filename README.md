@@ -1,173 +1,651 @@
-# 연금 Agent — 제10회(2026) 미래에셋증권 AI Festival
+<div align="center">
 
-연금 제도(DB/DC/IRP, 연금저축)·세제·상품(펀드) 질의에 답하는 HyperCLOVA X 기반 에이전트.
+# 🛡️ 연금 파수꾼 | Pension Guardian
 
-## 아키텍처
+### 모르는 사이에 잃는 연금 혜택과 잘못된 선택의 위험을 먼저 발견하는 AI Agent
 
+**연금 제도·세제·상품 데이터를 근거로 답하고, 숫자는 규칙으로 계산하며, 검증된 경우에만 다음 행동을 안내합니다.**
+
+제10회 2026 미래에셋증권 AI Festival · 연금 Agent(Pension Advisor)
+
+</div>
+
+---
+
+## 🎯 Project Overview
+
+연금 질문은 짧지만, 정확한 답변에 필요한 조건은 복잡합니다.
+
+- 같은 연령이라도 **수령 방식·재원·종신연금 여부·연금수령연차**에 따라 세금이 달라질 수 있습니다.
+- 같은 펀드라도 **판매 클래스·판매 채널·총보수**에 따라 장기 비용이 달라집니다.
+- 중도인출·실물이전·퇴직금의 IRP 이전은 **세부 요건 하나**로 가능 여부가 달라질 수 있습니다.
+- 세액공제 잔여 한도처럼 사용자가 먼저 묻지 않으면 **놓치기 쉬운 혜택**도 있습니다.
+
+따라서 본 프로젝트는 단순히 문서를 검색해 답하는 챗봇이 아니라, **문서 검색(RAG) + 구조화 DB + 규칙 기반 계산 + 답변 검증 + 파수꾼(Guardian)**을 결합한 정확성 중심 하이브리드 Agent로 설계했습니다.
+
+| 설계 원칙 | 구현 방식 |
+| --- | --- |
+| 📚 제공 자료 우선 | 주최 측 제도 문서와 투자설명서를 Chroma·SQLite에 구조화 |
+| 🧮 계산과 설명 분리 | 세금·한도·요건은 Python 규칙 엔진이 결정론적으로 계산 |
+| 🚦 정보가 부족하면 멈춤 | 필수 입력이 부족하면 계산·추천을 중단하고 필요한 정보를 먼저 요청 |
+| 🔍 답변 전 검증 | 수치·근거·전제·질문 충족 여부를 답변 검증(Grounding) 단계에서 확인 |
+| 🛡️ 검증 후 선제 안내 | 사용자 질문에 대한 본 답변은 유지한 채, 놓친 손실·혜택·비용을 파수꾼(Guardian)이 최대 1건만 추가 안내 |
+
+### 💬 한 줄 정의
+
+> **더 많은 답을 생성하는 Agent가 아니라, 틀리면 위험한 답은 멈추고 사용자가 놓칠 손실은 먼저 발견하는 Agent입니다.**
+
+---
+
+## 📖 처음 보는 분을 위한 용어 안내
+
+README에는 구현과 직접 연결되는 기술 용어가 일부 등장합니다. 프로젝트 내부에서만 쓰던 이름은 가능한 한 일반적인 표현으로 바꾸고, 코드와 연결해야 하는 용어는 아래처럼 뜻을 함께 적었습니다.
+
+| 용어 | 이 README에서의 뜻 |
+| --- | --- |
+| **RAG** | 사용자의 질문과 관련된 문서를 검색한 뒤, 그 문서를 근거로 답변을 생성하는 방식입니다. |
+| **규칙 기반 / 결정론적 처리** | 같은 입력에는 같은 계산 결과가 나오도록 LLM이 아닌 Python 규칙으로 세금·한도·요건을 계산하는 방식입니다. |
+| **Router** | 질문이 제도·세제 질문인지, 상품 질문인지, 두 영역이 섞인 질문인지 먼저 분류하는 단계입니다. |
+| **Guardrail** | 연금 상담 범위를 벗어난 질문이나 안전하게 답하기 어려운 질문을 초기에 걸러내는 보호 장치입니다. |
+| **Info Agent / Product Agent** | 각각 **연금 제도·세제 담당 Agent**와 **펀드·상품 담당 Agent**를 뜻합니다. |
+| **Grounding** | Agent가 만든 답변이 실제 검색 문서·DB·규칙 계산 결과와 맞는지 확인하는 답변 검증 단계입니다. |
+| **L0 / L1** | Grounding 내부의 두 검증 단계입니다. L0는 코드로 숫자·근거를 대조하고, L1은 문장 전체의 근거성·전제·질문 충족 여부를 확인합니다. |
+| **Repair** | 검증에 실패한 답변을 다시 생성해 고치는 과정입니다. 본 프로젝트에서는 무한 반복을 막기 위해 최대 1회만 허용합니다. |
+| **Guardian / 연금 파수꾼** | 본 답변이 검증된 뒤, 사용자가 묻지 않았더라도 놓치면 손해가 될 수 있는 혜택·세금·비용을 최대 1건 추가로 안내하는 후단 기능입니다. |
+| **Cost Guard** | 같은 펀드 안에서 더 낮은 비용의 판매 클래스가 있는지 점검하기 위해 만든 사전 검수 데이터와 비교 로직입니다. |
+| **Tool / Tool Calling** | Agent가 문서 검색, DB 조회, 세금 계산 같은 외부 함수를 필요할 때 호출해 사용하는 방식입니다. |
+| **ReAct** | LLM이 필요한 도구를 선택해 호출하고, 그 결과를 바탕으로 다음 행동이나 답변을 정하는 Agent 동작 방식입니다. |
+| **Generator** | 앞 단계에서 확인한 답변·근거·검증 결과를 사용자가 읽을 최종 형태로 조립하는 마지막 단계입니다. |
+| **Structured Outputs** | LLM이 자유형 문장 대신 미리 정한 필드 구조에 맞춰 분류·검증 결과를 반환하도록 하는 방식입니다. |
+
+> `needs_clarification`, `response_mode`, `repair_attempted`처럼 코드에 직접 등장하는 이름은 구현 설명에서만 유지하고, 사용자 관점 설명에서는 각각 **추가정보 필요 여부**, **응답 단계**, **수정 재시도 여부**로 풀어 표현했습니다.
+
+---
+
+## 💡 Problem Definition
+
+연금 의사결정에서 발생하는 사용자 손실을 세 가지로 정의했습니다.
+
+| 문제 영역 | 사용자가 겪는 위험 | Pension Guardian의 역할 |
+| --- | --- | --- |
+| ⏳ 놓치면 사라지는 것 | 세액공제 잔여 한도·적용 기회를 놓침 | 확인된 납입정보로 미사용 혜택 탐지 |
+| ⚠️ 잘못 건드리면 깨지는 것 | 연금외수령·중도인출·이전 과정에서 세금 또는 제한 발생 | 실행 전 재원·행동·상품 조건 점검 |
+| 🔎 모르면 못 받는 것 | 가입 시점·수령연차·계좌 유형별 특례를 활용하지 못함 | 사용자 상황과 규칙을 연결해 적용 가능성 안내 |
+
+기존 단일 RAG는 문서를 찾아 설명하는 데는 유용하지만, 조건이 많은 연금 세제 계산과 상품 적합성 판단을 일관되게 통제하기 어렵습니다. 본 프로젝트는 **설명형·계산형·비교형 데이터를 서로 다른 방식으로 처리**해 이 문제를 줄였습니다.
+
+---
+
+## 🔍 Development & Analysis Flow
+
+| 단계 | 분석·개발 내용 | 핵심 산출물 |
+| --- | --- | --- |
+| 0️⃣ 환경 구축 | Python 환경, 저장소 구조, CLOVA Studio 연결 | 재현 가능한 실행 환경 |
+| 1️⃣ 자료 검수 | 제도 문서 58개와 투자설명서 100개 전수 확인·라벨링 | 검색 키워드·원문 위치·분류 메타데이터 |
+| 2️⃣ 파싱·정규화 | PDF·DOCX·XLSX·PPTX 및 투자설명서 표·서술 추출 | 제도문서 708청크, 상품 서술 430문서 |
+| 3️⃣ 저장소 분리 | 설명형은 Chroma, 비교형 수치는 SQLite에 저장 | 100펀드·198클래스 상품 DB |
+| 4️⃣ 규칙 엔진 | 같은 입력에 항상 같은 결과를 내도록 세금·한도·이전·투자가능 여부를 Python 규칙으로 구현 | 10개 규칙 모듈 |
+| 5️⃣ Agent 연결 | 질문 분류 → 제도/상품 처리 → 답변 검증 → 파수꾼 → 최종 응답 생성 | LangGraph 실행 그래프 |
+| 6️⃣ 검증 강화 | 수치 대조·잘못된 전제 교정·질문 충족 여부 검사·최대 1회 수정 | 2단계 답변 검증(L0/L1) |
+| 7️⃣ 파수꾼 구현 | 손실·혜택·비용을 검증 후 최대 1건 추가 안내 | 규칙 기반 파수꾼(Guardian) |
+| 8️⃣ 평가 반복 | 단위·API·E2E 테스트와 100/500문항 평가셋 운영 | 회귀 테스트·119개 점검포인트 |
+
+### 🔁 단일 RAG에서 현재 구조로
+
+| 테스트에서 발견한 한계 | 코드에 반영한 개선 |
+| --- | --- |
+| RAG가 세율·한도·예외 조건을 자연어로 추론 | 숫자와 요건을 규칙 엔진·구조화 조회로 분리 |
+| 정확한 코드 매칭이 필요한 문서까지 의미 검색 | 디폴트옵션 Q&A와 실물이전 불가사유 코드 문서는 RAG에서 분리해 구조화 판정 |
+| 상품명이 DB에 있어도 잘못된 의도로 분류될 수 있음 | 코드 후보 생성 + HCX-007 판정 + 제한적 코드 보정 |
+| 필수 정보가 없는데도 계산·추천을 단정 | 필수정보 확인 단계와 단계별 응답 모드를 적용 |
+| LLM이 근거 없는 숫자를 생성 | 1차 코드 검증(L0)으로 수치를 대조하고 근거 없는 숫자를 제거 |
+| 검증 실패 시 반복 재생성 | 수정 재시도를 최대 1회로 제한 |
+| 자유로운 후속 제안이 중복·과잉 권유로 변질 | 검증 완료 후 규칙 기반 파수꾼이 최대 1건만 추가 |
+
+---
+
+## 🏗️ System Architecture
+
+```mermaid
+flowchart TD
+    A[사용자 질의 · GET /answer] --> B[① Router & Guardrail]
+
+    B -->|범위외 · 안전성 위반| G[⑥ Generator]
+    B -->|결정론 카테고리 · 정보형| C[② Info Agent]
+    B -->|상품형| D[③ Product Agent]
+
+    C -->|복합형| D
+    C -->|정보형 완료| E[④ Grounding & Verification]
+    D --> E
+
+    E -->|검증 실패 · 최초 1회| R{Repair 대상}
+    R -->|정보형 포함| C
+    R -->|상품형| D
+
+    E -->|추가확인 필요 · 유형추천| G
+    E -->|검증 통과 · complete| F[⑤ Guardian]
+    E -->|2차 실패| G
+
+    F --> G
+    G --> H[answer · retrieved_context · think_trace]
 ```
-사용자 질의
-    │
-    ▼
-① 라우터 / 가드레일 (HCX-007, thinking 끔)
-    - 정보형 / 상품형 / 복합형 다중 분류
-    - 복합형일 경우 순차·병렬·조건부 게이팅 판단
-    - 안전성 사전 필터
-    │
-    ├─ 정보형 ──▶ ② 정보 Agent (HCX-005)
-    │              tools: RAG검색(벡터DB) / 세제 규칙엔진 / 제도 판정기(디폴트옵션·실물이전·중도인출)
-    │
-    └─ 상품형 ──▶ ③ 상품 Agent (HCX-005)
-                   tools: 펀드 필터/비교(구조화DB) / 슬롯필링 상태
-                   (복합형은 ②→③ 순차 실행, 필요시 ③ 스킵하고 역질문)
-    │
-    ▼
-④ 검증 / Grounding (HCX-007, thinking 끔)
-    - ②③가 실제 호출한 툴 결과와 답변 초안 대조
-    - 제도 부합 / 계산 일치 / 근거 존재 / 투자제한 위반 여부
-    │
-    ▼
-⑤ 응답 생성기 (HCX-005)
-    - 최종 답변 조립 + think_trace 포맷
+
+### 핵심 실행 규칙
+
+1. `is_safe=False` 또는 `scope="범위외"`이면 전문 Agent를 호출하지 않고 정형 한계 안내를 생성합니다.
+2. Router가 결정론 카테고리를 확정하면 Info Agent가 규칙 기반 경로를 우선 사용합니다.
+3. 정보형은 Info Agent, 상품형은 Product Agent로 이동합니다.
+4. 복합형은 **Info → Product 순차 실행**으로 제도 근거를 상품 판단에 전달합니다.
+5. Product Agent의 조건부 응답·유형 추천도 Grounding을 거쳐, 일반 기준에 섞일 수 있는 근거 없는 수치를 검증합니다.
+6. Grounding 실패 시 담당 Agent로 **최대 1회** 돌아가 수정합니다.
+7. 검증을 통과한 `complete` 응답에만 Guardian이 실행됩니다.
+
+---
+
+## 🤖 Agent Details
+
+### ① 🧭 Router & Guardrail
+
+**Model:** `HCX-007` + Structured Outputs + `thinking={"effort": "none"}`
+
+사용자 질문을 하나의 라벨로 단순 분류하지 않고 여러 축으로 동시에 판단합니다.
+
+- `intent`: 정보형 / 상품형 / 복합형
+- `scope`: 범위내 / 부분관련 / 범위외
+- `is_safe`: 안전 가이드라인 통과 여부
+- `deterministic_category`: 규칙 기반 처리가 가능한 카테고리 여부
+
+분류는 **코드가 후보를 생성하고 HCX-007이 최종 판단하는 2단계 구조**입니다. 검증 과정에서 LLM이 명확한 후보를 잘못 기각한 사례가 확인된 카테고리에 대해서만, 처리 함수 자체의 안전한 매칭 조건을 전제로 제한적 코드 보정을 적용합니다.
+
+### ② 📚 Info Agent
+
+**Model:** `HCX-005` + ReAct + 5개 Agent Tool
+
+연금 제도·세제·업무절차 질문을 처리합니다.
+
+- Router가 확정한 결정론 카테고리는 규칙 경로를 우선 사용
+- 세액공제·연금 인출·중도인출·디폴트옵션은 규칙 엔진 호출
+- 일반 제도 설명은 `search_pension_docs`로 RAG 검색
+- 계산 입력이 부족하면 값을 임의로 가정하지 않고 필요한 조건과 확인 가능한 일반 기준을 함께 제시
+
+LLM은 **어떤 Tool을 어떤 순서로 사용할지 판단하고 자연어로 설명**하며, 틀리면 금전적 손실로 이어질 수 있는 수치 계산 자체는 규칙 엔진이 담당합니다.
+
+### ③ 📊 Product Agent
+
+**Model:** `HCX-005` + ReAct + 4개 Agent Tool
+
+펀드 검색·비교·계좌별 편입 가능 여부·추천을 담당합니다.
+
+- 정량 정보: 위험등급, 총보수, 수익률, AUM, 판매 클래스 → **SQLite**
+- 정성 정보: 투자전략, 주요 위험, 투자목적 → **Chroma**
+- 계좌 제약: DB/DC/IRP/연금저축의 상품 편입 가능 여부 → **규칙 판정**
+- 추천: 상품 유형 추천과 실제 개별 펀드 추천을 단계적으로 분리
+
+특정 펀드를 직접 묻거나 비교하는 질문은 별도의 추천용 추가정보 수집 없이 바로 DB를 조회합니다.
+
+### ④ 🔍 답변 검증 | Grounding & Verification
+
+**Model:** `HCX-007` + Structured Outputs + 코드 기반 L0 검증
+
+Agent가 생성한 초안과 **실제로 호출한 Tool 결과**를 대조합니다.
+
+#### L0 — 코드 기반 수치 검증
+
+- 답변에 등장하는 수치를 Tool 결과와 코드로 직접 비교
+- 근거 어디에도 없는 숫자는 `find_unsupported_numbers`로 탐지
+- 미지원 수치가 포함된 문장은 `enforce_unsupported_numbers`로 제거
+
+#### L1 — 문장·근거 타당성 검증
+
+- `grounded`: 구체적 주장과 수치가 근거에 존재하는가
+- `premise_issues`: 사용자의 잘못된 전제를 교정했는가
+- `requirements_met`: 질문이 요구한 항목을 모두 답했는가
+- `missing_requirements`: 빠진 요구사항은 무엇인가
+
+근거 없는 단정에는 한계 고지를 강제하고, 잘못된 전제가 확인되면 정정 문장을 답변 앞부분에 반영합니다.
+
+#### 최대 1회 수정 | Bounded Repair
+
+검증 실패 시 무한 반복하지 않고, 수정 여부를 기록하는 `repair_attempted` 상태값을 사용해 **최대 1회만 재생성**합니다. 1회 이후에도 통과하지 못하면 문제 부분을 제거하거나 한계를 명시한 형태로 최종 응답을 확정합니다.
+
+### ⑤ 🛡️ Guardian
+
+답변 검증을 통과한 완결 답변에만 실행되는 **후단 안전 계층**입니다.
+
+Guardian은 사용자가 질문하지 않았지만 지금 놓치면 손해가 될 수 있는 지점을 검사합니다.
+
+**실행 조건**
+
+- `scope == "범위내"`
+- `needs_clarification == False`
+- `response_mode == "complete"`
+- `grounded == True`
+- `requirements_met == True`
+
+**설계 원칙**
+
+- 사용자의 질문에 대한 본 답변을 수정하지 않음
+- 근거가 있는 후보만 사용
+- 사용자가 이미 직접 물은 주제는 중복 안내하지 않음
+- 최종적으로 **최대 1건**만 추가
+
+#### Guardian이 보는 대표 후보
+
+| 유형 | 탐지 내용 | 구현 방식 |
+| --- | --- | --- |
+| 💰 비용 | 동일 펀드·동일 연금계좌에서 더 낮은 비용의 직접 비교 가능 클래스 존재 | 사전 검수된 Cost Guard 데이터 조회 |
+| ⚠️ 행동 위험 | 퇴직금 재원을 연금외수령할 때 이연퇴직소득세 감면 상실 | 구조화된 재원·수령방식 판정 |
+| 🔄 행동 위험 | 실물이전 절차 질문에서 상품별 이전 제한 가능성 | 실물이전 의도 + 불가사유 코드 근거 |
+| 🏠 행동 위험 | 주택구입·전월세보증금 중도인출에서 재원별 과세 확인 필요 | 중도인출 행동·서류 질의 판정 |
+| 🎁 놓친 기회 | 제공된 납입정보로 확정 가능한 미사용 세액공제 한도 | 규칙 기반 잔여 한도 계산 |
+
+> 저비용 클래스 후보는 별도로 먼저 확인하며, 그 외 파수꾼 후보는 코드에 정의한 우선순위에 따라 **세금상 손실(100) → 실물이전 제약(95) → 중도인출 과세(90) → 미사용 혜택(80)** 순으로 하나를 선택합니다. 괄호 안 숫자는 내부 우선순위 점수입니다.
+
+### ⑥ ✍️ Generator
+
+**Model:** `HCX-005`
+
+최종 답변, 근거, 검증 결과와 실행 흐름을 조립합니다.
+
+- `answer`: 사용자가 읽는 최종 답변
+- `retrieved_context`: 실제 답변 근거
+- `think_trace`: 질문 분류 → 도구 호출 → 검증 → 최종 조립까지의 실행 흐름 요약
+- 범위외·안전성 위반·예외 발생 시 정형 한계 안내
+
+파이프라인에서 예외가 발생해도 평가 API가 무응답으로 종료되지 않도록, 가능한 범위에서 한계를 명시한 응답을 반환하도록 설계했습니다.
+
+---
+
+## 🧰 Tools & Rule Engine
+
+### Agent Tools
+
+| Tool | 사용 경로 | 역할 |
+| --- | --- | --- |
+| `calculate_tax_credit` | Info | 연금저축·IRP 세액공제 한도 및 공제액 계산 |
+| `calculate_pension_withdrawal` | Info | 연금수령한도·퇴직소득세 감면·사적연금 과세를 종합한 인출 시뮬레이션 |
+| `check_early_withdrawal` | Info | 중도인출 사유·기한·필요서류·세금 영향 점검 |
+| `check_default_option` | Info | 디폴트옵션 옵트인 자격·상태 확인 |
+| `check_in_kind_transfer` | 결정론 경로 | 상품 상태·불가사유 코드에 따른 실물이전 가능 여부 확인 |
+| `check_product_pension_eligibility` | Product | 계좌·상품 유형별 편입 가능 여부 확인 |
+| `search_pension_docs` | Info | 제도·세제·업무 문서 RAG 검색 |
+| `search_funds` | Product | 위험등급·상품명·분류 조건으로 펀드 검색 |
+| `get_fund_detail` | Product | 특정 펀드·클래스의 정량 정보 조회 |
+| `search_prospectus_text` | Product | 투자전략·주요 위험 등 투자설명서 서술형 근거 검색 |
+
+> 총 10개의 Tool 함수 중 **5개는 Info ReAct Agent**, **4개는 Product ReAct Agent**에 직접 바인딩되며, 실물이전 개별 판정은 별도의 결정론 경로에서 통제합니다.
+
+### Rule Modules
+
+```text
+src/rules/
+├── comprehensive_tax.py          # 사적연금 종합과세
+├── default_option.py             # 디폴트옵션 판정
+├── early_withdrawal.py           # 중도인출 요건·기한
+├── in_kind_transfer.py           # 실물이전 가능 여부
+├── investment_limit.py           # 계좌별 위험자산 투자한도
+├── irp_mandatory_transfer.py     # 퇴직 시 IRP 의무이전
+├── pension_withdrawal.py         # 연금수령 시나리오 통합 계산
+├── retirement_tax_reduction.py  # 퇴직소득세 감면율
+├── tax_credit.py                 # 세액공제
+└── withdrawal_limit.py           # 연금수령한도
 ```
 
-**CLOVA Studio 모델 제약 (네이버 공식 문서 + 실측, 2026-08-13):**
-이미지입력/튜닝/Function calling/Structured Outputs/추론(Thinking)은 동시 이용 불가.
-- Structured Outputs(①④가 씀)는 **HCX-007에서만** 지원 (HCX-DASH-002는 "Unsupported function").
-- HCX-007은 기본적으로 Thinking이 켜져 있어, Function calling이든 Structured Outputs든 쓰려면
-  `thinking={"effort": "none"}`으로 꺼야 함 (안 그러면 400 "tools, reasoning").
-- `with_structured_output()`은 LangChain이 기본으로 `parallel_tool_calls`를 얹는데 CLOVA가
-  이 파라미터를 모름 — `disabled_params={"parallel_tool_calls": None}`으로 꺼야 함.
-- Pydantic 응답 스키마 클래스에 **docstring이 없으면** "tools[].function.description" 400 에러.
-- HCX-005/HCX-DASH-002는 Thinking이 없어 bind_tools()는 바로 되지만, Structured Outputs는
-  HCX-005만 됨(DASH-002는 전혀 안 됨) — 그래서 ②③(tool 호출)은 HCX-005, ①④(구조화 출력)는
-  HCX-007+thinking 끔으로 나눴다.
+---
 
-## 데이터 자산
+## 🗃️ Data Pipeline & Assets
 
-- `docs.zip` (58개, PDF/DOCX/XLSX/PPTX) — 제도·세제·업무 매뉴얼/FAQ. 다중 카테고리 라벨링 완료(`data/labels/`).
-  - doc29(디폴트옵션 Q&A), doc34(실물이전 25코드)는 RAG 대상에서 제외, 구조화 DB로 별도 처리
-- `투자설명서.zip` (100개 PDF) — 펀드 투자설명서. 6축(상품분류/위험등급/판매클래스/총보수/수익률/AUM) 구조화 추출 대상.
+### 데이터 성격별 처리 전략
 
-## 폴더 구조
+| 데이터 성격 | 예시 | 처리 방식 |
+| --- | --- | --- |
+| 📖 설명형 | 연금 제도, 업무 절차, 상품 투자전략·위험 | Chroma RAG |
+| 🧮 계산형 | 세액공제, 수령한도, 세율, 감면율 | Python Rule Engine |
+| 📊 비교형 | 위험등급, 총보수, 수익률, AUM | SQLite 구조화 조회 |
 
+### 📚 제도·세제 데이터
+
+- 원본: PDF·DOCX·XLSX·PPTX 형식 문서 **58개**
+- 전처리: `data/processed/chroma_docs/` **708청크**
+- 임베딩: `clir-emb-dolphin`
+- 메타데이터: 문서명·섹션·원문 위치 등 검색 근거 보존
+- 별도 구조화:
+  - `doc29_default_option_qa_lookup.json`
+  - `doc34_in_kind_transfer_code_lookup.json`
+
+디폴트옵션 Q&A 자료와 실물이전 불가사유 코드 자료는 의미 검색보다 정확한 문답·코드 매칭이 중요하므로 일반 RAG에서 제외하고 구조화 판정으로 분리했습니다. 위 파일명은 원본 문서 번호를 추적하기 위해 코드 내부에서만 유지합니다.
+
+### 📈 상품 데이터
+
+- 원본: 펀드 투자설명서 PDF **100개**
+- SQLite: `prospectus.db`
+  - `fund_master`: **100개 펀드**
+  - `fund_class`: **198개 판매 클래스**
+- Chroma: `chroma_prospectus/` 투자전략·위험 등 **430개 서술 문서**
+- 구조화 축: 상품분류 / 위험등급 / 판매클래스 / 총보수 / 수익률 / AUM
+- AUM: 100개 중 **98개 수기검수 반영**
+
+### 💰 Cost Guard Dataset — 저비용 판매 클래스 점검용 데이터셋
+
+동일 펀드 내 연금계좌 판매 클래스의 비용을 비교하기 위해 별도의 **검수 완료 데이터셋(Cost Guard)**을 구축했습니다. 여기서 “동결(Frozen)”은 제출 버전에서 더 이상 임의 수정하지 않도록 검수 상태를 고정했다는 뜻입니다.
+
+| 항목 | 값 |
+| --- | ---: |
+| 데이터 버전 | `cost_guard_v1` |
+| 상태 | `FROZEN_V1` |
+| 대상 펀드 | 64개 |
+| 클래스 행 | 210개 |
+| `STANDARD` 기본 비교쌍 | 93개 |
+| `CHANNEL_CONDITIONAL` 채널 확인 필요 비교쌍 | 60개 |
+| `P0` 우선 검토 케이스 | 44개 |
+| 미해결 필드 | 0개 |
+
+비용 비교쌍은 내부 검수 상태에 따라 구분합니다. **`STANDARD`**는 자동 안내에 사용할 수 있는 기본 비교쌍, **`CHANNEL_CONDITIONAL`**은 판매 채널이 달라 실제 가입 가능 여부를 추가 확인해야 하는 비교쌍입니다. **`P0`**는 우선적으로 추가 검토가 필요하다고 표시한 케이스입니다. 파수꾼의 자동 저비용 클래스 안내에는 보수적으로 `STANDARD` 비교만 사용합니다.
+
+---
+
+## 📁 Project Structure
+
+> 아래는 최종 브랜치의 핵심 실행·검증 파일을 중심으로 정리한 구조입니다.
+
+```text
+📦 project-root
+├── 📂 data/
+│   ├── 📂 labels/                         # 문서 라벨링·메타데이터
+│   └── 📂 processed/
+│       ├── 📂 chroma_docs/                # 제도문서 708청크
+│       ├── 📂 chroma_prospectus/          # 투자설명서 서술형 430문서
+│       ├── 📄 prospectus.db               # 100펀드·198클래스 SQLite
+│       ├── 📄 aum_report.csv
+│       ├── 📄 doc29_default_option_qa_lookup.json
+│       ├── 📄 doc34_in_kind_transfer_code_lookup.json
+│       └── 📄 fund_class_pension*         # Cost Guard 검수·동결 데이터
+│
+├── 📂 src/
+│   ├── 📂 agents/
+│   │   ├── 📄 graph.py                    # LangGraph 배선·분기·Repair loop
+│   │   ├── 📄 router.py                   # Intent·Scope·Safety·Category
+│   │   ├── 📄 info_agent.py               # 제도·세제 Agent
+│   │   ├── 📄 product_agent.py            # 상품 비교·추천 Agent
+│   │   ├── 📄 deterministic_info.py       # 결정론 정보 응답
+│   │   ├── 📄 grounding.py                # L1 Grounding
+│   │   ├── 📄 verification.py             # L0 수치·전제 검증
+│   │   ├── 📄 guardian.py                 # 후단 파수꾼
+│   │   ├── 📄 generator.py                # 최종 응답 조립
+│   │   ├── 📄 tools.py                    # 10개 Tool 래퍼
+│   │   ├── 📄 state.py                    # 공유 State 스키마
+│   │   ├── 📄 context.py                  # 컨텍스트 보조 로직
+│   │   ├── 📄 tax_context.py              # 세금 질의 구조화 문맥
+│   │   ├── 📄 withdrawal_context.py       # 인출 질의 구조화 문맥
+│   │   ├── 📄 in_kind_transfer_intent.py  # 실물이전 의도 판정 보조
+│   │   ├── 📄 query_rewrite.py            # 검색 질의 보강
+│   │   └── 📄 llm.py                      # HyperCLOVA X 모델·재시도 설정
+│   │
+│   ├── 📂 api/
+│   │   └── 📄 main.py                     # GET /answer · GET /health
+│   ├── 📂 parsing/                         # PDF/DOCX/PPTX/XLSX·투자설명서 파싱
+│   ├── 📂 rules/                           # 10개 결정론 규칙 모듈
+│   └── 📂 storage/
+│       ├── 📄 docs_vectorstore.py          # 제도문서 Chroma
+│       ├── 📄 prospectus_vectorstore.py    # 상품 서술 Chroma
+│       ├── 📄 prospectus_loader.py         # 상품 데이터 로딩
+│       ├── 📄 cost_guard_loader.py         # Cost Guard 로딩·검증
+│       ├── 📄 queries.py                   # SQLite 조회
+│       └── 📄 schema.py                    # 구조화 DB 스키마
+│
+├── 📂 eval/
+│   ├── 📄 eval_questions_100.csv
+│   ├── 📄 eval_questions_500.csv
+│   ├── 📄 checkpoints_119.csv
+│   ├── 📄 run_eval.py
+│   └── 📄 screen_results.py
+│
+├── 📂 tests/
+│   ├── 📂 test_agents/
+│   ├── 📂 test_api/
+│   ├── 📂 test_e2e/
+│   ├── 📂 test_parsing/
+│   ├── 📂 test_rules/
+│   ├── 📂 test_scripts/
+│   └── 📂 test_storage/
+│
+├── 📂 scripts/                             # 파싱·검수·색인·로컬 대화 실행
+├── 📄 Dockerfile
+├── 📄 DEPLOY.md
+├── 📄 HANDOFF.md
+├── 📄 requirements.txt
+└── 📄 README.md
 ```
-data/
-  raw/        원본 문서 (git 추적 안 함, 용량 큼)
-  processed/  파싱된 청크/구조화 데이터
-  labels/     데이터 라벨링.xlsx 등 메타데이터
-src/
-  parsing/    문서 파서 (pdf/docx/pptx/xlsx → 텍스트/표)
-  storage/    벡터DB(Chroma) / 구조화DB(SQLite) 클라이언트
-  rules/      세제 규칙엔진, 제도 판정기 (결정론적 계산)
-  agents/     LangGraph 노드 (router / info_agent / product_agent / grounding / generator)
-  api/        평가용 FastAPI 서버
-tests/        pytest 테스트 (특히 rules/ 는 정확성이 평가 핵심이라 테스트 필수)
-scripts/      배치 실행 스크립트 (파싱, 색인 등)
+
+---
+
+## ✅ Test & Validation
+
+### 평가 자산
+
+- `eval_questions_100.csv`: 초기 핵심 질문셋
+- `eval_questions_500.csv`: 제도·세제·상품·반례를 확장한 500문항 평가셋
+- `checkpoints_119.csv`: 특정 문항에서 반드시 확인할 119개 판단 포인트
+- `screen_results.py`: 평가 결과 선별·점검 보조
+- `tests/test_e2e/`: 실제 모델 호출 기반 E2E 회귀 테스트
+
+### 평가 관점
+
+| 기준 | 점검 내용 |
+| --- | --- |
+| 🎯 정확성 | 제도·세제·상품 사실과 계산 결과가 일치하는가 |
+| 🔗 근거성 | 답변의 구체적 주장과 수치가 실제 Tool 결과에 있는가 |
+| 🧭 라우팅 | 정보·상품·복합 질문이 올바른 경로를 통과하는가 |
+| 🧩 충족성 | 여러 항목을 물었을 때 빠짐없이 답했는가 |
+| 🚦 정보 충분성 | 입력이 부족할 때 임의의 전제를 만들지 않았는가 |
+| 🪤 전제 교정 | 잘못된 제도·위험등급 전제를 먼저 바로잡았는가 |
+| 🛡️ 안전성 | 근거 없는 수치·단정·범위 밖 답변을 방어하는가 |
+| 💬 이해 가능성 | 어려운 금융 용어를 사용자 관점에서 설명하는가 |
+
+### 대표 시나리오 테스트 | Behavior Test
+
+```text
+“나 74세인데 연금 세금은 얼마야?”
+→ 연령 하나만으로 확정하지 않고 수령 방식·재원·연간 과세대상 소득·수령연차 등 필요한 조건을 확인
+
+“위험등급 6등급이 1등급보다 더 위험하지?”
+→ 잘못된 위험등급 방향을 먼저 교정
+
+“IRP 상품은 모두 원금 보장이지?”
+→ 계좌와 편입 상품의 위험을 분리해 설명
+
+“만기된 펀드는 무조건 실물이전할 수 있어?”
+→ 상품 상태와 실물이전 불가사유 코드를 기준으로 판정
 ```
 
-## 진행 단계
+### 테스트 실행
 
-- [x] **Phase 0** — Python 환경, 레포 스캐폴드, NCP 크레딧/Clova Studio API 키 발급
-- [x] **Phase 0.5** — 원본 데이터 검수/라벨링 QA (파싱·색인의 입력 신뢰도 확보)
-  - [x] `docs.zip`(58개) 다중 카테고리 라벨링 + 전수 원문 대조 검증
-  - [x] `투자설명서.zip`(100개) 전수 원문 대조 검증, AUM 98/100 수기검수 반영
-- [x] **Phase 1** — `docs.zip`·`투자설명서.zip` 파싱 + 벡터DB(Chroma)/구조화DB(SQLite) 색인
-  - `data/processed/prospectus.db`(fund_master/fund_class, 100펀드/198클래스) +
-    `data/processed/chroma_docs`(제도문서 708청크) + 투자설명서 서술형(투자전략·위험 등) 벡터
-    컬렉션(430문서) — 3개 데이터 저장소 완료, git에 포함
-- [x] **Phase 2** — 세제 규칙엔진(세액공제/연금수령한도/감면율/종합과세) + 제도 판정기 + 투자한도
-  판정기 (`src/rules/`, 8개 모듈)
-- [x] **Phase 3** — LangGraph 에이전트 (①라우터 → ②정보/③상품 Agent → ④검증 → ⑤생성기) 배선 완료
-  - ②③ 규칙엔진 툴 6개 + RAG/구조화DB 툴 3개(`search_pension_docs`, `search_funds`,
-    `get_fund_detail`) 전부 연결
-  - L0 결정론적 검증 게이트(수치 대사) + scope 축(범위내/부분관련/범위외) + 1회 repair 루프 반영
-  - 대회 평가가 싱글턴 기준으로 확정되어, 역질문 대신 조건부 답변(`response_mode`)으로
-    대응하도록 ②③ 응답 전략 조정 (2026-08-20)
-  - 멀티턴 대화(`conversation_history`)는 코드상 지원되지만 싱글턴 평가 API에서는 사용되지
-    않음 — 로컬 데모(`scripts/chat.py`)용 기능으로 남겨둠
-- [x] **Phase 4** — 평가용 API 서버 **완료** / NCP 배포 **완료**
-  - `src/api/main.py` — 요강 p8 스키마(`GET /answer` → `question_id`/`question`/
-    `retrieved_context`/`think_trace`/`answer`) 구현. 로컬 기동·공식 질의 응답 확인 완료.
-  - 파이프라인이 예외로 죽어도 500 대신 200 + 한계 고지를 반환한다 (무응답은 그 문항이
-    0점이므로). 원인은 `think_trace`에 남는다.
-  - **제출용 End-point (NCP 배포 완료, 2026-09-06)**:
-    ```
-    GET http://49.50.131.213:8000/answer?question_id={id}&question={평가 질의}
-    ```
-    - 3중 검증 완료: 서버 내부 헬스체크(`graph_ready: true`) / 서버→외부 아웃바운드 /
-      외부→서버 인바운드(공인 IP로 실제 질의 응답 확인)
-    - 응답 필드는 요강 스키마와 동일하며 전부 문자열(string) 타입
-    - 인증 헤더 불필요, 경로는 `/answer`로 고정
-- [ ] **Phase 5** — 자체 평가 반복, 기술제안서 — `eval/eval_questions_100.csv`(100문항 자체
-  평가셋) 작성 완료, 실제 회귀 실행/결과 정리는 미착수
+```bash
+# 네트워크 호출 없는 전체 테스트
+pytest -q
 
-## 셋업
+# 실제 HyperCLOVA X를 호출하는 E2E 회귀 테스트
+RUN_LIVE_AGENT_TESTS=1 pytest tests/test_e2e -v
+```
 
-⚠️ **`.venv` 폴더는 절대 다른 사람과 공유하지 마세요** — Windows에서 만든 `.venv`는 컴파일된
-바이너리가 들어있어 Mac/Linux에서 절대 실행되지 않습니다(반대도 마찬가지). 각자 자기 컴퓨터에서
-아래 명령으로 새로 만들어야 합니다. `.venv`는 `.gitignore`에 이미 포함돼 있어 git으로는
-공유되지 않습니다 — 공유되는 건 `requirements.txt`(설치 목록)뿐입니다.
+> 단위 테스트만으로는 “답할 수 있는 질문을 거부하는 문제” 같은 전체 파이프라인 결함을 놓칠 수 있어, 제출 전 Live E2E를 함께 확인합니다.
+
+---
+
+## ⚒️ Tech Stack
+
+| 영역 | 기술 | 프로젝트 내 역할 |
+| --- | --- | --- |
+| 🧠 LLM | HyperCLOVA X `HCX-007` | Router·Grounding의 Structured Outputs |
+| 💬 LLM | HyperCLOVA X `HCX-005` | Info/Product Tool Calling·Generator |
+| 🔗 Embedding | `clir-emb-dolphin` | 제도·상품 서술 문서 임베딩 |
+| 🔄 Orchestration | LangGraph, LangChain | 상태 기반 분기·순차 오케스트레이션·ReAct Agent |
+| 🧮 Logic | Python Rule Engine | 세금·한도·이전·적합성 계산 |
+| 🗄️ Vector DB | Chroma | 제도문서·투자설명서 서술 검색 |
+| 🧱 Structured DB | SQLite | 상품·클래스·비용 비교 |
+| 🚀 API | FastAPI, Uvicorn, Pydantic | 대회 평가용 API와 응답 스키마 |
+| 🐳 Deploy | Docker | 환경 독립적 실행·배포 |
+| 🧪 Test | pytest, httpx | 규칙·Agent·API·E2E 회귀 검증 |
+
+### HyperCLOVA X 모델 분리 이유
+
+- `HCX-007`: Router·Grounding처럼 구조화된 판단이 필요한 단계에 사용
+- `HCX-005`: Function Calling 기반 Tool 사용과 최종 자연어 생성에 사용
+- Structured Outputs / Tool 사용 시 모델 제약에 맞게 Thinking과 `parallel_tool_calls` 설정을 통제
+- 복합 질문은 병렬 실행이 아니라 Info 결과를 Product가 이어받는 **순차 실행**
+- 모델 호출은 공통 LLM 래퍼의 재시도 정책을 거쳐 일시적 API 오류와 Rate Limit에 대응
+
+---
+
+## 🚀 Quick Start
+
+### 1. 가상환경 생성
 
 ```bash
 python -m venv .venv
 
-# 가상환경 활성화 (OS별로 다름, 자기 OS에 맞는 것 하나만 실행)
-source .venv/bin/activate        # macOS / Linux
-.venv\Scripts\activate           # Windows (cmd)
-.venv\Scripts\Activate.ps1       # Windows (PowerShell)
+# macOS / Linux
+source .venv/bin/activate
 
+# Windows cmd
+.venv\Scripts\activate
+
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
+```
+
+> ⚠️ `.venv`는 OS별 바이너리가 포함되므로 공유하지 않습니다. 각 환경에서 새로 생성하세요.
+
+### 2. 의존성·환경변수 설정
+
+```bash
 pip install -r requirements.txt
-cp .env.sample .env              # 키 채워넣기 (CLOVASTUDIO_API_KEY)
+cp .env.sample .env
 ```
 
-**실행 확인**:
+`.env`에 CLOVA Studio API Key를 설정합니다.
+
+```env
+CLOVASTUDIO_API_KEY=your_api_key
+```
+
+### 3. 로컬 대화 실행
+
 ```bash
-pytest -q                        # 전체 테스트 (276 passed, 19 skipped면 정상)
-python scripts/chat.py           # 터미널에서 직접 질문해보기 (.venv 활성화 상태에서 python만 쓰면 됨,
-                                  #  .venv/Scripts/python.exe처럼 OS별 경로를 직접 안 써도 됨)
+python scripts/chat.py
 ```
 
-**제출 전 회귀 확인 (필수)**: 위 `pytest -q`는 실제 모델을 부르지 않으므로,
-"답할 수 있는 질문을 거부한다" 같은 파이프라인 전체 결함은 잡지 못합니다
-(실제로 단위 테스트 276개가 전부 통과하는 상태에서 대회 공식 질의가 거부되고
-있었습니다). 대회 참고 질의 5건을 실제로 통과시키는 E2E 회귀 테스트를 돌리세요:
-```bash
-RUN_LIVE_AGENT_TESTS=1 pytest tests/test_e2e -v   # 약 3~5분, API 크레딧 소모
-```
+### 4. API 서버 실행
 
-**평가용 API 서버 실행**:
 ```bash
 uvicorn src.api.main:app --host 0.0.0.0 --port 8000
 ```
-확인 (요강 p8 스펙):
-```bash
-curl -G "http://localhost:8000/answer" \
-  --data-urlencode "question_id=Q-001" \
-  --data-urlencode "question=연금저축이랑 IRP에 넣으면 세액공제 얼마까지 되나요?"
-```
-`GET /health`로 기동 여부만 따로 확인할 수 있습니다(모델 호출 없음).
 
-⚠️ Windows Git Bash의 `curl`은 한글 인자를 CP949로 보내 질문이 깨집니다. 한글 질의를
-테스트할 때는 요강 예시대로 Python `requests`(또는 `urllib`)를 쓰세요 — 서버 문제가
-아니라 클라이언트 인코딩 문제입니다.
+### 5. Docker 실행
 
-**데이터 자산(`data/processed/prospectus.db`, `data/processed/chroma_docs/`)은 git에
-포함돼 있어 별도로 다시 만들 필요가 없습니다** — `git pull` 받으면 바로 있습니다. 원본 xlsm
-트래커 파일(파싱 검수본)은 크기가 커서 git에 안 올렸으니, 그 원본 자체를 새로 처리해야 하는
-경우에만 별도로 공유가 필요합니다.
-
-**Docker로 실행 (OS 무관, 가장 안전한 방법)**:
 ```bash
 docker build -t pension-agent .
 docker run -p 8000:8000 --env-file .env pension-agent
 ```
-`.env`는 이미지에 넣지 않고 실행 시 주입합니다 — API 키가 이미지 레이어에 박히면
-이미지를 받는 사람 모두에게 키가 노출됩니다. 데이터 자산(`data/processed/`)은 이미지에
-포함되므로 별도 볼륨 마운트가 필요 없습니다.
 
-## 대회 제출 요건 (요약)
+> 🔐 API Key는 이미지에 포함하지 않고 실행 시 환경변수로 주입합니다. 구축된 `data/processed/` 자산은 저장소에 포함되어 있어 일반 실행 시 별도 재색인이 필요하지 않습니다.
 
-- LLM은 HyperCLOVA X만 사용 가능
-- 예선 마감: 2026-09-06 / 평가기간: 09-07~09-30
-- 평가용 API 응답 스키마: `question_id`, `question`, `retrieved_context`, `think_trace`, `answer`
-- 제출: 주최측 Github Organization 내 Private Repository (마감 후 수정 시 실격)
+---
+
+## 🌐 Evaluation API
+
+### 제출용 End-point (NCP 배포)
+
+```
+GET http://49.50.131.213:8000/answer?question_id={id}&question={평가 질의}
+```
+
+- 3중 검증 완료: 서버 내부 헬스체크(`graph_ready: true`) / 서버→외부 아웃바운드 / 외부→서버 인바운드(공인 IP로 실제 질의 응답 확인)
+- 응답 필드는 요강 스키마와 동일하며 전부 문자열(string) 타입
+- 인증 헤더 불필요, 경로는 `/answer`로 고정
+
+### Health Check
+
+```bash
+curl http://localhost:8000/health
+```
+
+### Answer
+
+```bash
+curl -G "http://localhost:8000/answer" \
+  --data-urlencode "question_id=Q-001" \
+  --data-urlencode "question=연금저축과 IRP에 넣으면 세액공제는 얼마까지 되나요?"
+```
+
+### Response Schema
+
+```json
+{
+  "question_id": "Q-001",
+  "question": "사용자 질문",
+  "retrieved_context": "답변에 사용한 근거",
+  "think_trace": "분류·도구·검증·조립 과정",
+  "answer": "최종 답변"
+}
+```
+
+> ⚠️ Windows Git Bash의 `curl`은 한글 인코딩 문제가 발생할 수 있어, 한글 질의 테스트에는 Python `requests` 또는 `urllib` 사용을 권장합니다.
+
+---
+
+## 💬 Example Flow
+
+### “퇴직금을 일시금으로 받고 싶은데 절차가 어떻게 되나요?”
+
+```text
+사용자 질문
+   ↓
+Router: 연금 범위 내 정보형 질의로 분류
+   ↓
+Info Agent: 관련 제도·절차 근거 검색
+   ↓
+답변 검증(Grounding): 답변의 근거·수치·질문 충족 여부 확인
+   ↓
+Guardian: 퇴직금 재원 + 연금외수령 행동을 구조적으로 확인
+   ↓
+사용자 질문에 대한 본 답변은 그대로 유지하고,
+연금으로 받을 때 적용될 수 있는 이연퇴직소득세 감면을 놓칠 수 있다는 점을 1건 추가 안내
+```
+
+파수꾼(Guardian)은 사용자의 질문을 대신 바꾸거나 다른 상품을 자유롭게 추천하지 않습니다. **질문에 대한 정확한 답을 먼저 완성한 뒤**, 검증된 규칙으로 놓친 위험이나 혜택만 덧붙입니다.
+
+---
+
+## ✨ What Makes It Different
+
+| 일반적인 연금 RAG 챗봇 | 🛡️ Pension Guardian |
+| --- | --- |
+| 검색 문서를 요약해 바로 답변 | Router가 의도·범위·안전·결정론 경로를 먼저 판정 |
+| LLM이 숫자와 조건을 자연어로 추론 | 규칙 엔진이 계산하고 1차 코드 검증(L0)이 수치를 대조 |
+| 하나의 Agent가 제도와 상품을 모두 처리 | Info / Product Agent 분리, 복합형만 순차 연결 |
+| 정보가 부족해도 평균적 상황을 가정 | 필수정보 확인 단계와 조건부 응답으로 단정 방지 |
+| 검증 실패 시 그대로 출력하거나 반복 | 2단계 검증 후 최대 1회만 수정 |
+| 자유로운 후속 추천 | 검증된 파수꾼 후보 중 최대 1건만 추가 |
+| 판매 클래스 비용을 단순 비교 | 사전 검수된 저비용 클래스 데이터 + 판매 채널 조건을 함께 점검 |
+| 답변만 반환 | 사용 근거와 실행 흐름을 `retrieved_context`·`think_trace`로 제공 |
+
+### 핵심 차별점 3가지
+
+1. **LLM이 계산하지 않는 연금 Agent** — 틀리면 위험한 수치·요건은 규칙 엔진과 구조화 DB가 담당합니다.
+2. **답변 생성보다 검증을 우선하는 Agent** — 필수정보 확인, 2단계 답변 검증(L0/L1), 최대 1회 수정으로 할루시네이션을 방어합니다.
+3. **질문 밖의 손실까지 보는 파수꾼(Guardian)** — 검증된 본 답변 이후에만, 사용자가 놓친 손실·혜택·비용을 최대 1건 선제 안내합니다.
+
+---
+
+## 🔭 Limitations & Future Work
+
+- 법령·세제 개정 시 규칙 버전과 기준일을 자동 갱신하는 체계
+- 외부 API를 답변 근거가 아닌 **정책 변화 감지 신호(Trigger)**로 활용하는 검증 파이프라인
+- 투자설명서 개정 시 SQLite·Chroma·Cost Guard 자동 재추출 및 변경 대조
+- 판매 채널·가입 자격까지 반영한 클래스 비용 비교 고도화
+- 운영 중 실패 사례를 평가셋과 회귀 테스트에 자동 편입
+- 복잡하거나 고위험한 질의를 Human-in-the-loop로 연결
+
+
+> 본 프로젝트의 제도·세제·상품 안내는 구축 데이터와 규칙의 기준 시점에 따릅니다. 실제 금융 의사결정 전에는 최신 법령과 금융회사 안내를 추가로 확인해야 합니다.
