@@ -112,13 +112,17 @@ README에는 구현과 직접 연결되는 기술 용어가 일부 등장합니�
 
 ### 핵심 실행 규칙
 
-1. `is_safe=False` 또는 `scope="범위외"`이면 전문 Agent를 호출하지 않고 정형 한계 안내를 생성합니다.
-2. Router가 결정론 카테고리를 확정하면 Info Agent가 규칙 기반 경로를 우선 사용합니다.
-3. 정보형은 Info Agent, 상품형은 Product Agent로 이동합니다.
-4. 복합형은 **Info → Product 순차 실행**으로 제도 근거를 상품 판단에 전달합니다.
-5. Product Agent의 조건부 응답·유형 추천도 Grounding을 거쳐, 일반 기준에 섞일 수 있는 근거 없는 수치를 검증합니다.
-6. Grounding 실패 시 담당 Agent로 **최대 1회** 돌아가 수정합니다.
-7. 검증을 통과한 `complete` 응답에만 파수꾼이 실행됩니다.
+1. Router가 질문을 정보형·상품형·복합형으로 분류합니다.
+2. 정보형은 Info Agent, 상품형은 Product Agent가 처리합니다.
+3. 복합형은 **Info → Product 순차 실행**으로 제도 근거를 상품 판단에 전달합니다.
+4. Info Agent·Product Agent가 만든 답변은 모두 Grounding(L0 수치대사 + L1 구조화검증)을 거칩니다.
+5. Grounding을 통과하고 아래 5가지 조건을 모두 충족한 답변에만 파수꾼(Guardian)이 실행됩니다.
+   - 연금 상담 범위 내
+   - 추가 확인 필요 없음
+   - 응답 상태 `complete`
+   - Grounding 검증 통과
+   - 질문의 요구 사항 충족
+6. 파수꾼은 우선순위 규칙에 따라 최대 1건만 안내를 추가하고, Generator가 최종 답변을 조립합니다.
 
 ---
 
