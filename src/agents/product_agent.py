@@ -504,8 +504,7 @@ def _explicit_product_context_response(
         f"투자설명서효력발생일={detail.get('prospectus_effective_date')}, "
         f"시장잔고={detail.get('aum_krw_million')}백만원, 잔고기준일={detail.get('aum_base_date')}, "
         f"투자목적={detail.get('investment_objective')}, "
-        f"투자전략={detail.get('investment_strategy')}, "
-        f"dataset_version={detail.get('dataset_version')}, dataset_status={detail.get('dataset_status')}"
+        f"투자전략={detail.get('investment_strategy')}"
     )
     context = [{"source": f"{fund_name} ({canonical_class})", "content": content, "node": "product_agent"}]
     profile = dict(state.get("recommendation_profile") or {})

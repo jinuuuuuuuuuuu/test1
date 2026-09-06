@@ -90,6 +90,18 @@ _INTERNAL_EVIDENCE_TOKENS = (
     "extraction_note",
     "review_status",
     "FROZEN_V1",
+    # L1 검증기 판정을 돕기 위한 key=value 내부 상태 표기. 실측(2026-09-06,
+    # 요강 참고질의 "명퇴하는 교사예요..."): deterministic_info.py가 이런
+    # 토큰을 content에 섞어 두면, 소스 쪽에서 걷어내는 걸 잊는 순간 그대로
+    # "참고 근거·핵심 원문"에 노출된다. 소스에서 원천 차단하는 것과 별개로,
+    # 여기가 최후 방어선이 되도록 알려진 토큰을 등록해둔다.
+    "premise_status",
+    "fund_source_status",
+    "calculation_allowed",
+    "negative_amount_detected",
+    "required_explanations",
+    "reduction_rule",
+    "missing_fields",
 )
 _PRODUCT_CONTEXT_KEYS = (
     "상품코드",

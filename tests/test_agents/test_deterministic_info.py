@@ -193,7 +193,7 @@ def test_tax_credit_parses_won_and_bare_manwon_amounts():
 
 
 def test_tax_credit_negative_amount_is_not_silently_absorbed():
-    draft, _ = deterministic_response_for(
+    draft, context = deterministic_response_for(
         "세액공제_계산_입력부족", "연금저축 -100만원, IRP 300만원, 총급여 5000만원이면 세액공제 얼마야?"
     )
 
@@ -201,6 +201,11 @@ def test_tax_credit_negative_amount_is_not_silently_absorbed():
     assert "세액공제액을 계산하지 않겠습니다" in draft
     assert "-100만원" not in draft
     assert "49만 5천원" not in draft
+    # 회귀 방지(2026-09-06): 이 content도 참고 근거·핵심 원문으로 그대로
+    # 노출되므로, calculation_allowed=false 같은 내부 메타데이터가 섞이면 안 된다.
+    assert context
+    assert "calculation_allowed" not in context[0]["content"]
+    assert "negative_amount_detected" not in context[0]["content"]
 
 
 def test_tax_credit_limit_answers_pension_savings_only_excess_directly():
@@ -1972,5 +1977,13 @@ def test_retirement_benefit_tax_premise_gate_blocks_unsafe_assumptions():
     assert "다음 정보를 한 번에" in draft
     assert "명퇴수당은 퇴직소득" not in draft
     assert context
-    assert "calculation_allowed=false" in context[0]["content"]
-    assert "fund_source_status=unconfirmed" in context[0]["content"]
+    # 회귀 방지(2026-09-06, 요강 참고질의 실측): 검증기 판정을 돕기 위한
+    # key=value 내부 메타데이터(premise_status=..., calculation_allowed=...
+    # 등)를 예전에는 content에 그대로 섞어 넣었는데, 이 content가 사용자
+    # 응답의 "참고 근거 · 핵심 원문"으로 그대로 노출된다 — 요강이 요구하는
+    # "근거 문서 표시"가 실제 문서 원문이 아니라 내부 디버그 문자열이
+    # 돼버리는 사고였다. 이 패턴이 다시 섞여 들어가지 않는지 확인한다.
+    assert "calculation_allowed" not in context[0]["content"]
+    assert "fund_source_status" not in context[0]["content"]
+    assert "premise_status" not in context[0]["content"]
+    assert "이연퇴직소득세 감면" in context[0]["content"]

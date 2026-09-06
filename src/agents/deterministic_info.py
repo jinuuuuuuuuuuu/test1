@@ -842,15 +842,22 @@ def _retirement_benefit_tax_premise_gate_response(question: str) -> tuple[str, l
     r11 = get_deferred_retirement_tax_rate(11)
     r21 = get_deferred_retirement_tax_rate(21)
     source = "doc39~doc40 이연퇴직소득세 감면 규칙; 퇴직연금제도 기본 — 개인형 퇴직연금제도(IRP)"
+    # ⚠️ 이 content는 L1 검증기가 답변 근거 부합 여부를 판정할 때 참고하지만,
+    # 동시에 사용자 응답의 "참고 근거 · 핵심 원문"으로도 그대로 노출된다
+    # (deterministic_response_for → _context → retrieved_context/answer).
+    # 이전에는 검증기 판정을 돕기 위해 key=value 형태의 내부 메타데이터
+    # (premise_status=..., calculation_allowed=... 등)를 그대로 이 문자열에
+    # 섞어 넣었는데, 그게 사용자에게 "근거 문서 원문"인 것처럼 그대로 노출됐다
+    # (실측 2026-09-06, 참고용 질의 set 상 질문 "명퇴하는 교사예요..."). 사람이
+    # 읽는 설명 문장만 남기고 메타데이터는 제거한다.
     content = (
-        "premise_status=requires_correction; fund_source_status=unconfirmed; "
-        "calculation_allowed=false; "
-        "required_explanations=명퇴수당 명칭만으로 세법상 재원 확정 금지, IRP/연금계좌 입금과 즉시 면세 구분, "
-        "퇴직소득 재원으로 확인되는 경우 과세이연 및 연금실제수령연차별 이연퇴직소득세 감면 설명; "
-        f"reduction_rule=1~10년차 {_pct(r1.reduction_ratio)} 감면, 11~20년차 {_pct(r11.reduction_ratio)} 감면, "
-        f"21년차 이상 {_pct(r21.reduction_ratio)} 감면; "
-        "missing_fields=실제 지급 항목, 원천징수 내역, 세법상 재원, 수령방식, 연금실제수령연차, 원래 부과될 이연퇴직소득세; "
-        "source_ids=doc39,doc40,퇴직연금제도 기본 IRP"
+        "명퇴수당 명칭만으로는 세법상 재원(퇴직소득/근로소득/기타소득)이 확정되지 않으므로, "
+        "실제 지급 항목과 원천징수 내역을 먼저 확인해야 한다. IRP나 연금계좌에 입금하는 것 "
+        "자체가 즉시 면세를 뜻하지 않는다. 퇴직소득 재원으로 확인되는 금액을 연금계좌에서 "
+        "연금으로 수령하면 과세이연과 연금실제수령연차별 이연퇴직소득세 감면을 적용받을 수 있다. "
+        f"감면율은 연금실제수령연차 1~10년차 {_pct(r1.reduction_ratio)}, "
+        f"11~20년차 {_pct(r11.reduction_ratio)}, 21년차 이상 {_pct(r21.reduction_ratio)}이다. "
+        "(출처: doc39, doc40, 퇴직연금제도 기본 — IRP)"
     )
     exaggerated = any(word in _compact(question) for word in ("어마어마", "무조건", "면세", "없어", "사라지"))
     premise_line = (
@@ -1076,7 +1083,6 @@ def _tax_credit_calculation_missing_response(question: str) -> tuple[str, list[R
     source = "doc41 세액공제 계산 입력값 규칙"
     if _has_negative_labeled_amount(question):
         content = (
-            "calculation_allowed=false; negative_amount_detected=true; "
             "세액공제 계산 입력값은 실제 연간 납입액과 소득금액이어야 하며, 음수 납입액 또는 음수 소득금액은 "
             "계산 입력으로 사용할 수 없습니다. 세액공제액 계산에는 연금저축 납입액, IRP 납입액, "
             "총급여 또는 종합소득금액이 필요합니다."
